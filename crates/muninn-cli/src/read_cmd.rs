@@ -26,8 +26,13 @@ fn range(c: &ReadCommon) -> Res<TimeRange> {
     ))
 }
 
-fn series(c: &ReadCommon) -> Vec<String> {
-    c.series.iter().filter(|s| !s.is_empty()).cloned().collect()
+fn series(c: &ReadCommon) -> Res<Vec<String>> {
+    if c.series.iter().any(String::is_empty) {
+        return Err(CliError::new(
+            "invalid_name: --series needs a non-empty series name (omit it to read every series)",
+        ));
+    }
+    Ok(c.series.clone())
 }
 
 fn duration(s: &str, what: &str) -> Res<Duration> {
@@ -38,7 +43,7 @@ fn duration(s: &str, what: &str) -> Res<Duration> {
 pub fn latest(ctx: &Context, a: &LatestArgs, history: bool) -> Res<()> {
     let req = LatestRequest {
         table: a.common.table.clone(),
-        series: series(&a.common),
+        series: series(&a.common)?,
         range: range(&a.common)?,
         context: ReadContext {
             clock: clock(&a.common.clock)?,
@@ -59,7 +64,7 @@ pub fn latest(ctx: &Context, a: &LatestArgs, history: bool) -> Res<()> {
 pub fn replay(ctx: &Context, a: &ReplayArgs) -> Res<()> {
     let req = ReplayRequest {
         table: a.common.table.clone(),
-        series: series(&a.common),
+        series: series(&a.common)?,
         range: range(&a.common)?,
         clock: clock(&a.common.clock)?,
         system: opt_ts(&a.common.system, "--system")?,
@@ -145,7 +150,7 @@ pub fn grid(ctx: &Context, a: &GridArgs) -> Res<()> {
     };
     let req = GridRequest {
         table: a.common.table.clone(),
-        series: series(&a.common),
+        series: series(&a.common)?,
         frontiers,
         window,
         clock: clock(&a.common.clock)?,

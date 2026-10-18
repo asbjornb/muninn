@@ -658,6 +658,15 @@ fn chunked_import_resumes_by_batch_id() {
         "{out}"
     );
     assert_eq!(count(), 10);
+    // A changed chunk (row 1 corrected) gets a new id and is written; the others are
+    // skipped because their rows are unchanged.
+    let fixed = rows(None).replace("2025-01-02T00:00:00Z,1\n", "2025-01-02T00:00:00Z,1.5\n");
+    let out = t.ok(&args, &fixed);
+    assert!(
+        out.contains("stored 3, duplicates 0, batches 4 (3 already committed"),
+        "{out}"
+    );
+    assert_eq!(count(), 13);
     // Seqs are contiguous: no seq was consumed by the failed or skipped chunks.
     let out = t.ok(&["history", "--table", "p", "--format", "csv"], "");
     let seqs: Vec<u64> = out
@@ -667,7 +676,7 @@ fn chunked_import_resumes_by_batch_id() {
         .collect();
     let mut sorted = seqs.clone();
     sorted.sort();
-    assert_eq!(sorted, (1..=10).collect::<Vec<_>>());
+    assert_eq!(sorted, (1..=13).collect::<Vec<_>>());
     // Without chunking, one bad line rejects everything.
     t.ok(&["series", "create", "s2", "--table", "p"], "");
     let err = t.fail(
@@ -675,7 +684,7 @@ fn chunked_import_resumes_by_batch_id() {
         "series,value_time,v\ns2,2025-01-01T00:00:00Z,1\ns2,2025-01-02T00:00:00Z,x\n",
     );
     assert!(!err.contains("earlier chunk"), "{err}");
-    assert_eq!(count(), 10);
+    assert_eq!(count(), 13);
 }
 
 // ---------------------------------------------------------------------------------------

@@ -1,6 +1,4 @@
-//! Adversarial review (round 2) of the CLI: each test reproduces one finding and is
-//! `#[ignore]`d until it is fixed (`cargo test -p muninn-cli --test review_findings --
-//! --ignored`).
+//! Adversarial review (round 2) of the CLI: each test reproduces one finding (all fixed).
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -71,7 +69,6 @@ impl T {
 /// Re-running "the same command" once the data is there then skips chunk 0 as
 /// `batch_already_committed`: its rows are silently never written.
 #[test]
-#[ignore = "review finding 2"]
 fn chunked_resume_after_empty_input_does_not_skip_rows() {
     let t = T::new();
     t.ok(&["series", "create", "a", "--table", "t"], "");
@@ -89,7 +86,6 @@ fn chunked_resume_after_empty_input_does_not_skip_rows() {
 /// Review finding 6: `--series` splits on commas, but SPEC §10.6 allows any non-empty
 /// series name. `--series 'a,b'` silently reads series `a` and `b` instead of `a,b`.
 #[test]
-#[ignore = "review finding 6"]
 fn series_filter_with_comma_in_name() {
     let t = T::new();
     for s in ["a", "b", "a,b"] {
@@ -116,7 +112,6 @@ fn series_filter_with_comma_in_name() {
 /// Review finding 6b: `--series ''` (e.g. an unset shell variable) is dropped and the read
 /// silently returns every series of the table instead of failing.
 #[test]
-#[ignore = "review finding 6"]
 fn empty_series_filter_is_not_all_series() {
     let t = T::new();
     t.ok(&["series", "create", "a", "--table", "t"], "");
@@ -139,7 +134,6 @@ fn empty_series_filter_is_not_all_series() {
 /// input does not: a BOM-prefixed file (Windows / Excel / PowerShell exports) fails on
 /// line 1 with "invalid JSON".
 #[test]
-#[ignore = "review finding 7"]
 fn ndjson_with_utf8_bom() {
     let t = T::new();
     t.ok(&["series", "create", "a", "--table", "t"], "");
@@ -149,4 +143,48 @@ fn ndjson_with_utf8_bom() {
     );
     input.push(b'\n');
     t.ok_bytes(&["write", "-", "--input", "ndjson"], &input);
+}
+
+/// Review finding 10: `verify` must catch content-identical duplicate versions of a point
+/// (here smuggled in through a hand-edited dump, since restore does not deduplicate).
+#[test]
+fn verify_detects_duplicate_versions() {
+    let t = T::new();
+    t.ok(&["series", "create", "a", "--table", "t"], "");
+    t.ok(
+        &["write", "-"],
+        "series,value_time,received_time,x\na,2025-01-01T00:00:00Z,2025-01-01T00:00:00Z,1\n",
+    );
+    let dump = t.dir.path().join("dump");
+    t.ok(&["dump", dump.to_str().unwrap()], "");
+    let table = dump.join("tables/t.ndjson");
+    let line = std::fs::read_to_string(&table).unwrap();
+    let dup = line.replacen("\"seq\": 1,", "\"seq\": 2,", 1);
+    let text = format!("{line}{dup}");
+    std::fs::write(&table, &text).unwrap();
+    let crc = format!("{:08x}", crc32c::crc32c(text.as_bytes()));
+    let manifest = dump.join("manifest.json");
+    let m = std::fs::read_to_string(&manifest).unwrap();
+    let old_crc = m.split("\"crc32c\": \"").last().unwrap()[..8].to_owned();
+    let m = m
+        .replace(&old_crc, &crc)
+        .replace("\"next_seq\": 2", "\"next_seq\": 3")
+        .replace("\"versions\": 1", "\"versions\": 2");
+    std::fs::write(&manifest, m).unwrap();
+    let restored = t.dir.path().join("restored");
+    t.ok(
+        &[
+            "restore",
+            dump.to_str().unwrap(),
+            restored.to_str().unwrap(),
+        ],
+        "",
+    );
+    let out = Command::new(BIN)
+        .args(["--db", restored.to_str().unwrap(), "verify"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("content-identical"), "{stdout}");
 }

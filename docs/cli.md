@@ -137,20 +137,35 @@ error: line 7, column "mw": type_mismatch: "12,5" is not an f64 (a number, NaN, 
 ```
 
 **Atomicity and resuming.** Without `--chunk-rows` the whole file is one batch: it is
-committed atomically or not at all. With `--chunk-rows N` the input is streamed and
-committed in batches of `N` rows, so **atomicity is per chunk**: a failure (a bad line
-or a crash) leaves the earlier chunks committed. Give the import a `--batch-id X` and
-chunk `k` gets the id `X/k`; re-running the same command (after fixing the input) skips
-the chunks that were committed (`batch_already_committed`) and writes the rest, so the
-import resumes idempotently. Without a batch id a re-run relies on deduplication, which
-only recognises rows with the same `received_time` (not `--received-time now`).
-Re-running with a *different* chunk size or a modified input before the failure point
-does not line up with the committed ids — keep both fixed.
+committed atomically or not at all, and `--batch-id X` is the SPEC §4.4 batch id (a
+second import with id `X` is a no-op, whatever its rows). With `--chunk-rows N` the input
+is streamed and committed in batches of `N` rows, so **atomicity is per chunk**: a
+failure (a bad line or a crash) leaves the earlier chunks committed.
+
+To resume, give the import a `--batch-id X`. Chunk `k` is committed under the id
+`X/k/<h>`, where `<h>` is a 64-bit hash of the input *text* of the chunk's rows (CSV:
+the header and each record's fields; NDJSON: each line) and of the options that shape
+rows (`--time-format`, the literal `--received-time` argument). Re-running the same
+command skips exactly the chunks whose rows were committed before and writes all
+others, so:
+
+- an unchanged input resumes where it stopped and a complete one is a no-op — even with
+  `--received-time now`, because the hash covers the argument `now`, not its value;
+- a chunk whose input changed (a fixed bad line, data that arrived later) gets a new id
+  and is written; a chunk is only ever skipped when the identical rows were committed;
+- an input without rows commits nothing — not even an id — so an import run before
+  its data is ready cannot make a later run skip anything.
+
+Keep `--chunk-rows` fixed between runs: a different chunk size changes every id, so
+everything is written again (rows with a fixed `received_time` are then dropped as
+duplicates; with `--received-time now` they become new versions). Without a batch id a
+re-run relies on deduplication alone.
 
 ## Reads
 
-`latest`, `history`, `replay` and `grid` take `--table` (required), `--series a,b`
-(default: all series of the table), the value range `--from` (inclusive) / `--to`
+`latest`, `history`, `replay` and `grid` take `--table` (required), `--series NAME`
+(repeat the flag for several series; names are taken verbatim, commas included; an empty
+name is an error; default: all series of the table), the value range `--from` (inclusive) / `--to`
 (exclusive), `--clock received|published|system` (default: the table's), and
 `--system S`. `latest`/`history` take `--frontier F`; `replay` takes `--since`
 (exclusive) and `--until` (inclusive); `grid` takes `--frontiers`, `--frontier-range`

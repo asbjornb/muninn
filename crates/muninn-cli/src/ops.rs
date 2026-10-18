@@ -154,6 +154,21 @@ pub fn info(ctx: &Context, f: FormatArg) -> Res<()> {
     }
 }
 
+fn content_hash(v: &muninn_core::types::Version) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (
+        v.series,
+        v.value_time,
+        v.published_time,
+        v.received_time,
+        v.deleted,
+        &v.values,
+    )
+        .hash(&mut h);
+    h.finish()
+}
+
 /// Order-insensitive form of a checkpoint, for comparing states.
 fn normalise(mut c: Checkpoint) -> Checkpoint {
     c.batch_ids.sort();
@@ -168,6 +183,7 @@ fn check_segment<S: Store>(
     st: &State,
     seg: &SegmentRef,
     seqs: &mut HashSet<u64>,
+    contents: &mut HashMap<u64, u64>,
     problems: &mut Vec<String>,
 ) -> u64 {
     let key = seg.key.as_str();
@@ -280,6 +296,17 @@ fn check_segment<S: Store>(
         if !seqs.insert(v.seq) {
             bad(format!("seq {} appears more than once", v.seq));
         }
+        if v.deleted && v.values.iter().any(Option::is_some) {
+            bad(format!("seq {}: a tombstone carries values", v.seq));
+        }
+        // SPEC §4.3: no two stored versions are content-identical (64-bit content hash;
+        // trailing nulls are trimmed by the decoder, f64 hash bitwise).
+        if let Some(other) = contents.insert(content_hash(v), v.seq) {
+            bad(format!(
+                "seq {} is content-identical to seq {other} (duplicate version of a point)",
+                v.seq
+            ));
+        }
     }
     if vt != Some(stats.value_time) || sy != Some(stats.system_time) {
         bad("footer time statistics do not match the rows".into());
@@ -340,6 +367,10 @@ pub fn verify(ctx: &Context) -> Res<()> {
         match read_checkpoint(&store, c) {
             Err(e) => problems.push(format!("checkpoint {c}: {}", e.message)),
             Ok(cp) => {
+                let unique: HashSet<&String> = cp.batch_ids.iter().collect();
+                if unique.len() != cp.batch_ids.len() {
+                    problems.push(format!("checkpoint {c} lists a batch id twice"));
+                }
                 if let Err(e) = State::from_checkpoint(&cp) {
                     problems.push(format!("checkpoint {c}: {e}"));
                 } else if cp.version != c {
@@ -378,7 +409,17 @@ pub fn verify(ctx: &Context) -> Res<()> {
             db.version(),
             state.version
         )),
-        Ok(_) => {}
+        Ok(db) => {
+            // The batch ids the engine serves are exactly those the log records.
+            let mut folded = state.to_checkpoint().batch_ids;
+            folded.sort();
+            match muninn_core::Database::snapshot(&db) {
+                Ok(snap) if snap.batch_ids() != folded => problems
+                    .push("the engine's batch ids differ from the ones recorded in the log".into()),
+                Ok(_) => {}
+                Err(e) => problems.push(format!("snapshot: {e}")),
+            }
+        }
         Err(e) => problems.push(format!(
             "the engine cannot open the database: {}",
             e.message
@@ -386,10 +427,24 @@ pub fn verify(ctx: &Context) -> Res<()> {
     }
     // Every live segment.
     let mut seqs = HashSet::new();
+    let mut contents = HashMap::new();
     let mut rows = 0u64;
     let segs: Vec<_> = state.segments().cloned().collect();
     for seg in &segs {
-        rows += check_segment(&store, &state, seg, &mut seqs, &mut problems);
+        rows += check_segment(&store, &state, seg, &mut seqs, &mut contents, &mut problems);
+    }
+    // Seqs are contiguous: every seq below next_seq is stored exactly once (SPEC §4.2:
+    // only stored rows consume seqs). Out-of-range and repeated seqs are reported above.
+    if seqs.len() as u64 != state.next_seq.saturating_sub(1) {
+        let missing: Vec<u64> = (1..state.next_seq)
+            .filter(|q| !seqs.contains(q))
+            .take(5)
+            .collect();
+        problems.push(format!(
+            "{} of the seqs 1..{} are stored (missing e.g. {missing:?})",
+            seqs.len(),
+            state.next_seq
+        ));
     }
     // Orphans (harmless; gc removes them).
     let live: HashSet<&Key> = segs.iter().map(|s| &s.key).collect();

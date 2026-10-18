@@ -261,8 +261,9 @@ pub struct ReadCommon {
     /// Table to read.
     #[arg(long)]
     pub table: String,
-    /// Series filter (comma-separated and/or repeated); default every series of the table.
-    #[arg(long, value_delimiter = ',')]
+    /// Series filter: one exact series name per flag (repeat for several; names may
+    /// contain commas); default every series of the table.
+    #[arg(long = "series", value_name = "NAME")]
     pub series: Vec<String>,
     /// Value range start (inclusive).
     #[arg(long, value_name = "TIMESTAMP")]
