@@ -1,0 +1,16 @@
+[package]
+name = "muninn-core"
+description = "Muninn shared vocabulary (time, types, errors, API) and the in-memory spec model"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

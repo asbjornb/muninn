@@ -1,0 +1,18 @@
+version: '3'
+
+tasks:
+  test:
+    desc: Run every Rust test (unit, property, store backends, scenario corpus)
+    cmds:
+      - cargo test --workspace
+
+  lint:
+    desc: Check formatting and run clippy with warnings as errors
+    cmds:
+      - cargo fmt --all --check
+      - cargo clippy --workspace --all-targets -- -D warnings
+
+  fmt:
+    desc: Format all Rust code
+    cmds:
+      - cargo fmt --all
