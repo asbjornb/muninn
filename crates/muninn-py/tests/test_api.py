@@ -417,9 +417,10 @@ def test_receipts_replay_bit_for_bit():
     assert receipts[0]["op"] == "latest" and receipts[0]["clock"] == "published"
     assert receipts[0]["frontier"] == "2025-01-15T13:00:00Z"
     assert receipts[0]["request"]["series"] == ["wind"]
-    assert receipts[0]["system_source"] == "snapshot"
     assert receipts[0]["system"] == "2025-01-15T18:06:00Z"  # S from the snapshot
-    assert receipts[2]["system_source"] == "request"
+    assert receipts[2]["system"] == "2025-01-15T13:00:00Z"  # S as given (<= L)
+    assert muninn.receipt(db.latest("fc", system="2030-01-01T00:00:00Z"))["system"] == (
+        "2025-01-15T18:06:00Z")  # clamped to L (SPEC §11)
     # Later writes (new forecast run, corrections, a new column) change nothing at S.
     db.write([{"series": "wind", "value_time": T0 + k * H, "published_time": T0 + 7 * H,
                "received_time": T0 + 7 * H, "value": -1.0} for k in range(10, 40)],
@@ -448,7 +449,7 @@ def test_receipt_of_empty_snapshot():
     db.create_series("s", "t")
     t = db.latest("t")
     r = muninn.receipt(t)
-    assert r["system"] is None and r["system_source"] == "empty_snapshot"
+    assert r["system"] == "EMPTY"
     db.write([{"series": "s", "value_time": 0, "received_time": 0, "v": 1.0}], clock=T0)
     again = muninn.replay_receipt(db, t)
     assert again.num_rows == 0 and again.equals(t) and muninn.receipt(again) == r
@@ -571,3 +572,48 @@ def test_persistence_across_reopen(tmp_path):
     (tmp_path / "other" / "file.txt").write_text("x")
     with pytest.raises(muninn.IoError, match="not a Muninn database"):
         muninn.open(tmp_path / "other", create=True)
+
+
+def test_polars_and_arrow_frontiers_reject_sub_microseconds(db):
+    db.write(as_arrow(), clock=T0)
+    ns = pl.Series([dt.datetime(2025, 1, 15, 12, tzinfo=UTC)]).cast(pl.Datetime("ns", "UTC"))
+    assert db.grid("prices", ns).num_rows == db.grid("prices", [T0]).num_rows
+    bad = pl.Series([1736942400000000001]).cast(pl.Datetime("ns", "UTC"))
+    with pytest.raises(muninn.InvalidTimestampError, match="sub-microsecond"):
+        db.grid("prices", bad)
+    with pytest.raises(muninn.InvalidTimestampError, match="sub-microsecond"):
+        db.grid("prices", pa.array([1736942400000000001], pa.timestamp("ns", tz="UTC")))
+    with pytest.raises(muninn.InvalidTimestampError, match="naive"):
+        db.grid("prices", pa.array([0], pa.timestamp("us")))
+
+
+def test_series_id_value_column_is_never_clobbered():
+    db = muninn.memory()
+    db.create_table("t", {"series_id": "string", "x": "f64"})
+    db.create_series("a", "t")
+    db.write([{"series": "a", "value_time": 0, "received_time": 0, "series_id": "v", "x": 1.0}],
+             clock=T0)
+    for t in (db.latest("t"), db.history("t"), db.replay("t"), db.grid("t", [T0])):
+        assert t.column("series_id").to_pylist() == ["v"]
+        assert t.column("_series_id").to_pylist() == [1]
+    j = db.asof_join("t", [{"series": "a", "value_time": 0, "frontier": T0}])
+    assert j.column("series_id").to_pylist() == ["v"] and j.column("_series_id").to_pylist() == [1]
+    # Schema per op is fixed whatever matched (SPEC §11 replay equality, concat_tables).
+    miss = db.asof_join("t", [{"series": "a", "value_time": 5, "frontier": T0}])
+    assert miss.schema.remove_metadata() == j.schema.remove_metadata()
+
+
+def test_pandas_fallback_reports_spec_codes(db):
+    with pytest.raises(muninn.TypeMismatchError):
+        db.write(pd.DataFrame({"series": ["DK1"], "value_time": [T0], "received_time": [T0],
+                               "volume": [2**64]}))
+    with pytest.raises(muninn.TypeMismatchError):
+        db.write(pd.DataFrame({"series": ["DK1", "DK1"], "value_time": [T0, T0 + H],
+                               "received_time": [T0, T0], "value": [1.0, "z"]}))
+    # Mixed but valid objects are written through the row path.
+    r = db.write(pd.DataFrame({"series": ["DK1", "DK1"], "value_time": [T0, T0 + H],
+                               "received_time": [T0, T0], "value": [1.0, "NaN"]}), clock=T0)
+    assert r.stored == 2
+    with pytest.raises(muninn.InvalidArgumentError):
+        db.asof_join("prices", pd.DataFrame({"series": ["DK1"], "value_time": [T0],
+                                             "frontier": [T0], "o": [object()]}))

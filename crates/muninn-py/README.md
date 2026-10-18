@@ -82,9 +82,11 @@ wrong. Muninn doesn't depend on getting those right:
   instead of being read as local time or truncated. `NaT` as a frontier is an error and
   never means "unbounded".
 - **Results are reproducible.** Each result's schema metadata holds a receipt
-  `(table, op, request, clock, F, S)`, where `S` is the snapshot's greatest `system_time`
-  if you gave none. `muninn.replay_receipt(db, receipt)` re-runs the read and returns the
-  same rows bit for bit, even after later writes and corrections (SPEC §7.3, §11).
+  `(table, op, request, clock, F, S, columns)`. `S` is the effective system bound of
+  SPEC §11: `min(S_given, L)`, where `L` is the snapshot's greatest `system_time` (`L` if
+  you gave none), or the marker `"EMPTY"` for an empty snapshot, which replays with no rows. `muninn.replay_receipt(db, receipt)` re-runs the read and returns the
+  same rows bit for bit, with the same schema (the receipt's columns), even after later
+  writes, corrections and `add_column`s (SPEC §7.3, §11).
 
 So an agent or a quant writing `db.latest(table, frontier=t)` in a loop gets a query that
 can't leak, whatever else they get wrong.
@@ -130,9 +132,14 @@ spec's nested form `{"values": {...}}`, and then it can't have any other keys.
   wrap. Integers written to `f64` columns are converted.
 - In columnar input a null cell is the same as a missing value. That's how one batch can
   span tables with different columns.
+- A pandas frame that pyarrow can't convert (mixed object columns, integers beyond 64 bits)
+  is written through the row path instead, so bad values raise `TypeMismatchError` like
+  every other input.
 
-**Read output.** You get a `pyarrow.Table` in spec order. It has `series` (name) and
-`series_id`, then `value_time`, `published_time`, `received_time`, `system_time` (all
+**Read output.** You get a `pyarrow.Table` in spec order, with a fixed schema per op
+(it never depends on which rows matched). It has `series` (name) and the series id
+(`series_id`, or `_series_id` when the table has a value column called `series_id`; a
+leading underscore can't be a column name, so user columns are never clobbered), then `value_time`, `published_time`, `received_time`, `system_time` (all
 `timestamp[us, tz=UTC]`), `seq` (`uint64`), `deleted` (history/replay), and the value
 columns (`float64`, `int64`, `bool`, `string`, `timestamp[us, tz=UTC]`). `grid` puts
 `frontier` first. Time arguments accept `datetime`, `pandas.Timestamp`, `numpy.datetime64`,
@@ -182,6 +189,3 @@ pyarrow (≥ 14) is the only runtime Python dependency; pandas and polars are op
 - An `asof_join` receipt includes every left row.
 - Only local directories and memory are supported (no object stores yet). One writer per
   database, and `refresh()` picks up another process's commits.
-- A receipt taken on an empty database records `S` as "empty". Replaying it reads at
-  `0001-01-01T00:00:00Z`, which matches only if no version was ever committed with that
-  exact writer clock.

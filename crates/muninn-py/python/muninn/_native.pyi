@@ -17,23 +17,28 @@ class Snapshot:
     def series_list(self, table: str | None = None) -> list[dict[str, Any]]: ...
     def latest(
         self, table: object, series: list[str] | None, value_from: _Time, value_to: _Time,
-        clock: str | None, frontier: _Time, system: _Time,
+        clock: str | None, frontier: _Time, system: _Time, *,
+        as_of_columns: list[str] | None = None, empty: bool = False,
     ) -> Any: ...  # pyarrow.Table
     def history(
         self, table: object, series: list[str] | None, value_from: _Time, value_to: _Time,
-        clock: str | None, frontier: _Time, system: _Time,
+        clock: str | None, frontier: _Time, system: _Time, *,
+        as_of_columns: list[str] | None = None, empty: bool = False,
     ) -> Any: ...
     def replay(
         self, table: object, series: list[str] | None, value_from: _Time, value_to: _Time,
-        clock: str | None, system: _Time, from_: _Time, to: _Time,
+        clock: str | None, system: _Time, from_: _Time, to: _Time, *,
+        as_of_columns: list[str] | None = None, empty: bool = False,
     ) -> Any: ...
     def grid(
         self, table: object, frontiers: list[_Time] | None, series: list[str] | None,
         value_from: _Time, value_to: _Time, window_start: int | str | object | None,
-        window_end: int | str | object | None, clock: str | None, system: _Time,
+        window_end: int | str | object | None, clock: str | None, system: _Time, *,
+        as_of_columns: list[str] | None = None, empty: bool = False,
     ) -> Any: ...
     def asof_join(
-        self, table: object, left: Any, clock: str | None, system: _Time, assume_utc: bool,
+        self, table: object, left: Any, clock: str | None, system: _Time, assume_utc: bool, *,
+        as_of_columns: list[str] | None = None, empty: bool = False,
     ) -> Any: ...
 
 class Database:

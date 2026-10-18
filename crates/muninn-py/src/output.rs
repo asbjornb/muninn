@@ -65,14 +65,16 @@ impl Out {
     }
 }
 
-/// The version fields shared by every op (`r` is `None` for an `asof_join` miss).
+/// The version fields shared by every op (`r` is `None` for an `asof_join` miss). The
+/// schema is fixed per op: `nullable` (only `asof_join`, whose right side may be missing)
+/// never depends on the rows.
 fn version_fields(
     out: &mut Out,
     columns: &[ColumnDef],
     rows: &[Option<&VersionRow>],
     with_deleted: bool,
+    nullable: bool,
 ) {
-    let all_found = rows.iter().all(Option::is_some);
     out.ts(
         "published_time",
         true,
@@ -80,19 +82,19 @@ fn version_fields(
     );
     out.ts(
         "received_time",
-        !all_found,
+        nullable,
         rows.iter().map(|r| r.map(|r| r.received_time)),
     );
     out.ts(
         "system_time",
-        !all_found,
+        nullable,
         rows.iter().map(|r| r.map(|r| r.system_time)),
     );
     let mut seq = UInt64Builder::with_capacity(rows.len());
     for r in rows {
         seq.append_option(r.map(|r| r.seq));
     }
-    out.push("seq", DataType::UInt64, !all_found, Arc::new(seq.finish()));
+    out.push("seq", DataType::UInt64, nullable, Arc::new(seq.finish()));
     if with_deleted {
         let mut d = BooleanBuilder::with_capacity(rows.len());
         for r in rows {
@@ -162,8 +164,18 @@ fn has_column(columns: &[ColumnDef], name: &str) -> bool {
     columns.iter().any(|c| c.name == name)
 }
 
-/// `series` (name) and `series_id` — the id column is left out if the table happens to
-/// have a value column called `series_id` (the name is not reserved by SPEC §2.1).
+/// The name of the series id output column: `series_id`, or `_series_id` if the output
+/// has a value column called `series_id` (not reserved by SPEC §2.1). Column names match
+/// `[a-z][a-z0-9_]*`, so `_series_id` can never clash with a value column.
+pub(crate) fn id_column(columns: &[ColumnDef]) -> &'static str {
+    if has_column(columns, "series_id") {
+        "_series_id"
+    } else {
+        "series_id"
+    }
+}
+
+/// `series` (name) and the series id column ([`id_column`]).
 fn series_fields<'a>(
     out: &mut Out,
     columns: &[ColumnDef],
@@ -176,9 +188,12 @@ fn series_fields<'a>(
         ids.append_value(id);
     }
     out.push("series", DataType::Utf8, false, Arc::new(names.finish()));
-    if !has_column(columns, "series_id") {
-        out.push("series_id", DataType::UInt32, false, Arc::new(ids.finish()));
-    }
+    out.push(
+        id_column(columns),
+        DataType::UInt32,
+        false,
+        Arc::new(ids.finish()),
+    );
 }
 
 /// `latest` / `history` / `replay` rows.
@@ -199,7 +214,7 @@ pub(crate) fn versions_batch(
         res.rows.iter().map(|r| Some(r.value_time)),
     );
     let rows: Vec<Option<&VersionRow>> = res.rows.iter().map(Some).collect();
-    version_fields(&mut out, &res.columns, &rows, with_deleted);
+    version_fields(&mut out, &res.columns, &rows, with_deleted, false);
     out.finish(receipt)
 }
 
@@ -218,7 +233,7 @@ pub(crate) fn grid_batch(res: &ReadResult<GridRow>, receipt: String) -> Result<R
         res.rows.iter().map(|r| Some(r.row.value_time)),
     );
     let rows: Vec<Option<&VersionRow>> = res.rows.iter().map(|r| Some(&r.row)).collect();
-    version_fields(&mut out, &res.columns, &rows, false);
+    version_fields(&mut out, &res.columns, &rows, false, false);
     out.finish(receipt)
 }
 
@@ -243,6 +258,6 @@ pub(crate) fn asof_batch(res: &ReadResult<AsofRow>, receipt: String) -> Result<R
     }
     out.push("found", DataType::Boolean, false, Arc::new(found.finish()));
     let rows: Vec<Option<&VersionRow>> = res.rows.iter().map(|r| r.right.as_ref()).collect();
-    version_fields(&mut out, &res.columns, &rows, false);
+    version_fields(&mut out, &res.columns, &rows, false, true);
     out.finish(receipt)
 }

@@ -165,17 +165,25 @@ def _is_pandas_df(x: Any) -> bool:
     return pd is not None and isinstance(x, pd.DataFrame)
 
 
-def to_arrow(x: Any) -> Any:
+def to_arrow(x: Any, records_fallback: bool = False) -> Any:
     """pyarrow Table / RecordBatch / RecordBatchReader, polars DataFrame, pandas DataFrame,
     or anything with ``__arrow_c_stream__`` → an object with ``__arrow_c_stream__``;
-    ``None`` if ``x`` is none of these."""
+    ``None`` if ``x`` is none of these. With ``records_fallback``, a pandas frame pyarrow
+    cannot convert becomes a list of row dicts instead."""
     import pyarrow as pa
 
     if isinstance(x, pa.RecordBatch):
         return pa.Table.from_batches([x])
     if _is_pandas_df(x):
         # pandas missing values (NaN in float columns, None, NaT) become nulls.
-        return pa.Table.from_pandas(x, preserve_index=False)
+        try:
+            return pa.Table.from_pandas(x, preserve_index=False)
+        except (pa.ArrowException, OverflowError, TypeError, ValueError):
+            if not records_fallback:
+                raise
+            # Columns pyarrow cannot type (mixed objects, ints beyond 64 bits): go through
+            # the row path, which reports type_mismatch / invalid_argument per SPEC §4.1.
+            return x.astype(object).where(x.notna(), None).to_dict("records")
     if is_arrow(x):
         return x
     to = getattr(x, "to_arrow", None)  # older polars
@@ -187,7 +195,10 @@ def to_arrow(x: Any) -> Any:
 def as_pa_table(x: Any) -> Any:
     import pyarrow as pa
 
-    a = to_arrow(x)
+    try:
+        a = to_arrow(x)
+    except (pa.ArrowException, OverflowError, TypeError, ValueError) as e:
+        raise InvalidArgumentError(f"cannot convert to Arrow: {e}") from e
     if a is None:
         return None
     return a if isinstance(a, pa.Table) else pa.table(a)
@@ -213,13 +224,56 @@ def frontiers_arg(frontiers: Any) -> Any:
     the native module rejects it)."""
     if frontiers is None or isinstance(frontiers, (str, bytes, dict)):
         return None
-    if hasattr(frontiers, "to_pylist"):  # pyarrow
-        frontiers = frontiers.to_pylist()
+    arr = _as_arrow_array(frontiers)
+    if arr is not None:
+        return _arrow_times(arr)
     try:
         items = list(frontiers)
     except TypeError:
         return None
     return [_read_time(f) for f in items]
+
+
+_ARROW_UNIT_MUL = {"s": 1_000_000, "ms": 1_000, "us": 1, "ns": 1}
+
+
+def _as_arrow_array(x: Any) -> Any:
+    """A pyarrow / polars array-like → ``pyarrow.Array`` (``None`` for anything else).
+    Going through Arrow keeps the exact integer values: converting to Python datetimes
+    first would silently floor sub-microsecond parts."""
+    import pyarrow as pa
+
+    if isinstance(x, pa.ChunkedArray):
+        return x.combine_chunks()
+    if isinstance(x, pa.Array):
+        return x
+    if type(x).__module__.startswith("polars"):
+        to = getattr(x, "to_arrow", None)
+        if callable(to):
+            a = to()
+            return a.combine_chunks() if isinstance(a, pa.ChunkedArray) else a
+    return None
+
+
+def _arrow_times(arr: Any) -> list:
+    """Exact µs (or :class:`_Invalid`) for each element of an Arrow array of times."""
+    import pyarrow as pa
+
+    t = arr.type
+    if pa.types.is_timestamp(t):
+        if t.tz is None:
+            return [_Invalid("naive timestamp (no time zone) in frontiers")] * len(arr)
+        out = []
+        for v in arr.cast(pa.int64()).to_pylist():
+            if v is None:
+                out.append(_Invalid("null is not a frontier"))
+            elif t.unit == "ns":
+                out.append(_Invalid(f"{v} ns has a sub-microsecond part (Muninn stores "
+                                    "microseconds)") if v % 1000 else v // 1000)
+            else:
+                out.append(v * _ARROW_UNIT_MUL[t.unit])
+        return out
+    return [_read_time(v) for v in arr.to_pylist()]
 
 
 def _read_time(x: Any) -> Any:

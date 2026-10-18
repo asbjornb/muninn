@@ -1,5 +1,5 @@
 """Adversarial review (round 2) of the Python bindings: each test reproduces one finding and
-is expected to fail until it is fixed (``xfail(strict=True)``)."""
+was fixed; the tests guard against regressions."""
 
 import pyarrow as pa
 import pandas as pd
@@ -21,7 +21,6 @@ def _row(vt=VT, **values):
     return {"series": "a", "value_time": vt, "received_time": VT, **values}
 
 
-@pytest.mark.xfail(strict=True, reason="review finding 1")
 def test_receipt_with_explicit_system_beyond_snapshot_replays_identically():
     # SPEC §11 / §7.3: replaying a receipt returns the same rows. A read with an explicit
     # S later than the snapshot's last system_time records that S verbatim, so a later
@@ -37,7 +36,6 @@ def test_receipt_with_explicit_system_beyond_snapshot_replays_identically():
     assert again.equals(first)
 
 
-@pytest.mark.xfail(strict=True, reason="review finding 3")
 def test_asof_join_with_table_left_keeps_value_column_named_series_id():
     # `series_id` is not a reserved column name (SPEC §2.1). With a list-of-dicts left
     # the value is returned; with an Arrow/pandas left `_db.asof_join` skips every result
@@ -56,7 +54,6 @@ def test_asof_join_with_table_left_keeps_value_column_named_series_id():
     assert res.column("series_id").to_pylist() == ["hello"]
 
 
-@pytest.mark.xfail(strict=True, reason="review finding 4")
 def test_replay_receipt_after_adding_series_id_column_keeps_original_schema():
     # The output drops the `series_id` id column when the table has a value column of that
     # name. After `add_column("series_id")` the replay projects the new column away, but
@@ -70,7 +67,6 @@ def test_replay_receipt_after_adding_series_id_column_keeps_original_schema():
     assert again.equals(first)
 
 
-@pytest.mark.xfail(strict=True, reason="review finding 5")
 def test_empty_snapshot_receipt_replays_identically():
     # A receipt of an empty snapshot has system = null and is replayed at S = MIN. The
     # first batch of a database may be committed at exactly MIN (writer clock MIN), and
@@ -85,7 +81,6 @@ def test_empty_snapshot_receipt_replays_identically():
     assert muninn.replay_receipt(db, first).num_rows == 0
 
 
-@pytest.mark.xfail(strict=True, reason="review finding 8")
 def test_asof_join_result_schema_does_not_depend_on_matches():
     # Nullability of received_time/system_time/seq is `not null` when every left row
     # matched and nullable otherwise, so two results of the same query shape cannot be
@@ -101,7 +96,6 @@ def test_asof_join_result_schema_does_not_depend_on_matches():
     assert pa.concat_tables([hit, miss]).num_rows == 2
 
 
-@pytest.mark.xfail(strict=True, reason="review finding 9")
 def test_pandas_conversion_failures_are_muninn_errors():
     # Every other bad input raises a MuninnError (type_mismatch / invalid_argument); a
     # pandas object column that pyarrow cannot convert leaks pyarrow / builtin exceptions.
