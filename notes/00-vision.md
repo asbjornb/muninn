@@ -34,7 +34,9 @@ Typical questions:
 2. **Append-only truth.** Corrections are new facts. Nothing is rewritten in place.
 3. **Deterministic answers.** Same query + same knowledge frontier = same result,
    regardless of compaction state, ingestion order of ties, etc.
-4. **Fast enough to not be the bottleneck** in a backtest loop. Columnar, mmap, prune hard.
+4. **Fast and small enough to sell itself.** Never the bottleneck in a backtest loop, and
+   aim for ~10× over the best-tuned competitor on some workloads (compression of forecast
+   vintages, frontier-grid reads). See `10-ambition.md`.
 5. **Small enough to understand.** One person should be able to hold the whole engine in
    their head. Simplicity beats features.
 6. **Easy to get data in and out.** CSV/Parquet/Arrow in and out from day one; a
