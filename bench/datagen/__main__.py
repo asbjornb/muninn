@@ -22,7 +22,7 @@ from pathlib import Path
 from .common import SeriesSpec, VersionWriter, write_catalog
 from .datasets import DATASETS, SCALES, START, now_of
 
-GENERATOR_VERSION = 1
+GENERATOR_VERSION = 2
 
 
 def generate_dataset(name: str, scale: str, seed: int, out: Path) -> dict:

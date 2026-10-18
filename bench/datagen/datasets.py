@@ -81,8 +81,12 @@ def _da_prices(seed, sid, day, switch_day):
     level = base + 12 * g.standard_normal()
     noise = np.cumsum(g.standard_normal(n)) * (2.0 if step == H else 1.0)
     spikes = (g.random(n) < 0.01) * g.exponential(150, n)
-    p = level + shape + noise + spikes
-    return START + day * DAY + np.arange(n) * step, _r2(p, 2)
+    p = _r2(level + shape + noise + spikes, 2)
+    # sign of zero: feeds that round small negatives emit -0.0 next to 0.0. SPEC compares
+    # f64 bitwise, so a system must keep them apart (DuckDB's Parquet dictionary does not)
+    zero = g.random(n) < Q(0.002)
+    p = np.where(zero, np.where(g.random(n) < 0.5, -0.0, 0.0), p)
+    return START + day * DAY + np.arange(n) * step, p
 
 
 def _da_events(seed, sid, x, n):

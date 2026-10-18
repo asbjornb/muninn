@@ -122,8 +122,11 @@ class ClickHouseAdapter(Adapter):
         for sub in ("log", "data", "tmp", "user_files", "format_schemas"):
             (d / sub).mkdir(parents=True, exist_ok=True)
         self.http = _free_port()
+        tcp = _free_port()
+        while tcp == self.http:
+            tcp = _free_port()
         cfg = d / "config.xml"
-        cfg.write_text(CONFIG.format(d=d, http=self.http, tcp=_free_port(), threads=self.threads,
+        cfg.write_text(CONFIG.format(d=d, http=self.http, tcp=tcp, threads=self.threads,
                                      mem=self.memory_limit_mb * 1024 * 1024,
                                      # server-wide cap: per-query limit + 1 GB for caches/background
                                      server_mem=(self.memory_limit_mb + 1024) * 1024 * 1024))

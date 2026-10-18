@@ -120,7 +120,10 @@ class DuckDBAdapter(Adapter):
         else:
             self._connect(read_only=False, view=False)
             self.con.execute(f"COPY ({select}) TO '{self.pq_path}' "
-                             "(FORMAT parquet, COMPRESSION zstd, ROW_GROUP_SIZE 122880)")
+                             # no dictionary: DuckDB's Parquet dictionary merges -0.0
+                             # and 0.0 (they compare equal), which changes results
+                             "(FORMAT parquet, COMPRESSION zstd, ROW_GROUP_SIZE 122880, "
+                             "DICTIONARY_SIZE_LIMIT 0)")
             max_seq = self.con.execute(
                 f"SELECT max(seq) FROM read_parquet('{self.pq_path}')").fetchone()[0]
             self.con.close()
@@ -178,12 +181,14 @@ class DuckDBAdapter(Adapter):
                      f"(PARTITION BY series_id, value_time ORDER BY {tc(clk)} DESC, seq DESC) = 1) "
                      f"WHERE NOT deleted ORDER BY series_id, value_time")
             else:
+                # One arg_max_null per column (plain arg_max skips NULL arguments). A single
+                # arg_max(struct_pack(...)) would be simpler but turns -0.0 into 0.0 in
+                # DuckDB 1.5.6, which breaks SPEC's bitwise f64 results.
                 fields = ["published_time", "received_time", "system_time", "seq", "deleted"] + self.columns
-                pack = ", ".join(f"{f} := {f}" for f in fields)
-                s = (f"SELECT series_id, value_time, w.published_time, w.received_time, w.system_time, "
-                     f"w.seq{self._cols('w.')} FROM (SELECT series_id, value_time, "
-                     f"arg_max(struct_pack({pack}), {key(clk)}) AS w FROM v WHERE {w} "
-                     f"GROUP BY series_id, value_time) WHERE NOT w.deleted ORDER BY series_id, value_time")
+                aggs = ", ".join(f"arg_max_null({f}, {key(clk)}) AS {f}" for f in fields)
+                s = (f"SELECT series_id, value_time, published_time, received_time, system_time, "
+                     f"seq{self._cols()} FROM (SELECT series_id, value_time, {aggs} FROM v WHERE {w} "
+                     f"GROUP BY series_id, value_time) WHERE NOT deleted ORDER BY series_id, value_time")
         elif op == "history":
             w = self._where(q)
             lf = q.get("lead_filter")
