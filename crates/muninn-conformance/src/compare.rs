@@ -4,8 +4,8 @@
 use std::sync::Arc;
 
 use muninn_core::api::{AsofRow, GridRow, ReadResult, VersionRow};
+use muninn_core::wire::{Wire, encode_value};
 use muninn_core::{ColumnDef, ColumnType, Timestamp, Value};
-use serde_json::Value as Json;
 
 /// The read operations, which determine the output fields (SPEC §6, §9).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -18,6 +18,17 @@ pub(crate) enum ReadOp {
 }
 
 impl ReadOp {
+    pub fn from_op(op: &str) -> Option<ReadOp> {
+        Some(match op {
+            "latest" => ReadOp::Latest,
+            "history" => ReadOp::History,
+            "replay" => ReadOp::Replay,
+            "grid" => ReadOp::Grid,
+            "asof_join" => ReadOp::AsofJoin,
+            _ => return None,
+        })
+    }
+
     /// Exactly the fields of a full expected row, in spec order.
     fn fields(self) -> &'static [&'static str] {
         const LATEST: &[&str] = &[
@@ -197,21 +208,6 @@ impl Actual {
 // Rendering (for diffs)
 // ---------------------------------------------------------------------------------------
 
-fn render_value(v: Option<&Value>) -> String {
-    match v {
-        None => "null".into(),
-        Some(Value::F64(x)) if x.is_nan() => "\"NaN\"".into(),
-        Some(Value::F64(x)) if x.is_infinite() => {
-            (if *x > 0.0 { "\"inf\"" } else { "\"-inf\"" }).into()
-        }
-        Some(Value::F64(x)) => format!("{x:?}"),
-        Some(Value::I64(x)) => x.to_string(),
-        Some(Value::Bool(x)) => x.to_string(),
-        Some(Value::String(s)) => Json::String(s.clone()).to_string(),
-        Some(Value::Timestamp(t)) => format!("\"{t}\""),
-    }
-}
-
 fn render_values(
     columns: &[ColumnDef],
     values: &Option<Vec<Option<Value>>>,
@@ -220,24 +216,23 @@ fn render_values(
     let Some(values) = values else {
         return "null".into();
     };
-    let parts: Vec<String> = columns
+    let fields: Vec<(String, Wire)> = columns
         .iter()
         .enumerate()
         .filter(|(_, c)| only.is_none_or(|o| o.contains(&c.name)))
         .map(|(i, c)| {
-            format!(
-                "\"{}\": {}",
-                c.name,
-                render_value(values.get(i).and_then(Option::as_ref))
+            (
+                c.name.clone(),
+                encode_value(values.get(i).and_then(Option::as_ref)),
             )
         })
         .collect();
-    format!("{{{}}}", parts.join(", "))
+    Wire::Object(fields).to_string()
 }
 
 fn render_field(columns: &[ColumnDef], f: &Field) -> String {
     match f {
-        Field::Name(s) => Json::String(s.to_string()).to_string(),
+        Field::Name(s) => Wire::String(s.to_string()).to_string(),
         Field::Time(Some(t)) => format!("\"{t}\""),
         Field::Time(None) | Field::Seq(None) => "null".into(),
         Field::Seq(Some(n)) => n.to_string(),
@@ -258,7 +253,7 @@ pub(crate) fn render_full(a: &Actual, row: &ActualRow) -> String {
 
 /// Renders an actual row in the `values` sugar form (only the columns `expected` names,
 /// when it is a values object).
-pub(crate) fn render_sugar(a: &Actual, row: &ActualRow, expected: Option<&Json>) -> String {
+pub(crate) fn render_sugar(a: &Actual, row: &ActualRow, expected: Option<&Wire>) -> String {
     let mut parts: Vec<String> =
         a.op.sugar_fields()
             .iter()
@@ -268,10 +263,10 @@ pub(crate) fn render_sugar(a: &Actual, row: &ActualRow, expected: Option<&Json>)
             })
             .collect();
     let only: Option<Vec<String>> = expected
-        .and_then(|e| e.as_array())
-        .and_then(|arr| arr.last())
-        .and_then(Json::as_object)
-        .map(|o| o.keys().cloned().collect());
+        .and_then(Wire::as_array)
+        .and_then(<[Wire]>::last)
+        .and_then(Wire::as_object)
+        .map(|o| o.iter().map(|(k, _)| k.clone()).collect());
     let last = match (a.op, row.get("values")) {
         (ReadOp::History | ReadOp::Replay, _) if row.deleted() => "\"deleted\"".into(),
         (_, Some(Field::Values(v))) => render_values(&a.columns, v, only.as_deref()),
@@ -285,10 +280,10 @@ pub(crate) fn render_sugar(a: &Actual, row: &ActualRow, expected: Option<&Json>)
 // Comparison
 // ---------------------------------------------------------------------------------------
 
-fn parse_expected_time(j: &Json) -> Result<Option<Timestamp>, String> {
+fn parse_expected_time(j: &Wire) -> Result<Option<Timestamp>, String> {
     match j {
-        Json::Null => Ok(None),
-        Json::String(s) => Timestamp::parse(s)
+        Wire::Null => Ok(None),
+        Wire::String(s) => Timestamp::parse(s)
             .map(Some)
             .map_err(|e| format!("bad expected timestamp: {e}")),
         other => Err(format!(
@@ -297,12 +292,13 @@ fn parse_expected_time(j: &Json) -> Result<Option<Timestamp>, String> {
     }
 }
 
-/// SPEC §9: f64 bitwise, except that a JSON number in the expectation is parsed to the
-/// nearest f64; non-finite values are the strings "NaN", "inf", "-inf".
-fn expected_f64(j: &Json) -> Option<f64> {
+/// SPEC §9/§10.2: f64 bitwise, a JSON number in the expectation parsed to the nearest
+/// f64 (the integer token `-0` is -0.0); non-finite values are "NaN", "inf", "-inf".
+fn expected_f64(j: &Wire) -> Option<f64> {
     match j {
-        Json::Number(n) => n.as_f64(),
-        Json::String(s) => match s.as_str() {
+        Wire::Number(n) if n == "-0" => Some(-0.0),
+        Wire::Number(n) => n.parse().ok(),
+        Wire::String(s) => match s.as_str() {
             "NaN" => Some(f64::NAN),
             "inf" => Some(f64::INFINITY),
             "-inf" => Some(f64::NEG_INFINITY),
@@ -312,9 +308,23 @@ fn expected_f64(j: &Json) -> Option<f64> {
     }
 }
 
+/// i64 expectations: an integer token or a decimal string, compared as integers.
+fn expected_i64(j: &Wire) -> Option<i64> {
+    let text = match j {
+        Wire::Number(n) if j.is_integer_token() => n.as_str(),
+        Wire::String(s) => s.as_str(),
+        _ => return None,
+    };
+    let digits = text.strip_prefix('-').unwrap_or(text);
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    text.parse().ok()
+}
+
 /// Compares one column value; `Err` describes the mismatch.
-fn compare_value(ty: ColumnType, expected: &Json, actual: Option<&Value>) -> Result<(), String> {
-    let mismatch = || Err(format!("expected {expected}, got {}", render_value(actual)));
+fn compare_value(ty: ColumnType, expected: &Wire, actual: Option<&Value>) -> Result<(), String> {
+    let mismatch = || Err(format!("expected {expected}, got {}", encode_value(actual)));
     let Some(actual) = actual else {
         return if expected.is_null() {
             Ok(())
@@ -326,12 +336,8 @@ fn compare_value(ty: ColumnType, expected: &Json, actual: Option<&Value>) -> Res
         (ColumnType::F64, Value::F64(x)) => {
             expected_f64(expected).is_some_and(|e| e.to_bits() == x.to_bits())
         }
-        (ColumnType::I64, Value::I64(x)) => match expected {
-            Json::Number(n) => n.as_i64() == Some(*x),
-            Json::String(s) => s.parse::<i64>().ok() == Some(*x),
-            _ => false,
-        },
-        (ColumnType::Bool, Value::Bool(x)) => expected.as_bool() == Some(*x),
+        (ColumnType::I64, Value::I64(x)) => expected_i64(expected) == Some(*x),
+        (ColumnType::Bool, Value::Bool(x)) => *expected == Wire::Bool(*x),
         (ColumnType::String, Value::String(x)) => expected.as_str() == Some(x.as_str()),
         (ColumnType::Timestamp, Value::Timestamp(x)) => {
             expected.as_str().and_then(|s| Timestamp::parse(s).ok()) == Some(*x)
@@ -344,7 +350,7 @@ fn compare_value(ty: ColumnType, expected: &Json, actual: Option<&Value>) -> Res
 /// Compares a values object. `full`: the object must name exactly the current columns.
 fn compare_values(
     columns: &[ColumnDef],
-    expected: &Json,
+    expected: &Wire,
     actual: &Option<Vec<Option<Value>>>,
     full: bool,
 ) -> Result<(), String> {
@@ -358,7 +364,7 @@ fn compare_values(
     let Some(obj) = expected.as_object() else {
         return Err(format!("expected values {expected}, got an object"));
     };
-    for k in obj.keys() {
+    for (k, _) in obj {
         if !columns.iter().any(|c| &c.name == k) {
             return Err(format!(
                 "expectation names column `{k}`, which the table does not have"
@@ -369,7 +375,7 @@ fn compare_values(
         let missing: Vec<&str> = columns
             .iter()
             .map(|c| c.name.as_str())
-            .filter(|n| !obj.contains_key(*n))
+            .filter(|n| expected.get(n).is_none())
             .collect();
         if !missing.is_empty() {
             return Err(format!(
@@ -378,7 +384,7 @@ fn compare_values(
         }
     }
     for (i, c) in columns.iter().enumerate() {
-        if let Some(e) = obj.get(&c.name) {
+        if let Some(e) = expected.get(&c.name) {
             compare_value(c.ty, e, actual.get(i).and_then(Option::as_ref))
                 .map_err(|m| format!("values.{}: {m}", c.name))?;
         }
@@ -389,7 +395,7 @@ fn compare_values(
 fn compare_field(
     columns: &[ColumnDef],
     name: &str,
-    expected: &Json,
+    expected: &Wire,
     actual: &Field,
     full: bool,
 ) -> Result<(), String> {
@@ -414,10 +420,10 @@ fn compare_field(
             }
         }
         Field::Seq(s) => {
-            let e = if expected.is_null() {
-                Some(None)
-            } else {
-                expected.as_u64().map(Some)
+            let e = match expected {
+                Wire::Null => Some(None),
+                Wire::Number(n) if expected.is_integer_token() => n.parse::<u64>().ok().map(Some),
+                _ => None,
             };
             if e == Some(*s) {
                 Ok(())
@@ -429,7 +435,7 @@ fn compare_field(
             }
         }
         Field::Flag(b) => {
-            if expected.as_bool() == Some(*b) {
+            if *expected == Wire::Bool(*b) {
                 Ok(())
             } else {
                 Err(format!("expected {expected}, got {b}"))
@@ -441,26 +447,31 @@ fn compare_field(
 }
 
 /// Compares one row in the full `rows` form.
-pub(crate) fn compare_full(a: &Actual, expected: &Json, row: &ActualRow) -> Result<(), String> {
+pub(crate) fn compare_full(a: &Actual, expected: &Wire, row: &ActualRow) -> Result<(), String> {
     let Some(obj) = expected.as_object() else {
         return Err(format!("expected row must be an object, found {expected}"));
     };
     let want = a.op.fields();
-    let extra: Vec<&String> = obj.keys().filter(|k| !want.contains(&k.as_str())).collect();
-    let missing: Vec<&&str> = want.iter().filter(|k| !obj.contains_key(**k)).collect();
+    let extra: Vec<&String> = obj
+        .iter()
+        .map(|(k, _)| k)
+        .filter(|k| !want.contains(&k.as_str()))
+        .collect();
+    let missing: Vec<&&str> = want.iter().filter(|k| expected.get(k).is_none()).collect();
     if !extra.is_empty() || !missing.is_empty() {
         return Err(format!(
             "expected row must have exactly the fields {want:?} (SPEC §9); extra {extra:?}, missing {missing:?}"
         ));
     }
     for (name, field) in &row.fields {
-        compare_field(&a.columns, name, &obj[*name], field, true)?;
+        let e = expected.get(name).expect("checked above");
+        compare_field(&a.columns, name, e, field, true)?;
     }
     Ok(())
 }
 
 /// Compares one row in the `values` sugar form.
-pub(crate) fn compare_sugar(a: &Actual, expected: &Json, row: &ActualRow) -> Result<(), String> {
+pub(crate) fn compare_sugar(a: &Actual, expected: &Wire, row: &ActualRow) -> Result<(), String> {
     let lead = a.op.sugar_fields();
     let Some(arr) = expected
         .as_array()
