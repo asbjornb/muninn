@@ -17,48 +17,20 @@ use std::sync::{Arc, PoisonError, RwLock};
 
 use crate::api::{
     AddColumn, AsofJoinRequest, AsofRow, CreateSeries, CreateTable, Database, GridRequest, GridRow,
-    GridWindow, HistoryRequest, LatestRequest, ReadResult, Reader, ReplayRequest, VersionRow,
-    WriteBatch, WriteResult, WriteRow,
+    HistoryRequest, LatestRequest, ReadResult, Reader, ReplayRequest, VersionRow, WriteBatch,
+    WriteResult,
 };
-use crate::error::{Error, ErrorKind, Result};
+use crate::catalog::{BatchPlan, Catalog, batch_system_time, catalog_time, plan_dedup};
+pub use crate::catalog::{CatalogChange, CatalogChangeKind};
+use crate::error::Result;
 use crate::time::Timestamp;
-use crate::types::{
-    ColumnDef, SeriesDef, SeriesId, TableDef, TimeRange, Version, Visibility, validate_column_name,
-    validate_series_name, validate_table_name,
-};
-
-/// One entry of the catalog change log (SPEC §2.3).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CatalogChange {
-    /// When the change was committed.
-    pub system_time: Timestamp,
-    /// What changed.
-    pub change: CatalogChangeKind,
-}
-
-/// The kinds of catalog change in v0.1.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum CatalogChangeKind {
-    /// A table was created (definition as created).
-    CreateTable(TableDef),
-    /// A column was appended to a table.
-    AddColumn {
-        /// Table name.
-        table: String,
-        /// The new column.
-        column: ColumnDef,
-    },
-    /// A series was created.
-    CreateSeries(SeriesDef),
-}
+use crate::types::{SeriesDef, SeriesId, TableDef, Version, Visibility};
 
 /// The complete database state. Immutable once published.
 #[derive(Clone, Debug, Default)]
 struct State {
-    /// Tables in creation order.
-    tables: Vec<TableDef>,
-    /// Series in creation order; `series[i].id == SeriesId(i + 1)` (SPEC §2.2).
-    series: Vec<SeriesDef>,
+    /// Tables and series.
+    catalog: Catalog,
     /// Every stored version, in commit (= seq) order: `versions[i].seq == i + 1`.
     versions: Vec<Version>,
     /// Every batch id ever committed (SPEC §4.4: remembered forever).
@@ -113,142 +85,49 @@ impl ModelDb {
 }
 
 impl State {
-    fn table(&self, name: &str) -> Result<&TableDef> {
-        self.tables
-            .iter()
-            .find(|t| t.name == name)
-            .ok_or_else(|| Error::new(ErrorKind::UnknownTable, format!("no table {name:?}")))
-    }
-
-    fn table_mut(&mut self, name: &str) -> Result<&mut TableDef> {
-        self.tables
-            .iter_mut()
-            .find(|t| t.name == name)
-            .ok_or_else(|| Error::new(ErrorKind::UnknownTable, format!("no table {name:?}")))
-    }
-
-    fn series_by_name(&self, name: &str) -> Result<&SeriesDef> {
-        self.series
-            .iter()
-            .find(|s| &*s.name == name)
-            .ok_or_else(|| Error::new(ErrorKind::UnknownSeries, format!("no series {name:?}")))
-    }
-
-    fn series_by_id(&self, id: SeriesId) -> &SeriesDef {
-        &self.series[id.0 as usize - 1]
-    }
-
     /// `last` of SPEC §4.2: the greatest `system_time` of any stored version.
     fn last_system_time(&self) -> Option<Timestamp> {
         self.versions.iter().map(|v| v.system_time).max()
     }
 
-    /// Catalog change timestamps: the supplied clock reading (or, without one, the latest
-    /// timestamp known to the model), never before the previous catalog change. The
-    /// catalog time never feeds into version `system_time` (SPEC §4.2 `last` counts only
-    /// stored versions).
-    fn catalog_time(&self, clock: Option<Timestamp>) -> Timestamp {
+    /// Records a catalog change (validated by the caller) with its SPEC §2.3 time.
+    fn with_change(&self, clock: Option<Timestamp>, change: CatalogChangeKind) -> Result<State> {
         let prev = self.catalog_log.last().map(|c| c.system_time);
-        let base = clock
-            .or_else(|| prev.max(self.last_system_time()))
-            .unwrap_or(Timestamp::UNIX_EPOCH);
-        base.max(prev.unwrap_or(Timestamp::MIN))
+        let mut next = self.clone();
+        next.catalog.apply(&change)?;
+        next.catalog_log.push(CatalogChange {
+            system_time: catalog_time(prev, self.last_system_time(), clock),
+            change,
+        });
+        Ok(next)
     }
 
     // -----------------------------------------------------------------------------------
-    // Catalog
+    // Catalog (checks shared with the engine: crate::catalog)
     // -----------------------------------------------------------------------------------
-    //
-    // Check order for catalog operations (the spec does not fix one; see
-    // crates/SPEC-QUESTIONS.md): (1) referenced table exists, (2) every name is valid,
-    // (3) uniqueness.
 
     fn create_table(&self, req: &CreateTable) -> Result<(State, TableDef)> {
-        validate_table_name(&req.name)?;
-        for c in &req.columns {
-            validate_column_name(&c.name)?;
-        }
-        if self.tables.iter().any(|t| t.name == req.name) {
-            return Err(Error::new(
-                ErrorKind::AlreadyExists,
-                format!("table {:?} already exists", req.name),
-            ));
-        }
-        for (i, c) in req.columns.iter().enumerate() {
-            if req.columns[..i].iter().any(|p| p.name == c.name) {
-                return Err(Error::new(
-                    ErrorKind::AlreadyExists,
-                    format!("duplicate column {:?} in table {:?}", c.name, req.name),
-                ));
-            }
-        }
-        let def = TableDef {
-            name: req.name.clone(),
-            columns: req.columns.clone(),
-            default_clock: req.default_clock,
-            partition: req.partition,
-        };
-        let mut next = self.clone();
-        next.catalog_log.push(CatalogChange {
-            system_time: self.catalog_time(req.clock),
-            change: CatalogChangeKind::CreateTable(def.clone()),
-        });
-        next.tables.push(def.clone());
+        let def = self.catalog.check_create_table(req)?;
+        let next = self.with_change(req.clock, CatalogChangeKind::CreateTable(def.clone()))?;
         Ok((next, def))
     }
 
     fn add_column(&self, req: &AddColumn) -> Result<(State, TableDef)> {
-        let table = self.table(&req.table)?;
-        validate_column_name(&req.column.name)?;
-        if table.column_index(&req.column.name).is_some() {
-            return Err(Error::new(
-                ErrorKind::AlreadyExists,
-                format!(
-                    "column {:?} already exists in table {:?}",
-                    req.column.name, req.table
-                ),
-            ));
-        }
-        let mut next = self.clone();
-        next.catalog_log.push(CatalogChange {
-            system_time: self.catalog_time(req.clock),
-            change: CatalogChangeKind::AddColumn {
+        let column = self.catalog.check_add_column(req)?;
+        let next = self.with_change(
+            req.clock,
+            CatalogChangeKind::AddColumn {
                 table: req.table.clone(),
-                column: req.column.clone(),
+                column,
             },
-        });
-        let t = next.table_mut(&req.table)?;
-        t.columns.push(req.column.clone());
-        let def = t.clone();
+        )?;
+        let def = next.catalog.table(&req.table)?.clone();
         Ok((next, def))
     }
 
     fn create_series(&self, req: &CreateSeries) -> Result<(State, SeriesDef)> {
-        self.table(&req.table)?;
-        validate_series_name(&req.name)?;
-        if self.series.iter().any(|s| *s.name == *req.name) {
-            return Err(Error::new(
-                ErrorKind::AlreadyExists,
-                format!("series {:?} already exists", req.name),
-            ));
-        }
-        let id = u32::try_from(self.series.len() + 1)
-            .map(SeriesId)
-            .map_err(|_| Error::internal("series id space exhausted"))?;
-        let def = SeriesDef {
-            id,
-            name: Arc::from(req.name.as_str()),
-            table: req.table.clone(),
-            tags: req.tags.clone(),
-            timezone: req.timezone.clone().unwrap_or_else(|| "UTC".to_owned()),
-            resolution: req.resolution,
-        };
-        let mut next = self.clone();
-        next.catalog_log.push(CatalogChange {
-            system_time: self.catalog_time(req.clock),
-            change: CatalogChangeKind::CreateSeries(def.clone()),
-        });
-        next.series.push(def.clone());
+        let def = self.catalog.check_create_series(req)?;
+        let next = self.with_change(req.clock, CatalogChangeKind::CreateSeries(def.clone()))?;
         Ok((next, def))
     }
 
@@ -256,70 +135,13 @@ impl State {
     // Writes (SPEC §4)
     // -----------------------------------------------------------------------------------
 
-    /// SPEC §4.1: validates one row, checks in the normative order (first failure wins).
-    /// Returns the version content (system_time/seq are filled in later).
-    fn validate_row(&self, row: &WriteRow) -> Result<Version> {
-        // 1. Series name exists.
-        let series = self.series_by_name(&row.series)?;
-        let table = self.table(&series.table)?;
-        // 2. Every key in `values` is a column of the series' table.
-        for name in row.values.keys() {
-            if table.column_index(name).is_none() {
-                return Err(Error::new(
-                    ErrorKind::UnknownColumn,
-                    format!("table {:?} has no column {name:?}", table.name),
-                ));
-            }
-        }
-        // 3. Every non-null value matches its column's type. Missing keys are null.
-        let mut values: Vec<Option<_>> = vec![None; table.columns.len()];
-        for (name, value) in &row.values {
-            if let Some(v) = value {
-                let i = table.column_index(name).expect("checked in step 2");
-                let coerced = v.coerce_to(table.columns[i].ty).map_err(|e| {
-                    Error::new(e.kind(), format!("column {name:?}: {}", e.message()))
-                })?;
-                values[i] = Some(coerced);
-            }
-        }
-        // 4. Tombstone with any non-null value.
-        if row.deleted && values.iter().any(Option::is_some) {
-            return Err(Error::new(
-                ErrorKind::TombstoneWithValues,
-                "a tombstone must have every value null",
-            ));
-        }
-        // 5. value_time, received_time, published_time (if non-null) are valid.
-        let value_time = row.value_time.resolve()?;
-        let received_time = row.received_time.resolve()?;
-        let published_time = row
-            .published_time
-            .as_ref()
-            .map(|t| t.resolve())
-            .transpose()?;
-        Ok(Version {
-            series: series.id,
-            value_time,
-            published_time,
-            received_time,
-            deleted: row.deleted,
-            values,
-            system_time: Timestamp::MIN, // placeholder, set in `write`
-            seq: 0,                      // placeholder, set in `write`
-        })
-    }
-
     fn write(&self, batch: &WriteBatch) -> Result<(Option<State>, WriteResult)> {
-        // SPEC §4.4: a batch id must be non-empty; a known one makes the write a no-op
-        // without any validation.
-        if let Some(id) = &batch.batch_id {
-            if id.is_empty() {
-                return Err(Error::new(
-                    ErrorKind::InvalidName,
-                    "batch_id must be non-empty",
-                ));
-            }
-            if self.batch_ids.contains(id) {
+        // SPEC §4.4 then §4.1 (shared with the engine).
+        let candidates = match self
+            .catalog
+            .validate_batch(batch, |id| self.batch_ids.contains(id))?
+        {
+            BatchPlan::AlreadyCommitted => {
                 return Ok((
                     None,
                     WriteResult {
@@ -328,56 +150,27 @@ impl State {
                     },
                 ));
             }
-        }
-
-        // SPEC §4.1: rows checked in input order; any failure rejects the whole batch.
-        let mut candidates = Vec::with_capacity(batch.rows.len());
-        for (i, row) in batch.rows.iter().enumerate() {
-            let v = self
-                .validate_row(row)
-                .map_err(|e| Error::new(e.kind(), format!("row {i}: {}", e.message())))?;
-            candidates.push(v);
-        }
+            BatchPlan::Candidates(c) => c,
+        };
 
         // SPEC §4.2: batch.system_time = max(c, last); all rows share it.
-        let system_time = match self.last_system_time() {
-            Some(last) => batch.clock.max(last),
-            None => batch.clock,
-        };
+        let system_time = batch_system_time(batch.clock, self.last_system_time());
 
-        // SPEC §4.3: drop rows content-identical to any stored version or to an earlier
-        // *kept* row of this batch. Kept rows take consecutive seqs in input order.
-        let mut kept: Vec<Version> = Vec::new();
-        let mut duplicates = 0u64;
-        for mut v in candidates {
-            let dup = self
-                .versions
-                .iter()
-                .chain(kept.iter())
-                .any(|old| old.content_identical(&v));
-            if dup {
-                duplicates += 1;
-                continue;
-            }
-            v.system_time = system_time;
-            v.seq = (self.versions.len() + kept.len() + 1) as u64;
-            kept.push(v);
-        }
-
-        let stored = kept.len() as u64;
-        let result = WriteResult {
-            stored,
-            duplicates,
-            batch_already_committed: false,
-            system_time: (stored > 0).then_some(system_time),
-            first_seq: kept.first().map(|v| v.seq),
-        };
-        if kept.is_empty() && batch.batch_id.is_none() {
+        // SPEC §4.3: drop rows content-identical to any stored version (a linear scan
+        // here) or to an earlier kept row of this batch.
+        let plan = plan_dedup(
+            candidates,
+            system_time,
+            self.versions.len() as u64 + 1,
+            |v| Ok(self.versions.iter().any(|old| old.content_identical(v))),
+        )?;
+        let result = plan.result();
+        if plan.kept.is_empty() && batch.batch_id.is_none() {
             // Nothing to record: state unchanged (no seq consumed, `last` unaffected).
             return Ok((None, result));
         }
         let mut next = self.clone();
-        next.versions.extend(kept);
+        next.versions.extend(plan.kept);
         if let Some(id) = &batch.batch_id {
             // SPEC §4.5: an all-duplicate batch still records its batch id.
             next.batch_ids.insert(id.clone());
@@ -386,55 +179,8 @@ impl State {
     }
 
     // -----------------------------------------------------------------------------------
-    // Reads (SPEC §6)
+    // Reads (SPEC §6): request checks shared with the engine, then naive scans.
     // -----------------------------------------------------------------------------------
-    //
-    // Check order for reads: table, then series filter, then ranges/windows.
-
-    /// Resolves a series filter (SPEC §6): empty = every series of the table; a name that
-    /// does not exist or belongs to another table is `unknown_series`.
-    fn series_filter(&self, table: &TableDef, names: &[String]) -> Result<BTreeSet<SeriesId>> {
-        if names.is_empty() {
-            return Ok(self
-                .series
-                .iter()
-                .filter(|s| s.table == table.name)
-                .map(|s| s.id)
-                .collect());
-        }
-        let mut ids = BTreeSet::new();
-        for name in names {
-            let s = self.series_by_name(name)?;
-            if s.table != table.name {
-                return Err(Error::new(
-                    ErrorKind::UnknownSeries,
-                    format!(
-                        "series {name:?} belongs to table {:?}, not {:?}",
-                        s.table, table.name
-                    ),
-                ));
-            }
-            ids.insert(s.id);
-        }
-        Ok(ids)
-    }
-
-    fn to_row(&self, table: &TableDef, v: &Version) -> VersionRow {
-        VersionRow {
-            series_id: v.series,
-            series: Arc::clone(&self.series_by_id(v.series).name),
-            value_time: v.value_time,
-            published_time: v.published_time,
-            received_time: v.received_time,
-            system_time: v.system_time,
-            seq: v.seq,
-            deleted: v.deleted,
-            // Every *current* column; columns added after the version was written are null.
-            values: (0..table.columns.len())
-                .map(|i| v.value(i).cloned())
-                .collect(),
-        }
-    }
 
     /// The core of SPEC §6.1: for each point with series in `ids` and value time accepted
     /// by `in_range`, its latest visible version unless that is a tombstone. Sorted by
@@ -445,7 +191,7 @@ impl State {
         ids: &BTreeSet<SeriesId>,
         in_range: impl Fn(Timestamp) -> bool,
         vis: Visibility,
-    ) -> Vec<VersionRow> {
+    ) -> Result<Vec<VersionRow>> {
         let mut best: BTreeMap<(SeriesId, Timestamp), &Version> = BTreeMap::new();
         for v in &self.versions {
             if !(ids.contains(&v.series) && in_range(v.value_time) && vis.admits_version(v)) {
@@ -461,124 +207,93 @@ impl State {
         }
         best.values()
             .filter(|w| !w.deleted)
-            .map(|w| self.to_row(table, w))
+            .map(|w| self.catalog.version_row(table, w))
             .collect()
     }
 
     fn latest(&self, req: &LatestRequest) -> Result<ReadResult<VersionRow>> {
-        let table = self.table(&req.table)?;
-        let ids = self.series_filter(table, &req.series)?;
-        req.range.validate()?;
-        let vis = Visibility {
-            clock: req.context.clock.unwrap_or(table.default_clock),
-            frontier: req.context.frontier,
-            system: req.context.system,
-        };
-        let rows = self.latest_rows(table, &ids, |t| req.range.contains(t), vis);
+        let p = self.catalog.prepare_latest(req)?;
+        let rows = self.latest_rows(p.table, &p.ids, |t| p.range.contains(t), p.vis)?;
         Ok(ReadResult {
-            columns: table.columns.clone(),
+            columns: p.table.columns.clone(),
             rows,
         })
     }
 
     fn history(&self, req: &HistoryRequest) -> Result<ReadResult<VersionRow>> {
-        let table = self.table(&req.table)?;
-        let ids = self.series_filter(table, &req.series)?;
-        req.range.validate()?;
-        let vis = Visibility {
-            clock: req.context.clock.unwrap_or(table.default_clock),
-            frontier: req.context.frontier,
-            system: req.context.system,
-        };
+        let p = self.catalog.prepare_latest(req)?;
         let mut hits: Vec<&Version> = self
             .versions
             .iter()
-            .filter(|v| ids.contains(&v.series) && req.range.contains(v.value_time))
-            .filter(|v| vis.admits_version(v))
+            .filter(|v| p.ids.contains(&v.series) && p.range.contains(v.value_time))
+            .filter(|v| p.vis.admits_version(v))
             .collect();
-        hits.sort_by_key(|v| (v.series, v.value_time, v.knowledge_key(vis.clock)));
-        let rows = hits.into_iter().map(|v| self.to_row(table, v)).collect();
+        hits.sort_by_key(|v| (v.series, v.value_time, v.knowledge_key(p.vis.clock)));
+        let rows = hits
+            .into_iter()
+            .map(|v| self.catalog.version_row(p.table, v))
+            .collect::<Result<_>>()?;
         Ok(ReadResult {
-            columns: table.columns.clone(),
+            columns: p.table.columns.clone(),
             rows,
         })
     }
 
     fn replay(&self, req: &ReplayRequest) -> Result<ReadResult<VersionRow>> {
-        let table = self.table(&req.table)?;
-        let ids = self.series_filter(table, &req.series)?;
-        req.range.validate()?;
-        req.arrival.validate()?;
-        let clock = req.clock.unwrap_or(table.default_clock);
+        let p = self.catalog.prepare_replay(req)?;
+        let clock = p.vis.clock;
         // System bound applies; the frontier does not — `arrival` bounds t_clock instead.
-        let vis = Visibility {
-            clock,
-            frontier: None,
-            system: req.system,
-        };
         let mut hits: Vec<&Version> = self
             .versions
             .iter()
-            .filter(|v| ids.contains(&v.series) && req.range.contains(v.value_time))
-            .filter(|v| vis.admits_version(v) && req.arrival.contains(v.t_clock(clock)))
+            .filter(|v| p.ids.contains(&v.series) && p.range.contains(v.value_time))
+            .filter(|v| p.vis.admits_version(v) && req.arrival.contains(v.t_clock(clock)))
             .collect();
         hits.sort_by_key(|v| v.knowledge_key(clock));
-        let rows = hits.into_iter().map(|v| self.to_row(table, v)).collect();
+        let rows = hits
+            .into_iter()
+            .map(|v| self.catalog.version_row(p.table, v))
+            .collect::<Result<_>>()?;
         Ok(ReadResult {
-            columns: table.columns.clone(),
+            columns: p.table.columns.clone(),
             rows,
         })
     }
 
     fn grid(&self, req: &GridRequest) -> Result<ReadResult<GridRow>> {
-        let table = self.table(&req.table)?;
-        let ids = self.series_filter(table, &req.series)?;
-        match req.window {
-            GridWindow::Absolute(r) => r.validate()?,
-            GridWindow::Relative { start, end } => {
-                // Validate even when there are no frontiers.
-                TimeRange::relative_window(Timestamp::UNIX_EPOCH, start, end)?;
-            }
-        }
-        let clock = req.clock.unwrap_or(table.default_clock);
+        let p = self.catalog.prepare_grid(req)?;
         // SPEC §6.4 is defined as n `latest` queries; the model does exactly that.
-        let frontiers: BTreeSet<Timestamp> = req.frontiers.iter().copied().collect();
         let mut rows = Vec::new();
-        for f in frontiers {
-            let range = match req.window {
-                GridWindow::Absolute(r) => r,
-                GridWindow::Relative { start, end } => TimeRange::relative_window(f, start, end)?,
-            };
+        for &f in &p.frontiers {
+            let range = p.range_for(f)?;
             let vis = Visibility {
-                clock,
+                clock: p.clock,
                 frontier: Some(f),
-                system: req.system,
+                system: p.system,
             };
-            for row in self.latest_rows(table, &ids, |t| range.contains(t), vis) {
+            for row in self.latest_rows(p.table, &p.ids, |t| range.contains(t), vis)? {
                 rows.push(GridRow { frontier: f, row });
             }
         }
         Ok(ReadResult {
-            columns: table.columns.clone(),
+            columns: p.table.columns.clone(),
             rows,
         })
     }
 
     fn asof_join(&self, req: &AsofJoinRequest) -> Result<ReadResult<AsofRow>> {
-        let table = self.table(&req.table)?;
-        let clock = req.clock.unwrap_or(table.default_clock);
+        let p = self.catalog.prepare_asof(req)?;
         let mut rows = Vec::with_capacity(req.left.len());
-        for left in &req.left {
-            let ids = self.series_filter(table, std::slice::from_ref(&left.series))?;
+        for (left, s) in req.left.iter().zip(&p.series) {
             let vis = Visibility {
-                clock,
+                clock: p.clock,
                 frontier: Some(left.frontier),
-                system: req.system,
+                system: p.system,
             };
             // Exact value_time match (SPEC §6.5); at most one point qualifies.
-            let mut hits = self.latest_rows(table, &ids, |t| t == left.value_time, vis);
+            let ids = BTreeSet::from([s.id]);
+            let mut hits = self.latest_rows(p.table, &ids, |t| t == left.value_time, vis)?;
             debug_assert!(hits.len() <= 1);
-            let s = self.series_by_name(&left.series)?;
             rows.push(AsofRow {
                 series_id: s.id,
                 series: Arc::clone(&s.name),
@@ -588,7 +303,7 @@ impl State {
             });
         }
         Ok(ReadResult {
-            columns: table.columns.clone(),
+            columns: p.table.columns.clone(),
             rows,
         })
     }
@@ -596,26 +311,19 @@ impl State {
 
 impl Reader for ModelSnapshot {
     fn table(&self, name: &str) -> Result<TableDef> {
-        self.state.table(name).cloned()
+        self.state.catalog.table(name).cloned()
     }
 
     fn tables(&self) -> Result<Vec<TableDef>> {
-        Ok(self.state.tables.clone())
+        Ok(self.state.catalog.tables().to_vec())
     }
 
     fn series(&self, name: &str) -> Result<SeriesDef> {
-        self.state.series_by_name(name).cloned()
+        self.state.catalog.series_by_name(name).cloned()
     }
 
     fn table_series(&self, table: &str) -> Result<Vec<SeriesDef>> {
-        self.state.table(table)?;
-        Ok(self
-            .state
-            .series
-            .iter()
-            .filter(|s| s.table == table)
-            .cloned()
-            .collect())
+        self.state.catalog.table_series(table)
     }
 
     fn latest(&self, req: &LatestRequest) -> Result<ReadResult<VersionRow>> {

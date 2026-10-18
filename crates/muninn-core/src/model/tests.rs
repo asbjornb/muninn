@@ -7,8 +7,9 @@ use proptest::prelude::*;
 
 use super::*;
 use crate::api::*;
+use crate::error::ErrorKind;
 use crate::time::Duration;
-use crate::types::{Clock, ColumnType, Value};
+use crate::types::{Clock, ColumnDef, ColumnType, TimeRange, Value};
 
 fn ts(s: &str) -> Timestamp {
     Timestamp::parse(s).unwrap()
