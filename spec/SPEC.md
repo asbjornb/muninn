@@ -130,8 +130,13 @@ The writer has a clock. Let `c` be the clock reading at commit and `last` the gr
 `system_time` of any stored version (or −∞ if nothing is stored yet). Then
 
 ```
-batch.system_time = max(c, last)        -- non-decreasing; all rows in a batch share it
+batch.system_time = max(c, last + 1us)  -- strictly increasing; all rows in a batch share it
 ```
+
+(For the first stored batch, `batch.system_time = c`.) System times are therefore strictly
+increasing across stored batches, so no later write can ever land at or below a system
+bound `S` taken from an existing snapshot — this is what makes §7.3 hold. A batch that
+stores nothing (all duplicates, empty, a batch-id no-op, rejected) does not change `last`.
 
 `seq` is a single counter for the whole database starting at **1**. Each *stored* row
 (after deduplication, §4.3) takes the next value, in batch input order. Deduplicated rows
@@ -317,8 +322,14 @@ These are tested by property/fuzz tests, not by fixed scenarios.
 2. **Physical independence.** Results do not depend on segment boundaries, compaction,
    partition granularity, cache state, process restarts or the order in which segments are
    read.
-3. **Snapshot stability.** A read against snapshot `X` returns the same result forever
-   (until an explicit purge).
+3. **Reproducibility.** Let `T` be the greatest system_time in snapshot `X`. For any
+   `S <= T`, every read with system bound `S` returns the same result when run against
+   `X` and against every later snapshot (until an explicit purge). It follows from §4.2:
+   later writes get system_time `> T >= S`, so they are invisible at `S` (§7.1). This is a
+   guarantee about *results*, not physical snapshots: a pinned snapshot (log version) is
+   only guaranteed readable while it is held; after compaction and garbage collection old
+   log versions may become unreadable, but the same results stay available from any
+   later snapshot with the same `S`.
 4. **Grid ≡ repeated latest.** As stated in §6.4.
 5. **Dedup idempotency.** Writing any batch twice (without batch id) stores nothing the
    second time and changes no read.
@@ -350,6 +361,21 @@ Error codes, used in scenarios and APIs:
 
 A failed operation has no effect. When a request has several problems, the reported code
 is fixed by the check order in §10.4.
+
+### 8.1 Engine-only errors
+
+Two further codes come from a storage engine, not from the semantics. They never appear
+in scenarios.
+
+| Code | When | Effect |
+| --- | --- | --- |
+| `conflict` | another writer committed first | no effect; safe to retry |
+| `io` | storage failure | **unknown**: the write either fully happened or not at all (never partially, §7.6) |
+
+The "no effect" rule applies to the §8 codes and `conflict`, not to `io`. A client
+resolves an `io` failure on a write by resending it with the same `batch_id` (§4.4) or by
+relying on deduplication (§4.3): either way the resend is a no-op if the first attempt
+committed.
 
 ## 9. Scenario format (conformance suite)
 
@@ -397,7 +423,7 @@ must fail with that code (and have no effect).
 ```
 
 `system_time` is the writer clock reading `c` from §4.2 (the engine still applies the
-`max(c, last)` rule).
+`max(c, last + 1us)` rule).
 
 ### Read steps
 
@@ -534,3 +560,19 @@ The first failing check decides the error.
 - Reserved names (§2.1) apply to columns only; a table may be called e.g. `values`.
 - Series names are any non-empty string, unique across the database.
 - Duplicate names in a read's series filter are harmless (the filter is a set).
+
+## 11. Reproducibility receipt (informative)
+
+A **receipt** records a read so it can be reproduced exactly later:
+
+```
+(table, op, request, clock, F, S)
+```
+
+`request` is the op's remaining arguments (series filter, value range, `from`/`to`,
+frontiers and window, left rows); `clock` is the effective clock (after the table
+default); `F` the frontier, if any; and `S` the system bound — when the read gave none,
+the greatest system_time of the snapshot it ran against. By §7.3, replaying a receipt
+against that snapshot or any later one returns the same rows, bit for bit (until an
+explicit purge). A receipt therefore identifies a backtest's input data without copying
+it.
