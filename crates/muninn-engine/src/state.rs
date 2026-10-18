@@ -256,14 +256,44 @@ impl State {
         // `[prev next_seq, next_seq)` once, so segment seq sets cannot overlap); a
         // compaction replaces segments of one partition by one holding the same rows;
         // other entries add or remove nothing.
+        //
+        // A write's rows all share the batch system_time, which is the new `last` and
+        // strictly greater than the previous one (SPEC §4.2). A restore (dump/restore,
+        // `Engine::restore`) imports one or more whole batches with their original times:
+        // its rows lie in `(previous last, last]` and the greatest of them is `last`.
         match e.kind.as_str() {
-            "write" => {
+            "write" | "restore" => {
                 let rows: u64 = e.add.iter().map(|j| j.rows).sum();
                 if !e.remove.is_empty() || rows != e.next_seq - self.next_seq {
                     return Err(corrupt(format!(
-                        "entry {}: write adds {rows} rows for {} seqs",
+                        "entry {}: {} adds {rows} rows for {} seqs",
                         e.version,
+                        e.kind,
                         e.next_seq - self.next_seq
+                    )));
+                }
+                if rows > 0 {
+                    let after_prev =
+                        |t: i64| self.last_system_time.is_none_or(|p| t > p.as_micros());
+                    let last_us = last.map(Timestamp::as_micros);
+                    let ok = after_prev(last_us.unwrap_or(i64::MIN))
+                        && e.add.iter().all(|j| {
+                            let [lo, hi] = j.system_time;
+                            Some(hi) <= last_us
+                                && after_prev(lo)
+                                && (e.kind == "restore" || (lo == hi && Some(hi) == last_us))
+                        })
+                        && e.add.iter().map(|j| j.system_time[1]).max() == last_us;
+                    if !ok {
+                        return Err(corrupt(format!(
+                            "entry {}: {} rows have system_times inconsistent with the batch",
+                            e.version, e.kind
+                        )));
+                    }
+                } else if last != self.last_system_time {
+                    return Err(corrupt(format!(
+                        "entry {}: {} without rows moves last_system_time",
+                        e.version, e.kind
                     )));
                 }
             }
@@ -314,7 +344,9 @@ impl State {
         }
         for j in &e.add {
             let s = SegmentRef::from_json(j, &next.catalog)?;
-            if e.kind == "write" && !(self.next_seq <= s.seq.0 && s.seq.1 < e.next_seq) {
+            if (e.kind == "write" || e.kind == "restore")
+                && !(self.next_seq <= s.seq.0 && s.seq.1 < e.next_seq)
+            {
                 return Err(corrupt(format!(
                     "entry {}: segment seqs outside the batch",
                     e.version

@@ -71,7 +71,7 @@ bumps `format`).
 | --- | --- | --- |
 | `format` | int | `1` |
 | `version` | int | `v` (must equal the key's number) |
-| `kind` | string | informational: `catalog`, `write`, `compact`, `gc` |
+| `kind` | string | `catalog`, `write`, `restore`, `compact`, `gc` (constrains `add`/`remove`, below) |
 | `wall_time` | int | writer wall clock, µs (used by GC only) |
 | `catalog` | array, optional | catalog changes, applied in order (§3.2) |
 | `batch_id` | string, optional | batch id recorded by this write (SPEC §4.4) |
@@ -90,7 +90,16 @@ MUST be new); forget retired keys listed in `purged`. The `kind` constrains `add
 
 - `write`: nothing removed; every added segment's seq range lies in
   `[S.next_seq, next_seq)` and the added row counts sum to `next_seq - S.next_seq` (each
-  new seq is stored exactly once, so no two segments of the entry share a seq);
+  new seq is stored exactly once, so no two segments of the entry share a seq). If rows
+  are added, they all carry one `system_time`, which equals `last_system_time` and is
+  strictly greater than `S.last_system_time` (SPEC §4.2); with no rows,
+  `last_system_time` is unchanged;
+- `restore` (dump/restore, `spec/DUMP.md`; it imports one or more *whole* original
+  batches with their original `system_time` and `seq`): the same seq rules as `write`
+  (contiguous, each new seq exactly once — no gaps) and at least one row; every added
+  segment's `system_time` range lies in `(S.last_system_time, last_system_time]` and the
+  greatest of them equals `last_system_time`. Rows of one entry may have several
+  `system_time`s (one per original batch);
 - `compact`: exactly one segment added, at least two removed, all of the added segment's
   table and partition; the row counts are equal, the seq range of the added segment is the
   hull of the removed ones, and the high-water marks are unchanged;

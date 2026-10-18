@@ -28,6 +28,8 @@ use crate::read::{EngineSnapshot, ScanSpec, Scanner};
 use crate::segio::{Shared, check_columns, is_missing_segment, store_err};
 use crate::state::{SegmentRef, State};
 
+mod restore;
+
 /// What [`Engine::gc`] did.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct GcReport {
