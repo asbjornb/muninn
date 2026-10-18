@@ -1,0 +1,99 @@
+{
+  "version": 1,
+  "doc": "Parameterised query templates; queries/params.py turns each into `repeat` concrete queries per dataset, deterministically from the dataset seed. Time expressions: anchors vt_min (first value day, floored), vt_max, now (dataset's present), range_start, vt (per left row); plus/minus SPEC durations (us ms s m h d). 'tiny' overrides apply at tiny scale so the pure-Python oracle stays fast.",
+  "queries": [
+    {"id": "fc_asof_single", "dataset": "forecasts", "op": "latest", "clock": "received",
+     "stresses": "point read: one series, one value day, one frontier (10:00 the day before) over ~240-version chains",
+     "series": {"pick": 1}, "range": {"len": "1d", "within": ["vt_min+1d", "now-1d"]},
+     "frontier": "range_start-14h", "repeat": 50},
+
+    {"id": "da_asof_published", "dataset": "da_prices", "op": "latest", "clock": "published",
+     "stresses": "point read under the published clock (coalesce(published, received)), with corrections, published>received and null published",
+     "series": {"pick": 1}, "range": {"len": "1d", "within": ["vt_min+1d", "now"]},
+     "frontier": "range_start-12h", "repeat": 50},
+
+    {"id": "st_asof_system", "dataset": "settlement", "op": "latest", "clock": "received",
+     "stresses": "system frontier binding before the knowledge frontier: 'what did the DB say 3 days after delivery' with D+5/M+3 already received later",
+     "series": {"pick": 1}, "range": {"len": "1d", "within": ["vt_min", "now-10d"]},
+     "frontier": "range_start+60d", "system": "range_start+3d", "repeat": 50},
+
+    {"id": "sp_asof_single", "dataset": "sparse", "op": "latest", "clock": "published",
+     "stresses": "tiny series among 100k+: catalog lookup and per-series segment overhead dominate",
+     "series": {"pick": 1}, "frontier": {"random": ["vt_min", "now"]}, "repeat": 50},
+
+    {"id": "bf_asof_single", "dataset": "backfill", "op": "latest", "clock": "received",
+     "stresses": "point read in bulk-loaded history where system_time is useless as a frontier; received is synthetic",
+     "series": {"pick": 1}, "range": {"len": "1d", "within": ["vt_min", "vt_max-1d"]},
+     "frontier": "range_start+2d", "repeat": 50},
+
+    {"id": "fc_grid_365", "dataset": "forecasts", "op": "grid", "clock": "received",
+     "stresses": "the quant's training-set query: 365 daily 10:00 decision times x next 36h, one series",
+     "series": {"pick": 1}, "frontiers": {"daily_at": "10h", "count": 365, "first": "vt_min+1d", "last": "now-1d"},
+     "window": ["0h", "36h"], "repeat": 3},
+
+    {"id": "fc_grid_365_all", "dataset": "forecasts", "op": "grid", "clock": "received",
+     "stresses": "frontier grid over every forecast series (many providers)",
+     "frontiers": {"daily_at": "10h", "count": 365, "first": "vt_min+1d", "last": "now-1d"},
+     "window": ["0h", "36h"], "repeat": 1},
+
+    {"id": "da_grid_365", "dataset": "da_prices", "op": "grid", "clock": "published",
+     "stresses": "grid under the published clock across all zones; decision at 12:00, just after the auction",
+     "frontiers": {"daily_at": "12h", "count": 365, "first": "vt_min+1d", "last": "now-1d"},
+     "window": ["0h", "36h"], "repeat": 1},
+
+    {"id": "st_grid_365", "dataset": "settlement", "op": "grid", "clock": "received",
+     "stresses": "grid over correction chains looking back: latest actuals for the previous 36h at each 10:00",
+     "series": {"pick": 1}, "frontiers": {"daily_at": "10h", "count": 365, "first": "vt_min+2d", "last": "now"},
+     "window": ["-36h", "0h"], "repeat": 3},
+
+    {"id": "bf_grid_365", "dataset": "backfill", "op": "grid", "clock": "received",
+     "stresses": "grid over the last year of a 5-year backfill (bulk-loaded, one system_time)",
+     "series": {"pick": 1}, "frontiers": {"daily_at": "10h", "count": 365, "first": "vt_max-365d", "last": "vt_max"},
+     "window": ["-48h", "0h"], "repeat": 3},
+
+    {"id": "fc_history_day", "dataset": "forecasts", "op": "history", "clock": "received",
+     "stresses": "all versions of one series-day (~23k rows at 240 versions/point)",
+     "series": {"pick": 1}, "range": {"len": "1d", "within": ["vt_min+1d", "now-1d"]}, "repeat": 20},
+
+    {"id": "st_history_month", "dataset": "settlement", "op": "history", "clock": "received",
+     "stresses": "correction chains of one series-month",
+     "series": {"pick": 1}, "range": {"len": "30d", "within": ["vt_min", "now-30d"]}, "repeat": 10,
+     "tiny": {"range": {"len": "7d", "within": ["vt_min", "now-7d"]}}},
+
+    {"id": "fc_replay_6h", "dataset": "forecasts", "op": "replay", "clock": "received",
+     "stresses": "arrival-order scan across all series: (F, F+6h] on t_received; layout sorted by series hurts",
+     "replay": {"from": {"random": ["vt_min+1d", "now-1d"]}, "len": "6h"}, "repeat": 20},
+
+    {"id": "sp_replay_day", "dataset": "sparse", "op": "replay", "clock": "published",
+     "stresses": "arrival-order scan over 100k+ tiny series, published clock",
+     "replay": {"from": {"random": ["vt_min", "now-1d"]}, "len": "1d"}, "repeat": 20},
+
+    {"id": "fc_lead_24h", "dataset": "forecasts", "op": "history", "clock": "received",
+     "stresses": "lead-time slice: every forecast made 24h ahead (value_time - issue_time in [24h, 25h)) over 30 days, all series",
+     "range": {"len": "30d", "within": ["vt_min", "now-30d"]},
+     "lead_filter": {"column": "issue_time", "min": "24h", "max": "25h"}, "repeat": 5,
+     "tiny": {"range": {"len": "5d", "within": ["vt_min", "vt_min"]}, "lead_filter": {"column": "issue_time", "min": "12h", "max": "13h"}}},
+
+    {"id": "st_latest_now", "dataset": "settlement", "op": "latest", "clock": "received",
+     "stresses": "current truth (unbounded frontier) for the last 7 days, all series",
+     "range": {"len": "7d", "within": ["now-9d", "now-9d"]}, "repeat": 5},
+
+    {"id": "sp_latest_now", "dataset": "sparse", "op": "latest", "clock": "published",
+     "stresses": "current truth over every sparse series, value range [now-30d, now+30d)",
+     "range": {"len": "60d", "within": ["now-30d", "now-30d"]}, "repeat": 5},
+
+    {"id": "fc_latest_now", "dataset": "forecasts", "op": "latest", "clock": "received",
+     "stresses": "current truth: newest forecast for the next 10 days, all series",
+     "range": {"len": "10d", "within": ["now", "now"]}, "repeat": 5},
+
+    {"id": "da_asof_join_signals", "dataset": "da_prices", "op": "asof_join", "clock": "published",
+     "stresses": "as-of join with a per-row frontier: 10k trading signals, each looking up one delivery hour 6-48h ahead",
+     "left": {"rows": 10000, "lead": ["6h", "48h"], "within": ["vt_min+1d", "now"], "align": "1h"},
+     "repeat": 5, "tiny": {"left": {"rows": 300, "lead": ["6h", "48h"], "within": ["vt_min+1d", "now"], "align": "1h"}}},
+
+    {"id": "fc_asof_join_lead24", "dataset": "forecasts", "op": "asof_join", "clock": "received",
+     "stresses": "lead-time slice via per-row frontier: every quarter-hour of 30 days, frontier = value_time - 24h",
+     "left": {"series_pick": 1, "every": "15m", "len": "30d", "within": ["vt_min+1d", "now-30d"], "frontier": "vt-24h"},
+     "repeat": 5, "tiny": {"left": {"series_pick": 1, "every": "15m", "len": "3d", "within": ["vt_min+1d", "vt_min+1d"], "frontier": "vt-12h"}}}
+  ]
+}
