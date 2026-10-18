@@ -41,6 +41,8 @@ simpler than a general database because it refuses to do most things.
 | [notes/06-prior-art.md](notes/06-prior-art.md) | Steal sheet: kdb+, Postgres, ClickHouse, Timescale, others |
 | [notes/07-roadmap.md](notes/07-roadmap.md) | Rough MVP build order |
 | [notes/08-deployment.md](notes/08-deployment.md) | Single-node vs. cloud, object storage, adoption, local testing |
+| [notes/09-benchmarks.md](notes/09-benchmarks.md) | Datasets, queries, competitors, rules for performance tests |
+| [notes/faq.md](notes/faq.md) | "How do I model X?" — intervals, runs, ensembles, frontiers, trades |
 | [notes/open-questions.md](notes/open-questions.md) | Unresolved questions, grouped by topic |
 | [decisions/](decisions/) | Decision records, once things actually get decided |
 | [inbox/](inbox/) | Raw, unedited input (earlier conversations etc.) |

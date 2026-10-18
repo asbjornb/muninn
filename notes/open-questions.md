@@ -34,13 +34,21 @@ Move to `decisions/` once answered.
 - ~~Flat symbols vs. catalog~~ → integer `series_id` on rows + series catalog.
 - ~~Catalog history~~ → yes, append-only change log for audit + rollback.
 - Catalog storage: SQLite-like embedded store vs. own log?
-- Fixed-size array values (e.g. quantile vectors) — or always separate scalar columns?
-- Interval-valued points (delivery periods of varying length: 15-min, hourly, blocks)?
-  Store start + duration, or just start?
+- ~~Fixed-size array values~~ → separate scalar columns (see `faq.md`).
+- ~~Interval-valued points~~ → start in `value_time`, length = catalog resolution;
+  irregular intervals use a `value_end` value column (see `faq.md`).
+- A series whose resolution changes (hourly → 15 min): new series, or catalog resolution
+  with a valid-from?
+- Trades and orders (own and market): in Muninn, or a separate system? Usage patterns,
+  volume and compressibility differ; the combined picture is valuable. See `faq.md`.
 
 ## Storage
 
-- Own column format vs. Parquet/Arrow IPC for segments.
+- Own column format vs. Parquet/Arrow IPC for segments. Row-by-row arrival is handled by
+  WAL + memtable either way; the question is the *sealed* format. Experience (ClickHouse,
+  Parquet, SQL Server) says revisions get expensive at insert or at read in standard
+  formats. An own format allows encodings Parquet can't express, e.g. XOR/delta against
+  the previous version of the same point. Let the benchmarks decide.
 - Partition by value_date always, or by value_month for sparse tables?
 - Sort key tail: frontier time before or after system_time?
 - Is a per-series offset index in the footer worth it, or is bloom + zone maps enough?
@@ -48,11 +56,16 @@ Move to `decisions/` once answered.
 ## Query
 
 - Write our own small SQL-ish language, a dataframe-style API, or ride on DuckDB SQL?
-- As-of join: per-row frontier semantics, and how to make it fast.
+- As-of join: per-row frontier semantics, and how to make it fast. Joining series of
+  different resolution (match by "contained in")? Left side from an external Arrow table?
+- Reading a group of series as one, keeping the newest version per value_time (e.g. run
+  cycles stored as separate series)?
 - Frontier-advancing cursor API for backtest loops — what shape?
 - Calendars & timezones (delivery days in local time, DST) — query layer only?
 
 ## QA / operations
 
 - Freshness/gap metrics that stay PIT-aware when published times get corrected.
+- Automatic vendor-timestamp QA flags (published after received, "published" that is
+  really run time, silent corrections) — engine feature or external job? See `faq.md`.
 - Backup = copy partition dirs + catalog; is that enough?
