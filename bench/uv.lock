@@ -225,6 +225,32 @@ wheels = [
 ]
 
 [[package]]
+name = "muninn"
+version = "0.1.0"
+source = { directory = "../crates/muninn-py" }
+dependencies = [
+    { name = "pyarrow" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "pandas", marker = "extra == 'pandas'", specifier = ">=2" },
+    { name = "polars", marker = "extra == 'polars'", specifier = ">=1" },
+    { name = "pyarrow", specifier = ">=14" },
+]
+provides-extras = ["pandas", "polars"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "hypothesis", specifier = ">=6" },
+    { name = "maturin", specifier = ">=1.8,<2" },
+    { name = "numpy", specifier = ">=1.26" },
+    { name = "pandas", specifier = ">=2" },
+    { name = "polars", specifier = ">=1" },
+    { name = "pytest", specifier = ">=8" },
+]
+
+[[package]]
 name = "muninn-bench"
 version = "0.1.0"
 source = { virtual = "." }
@@ -240,6 +266,9 @@ dependencies = [
 dev = [
     { name = "pytest" },
 ]
+muninn = [
+    { name = "muninn" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -252,6 +281,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = ">=8" }]
+muninn = [{ name = "muninn", directory = "../crates/muninn-py" }]
 
 [[package]]
 name = "numpy"

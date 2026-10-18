@@ -6,7 +6,7 @@ part of the writer *and* the engine: dataset modules emit batches (rows + the wr
 clock reading ``c`` at commit), and :class:`VersionWriter` applies the engine rules of
 SPEC §4:
 
-* §4.2 ``batch.system_time = max(c, last)``, one database-wide ``seq`` starting at 1,
+* §4.2 ``batch.system_time = max(c, last + 1us)``, one database-wide ``seq`` starting at 1,
   each stored row taking the next value in batch input order;
 * §4.3 exact duplicate re-sends (content-identical to a stored version) are *not*
   stored: they consume no seq and land in ``resends.parquet`` instead, so a competitor
@@ -200,16 +200,24 @@ class VersionWriter:
         dropped = {k: v[dup] for k, v in data.items()}
         n = len(kept["c"])
         if n:
-            # §4.2: system_time = max(c, last), non-decreasing over commit order.
-            st = np.maximum.accumulate(kept["c"])
+            # §4.2: batch.system_time = max(c, last + 1us): strictly increasing per batch.
+            # With batches b = 0, 1, ... in commit order this is
+            #   st_b = b + max(last + 1, max_{j <= b} (c_j - j)).
+            c = kept["c"]
+            first = np.ones(n, bool)
+            first[1:] = (np.diff(c) != 0) | (np.diff(kept["batch"]) != 0)
+            b = np.cumsum(first) - 1                      # batch index per row
+            cb = c[first] - np.arange(int(first.sum()))   # c_j - j per batch
+            run = np.maximum.accumulate(cb)
             if self.last_system_time is not None:
-                st = np.maximum(st, self.last_system_time)
+                run = np.maximum(run, self.last_system_time + 1)
+            st_b = run + np.arange(len(run))
+            st = st_b[b]
             self.last_system_time = int(st[-1])
             seq = np.arange(self.next_seq, self.next_seq + n, dtype=np.int64)
             self.next_seq += n
             self.stored += n
-            # batch count: number of distinct (c, batch) runs
-            self.batches += int(np.count_nonzero(np.diff(kept["batch"]) != 0) + 1)
+            self.batches += int(first.sum())
             self._buffer(self._arrow(kept, st, seq))
         if len(dropped["c"]):
             self.duplicates += len(dropped["c"])

@@ -50,7 +50,7 @@ Large data, work directories and the ClickHouse binary live under `bench/data/` 
 
 Each dataset is its own database with one table (SPEC §2), so series ids and `seq` start at 1
 per dataset. The generator plays both writer and engine: dataset modules emit write batches
-with a writer clock `c`; the writer applies SPEC §4.2 (`system_time = max(c, last)`, one
+with a writer clock `c`; the writer applies SPEC §4.2 (`system_time = max(c, last + 1us)`, one
 `seq` counter, input order within a batch) and §4.3 (exact re-sends are dropped and go to
 `resends.parquet`). Batches are emitted in commit order one commit-day at a time, so a
 late batch never pushes earlier arrivals' `system_time` forward. All randomness is keyed

@@ -13,9 +13,15 @@ dependencies = [
 
 [dependency-groups]
 dev = ["pytest>=8"]
+# The Muninn engine's Python binding, built from source (needs Rust):
+#   uv sync --project bench --group muninn
+muninn = ["muninn"]
 
 [tool.uv]
 package = false
+
+[tool.uv.sources]
+muninn = { path = "../crates/muninn-py", package = true }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

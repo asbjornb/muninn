@@ -2,9 +2,8 @@
 (stored batches *and* the exact duplicate re-sends, in commit order, each with its
 expected §4.5 result) and, optionally, read steps with expected rows.
 
-Stored versions are grouped into write steps by system_time. Two generator batches that
-the max(c, last) rule gave the same system_time merge into one step; that is equivalent
-(same system_time, same seq order). Re-send batches are placed after the last stored batch
+Stored versions are grouped into write steps by system_time (unique per batch under
+§4.2's max(c, last + 1us)). Re-send batches are placed after the last stored batch
 with system_time <= their writer clock; they store nothing, so they consume no seq.
 
 Replay steps are left out on purpose while SPEC §6.3 moves from [from, to) to (from, to].

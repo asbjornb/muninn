@@ -41,10 +41,12 @@ from datagen.datasets import DATASETS  # noqa: E402
 from queries.params import load_workload, workload_for  # noqa: E402
 
 
-def stable_hash(t: pa.Table) -> str:
+def stable_hash(t: pa.Table, drop=()) -> str:
     """Layout-independent hash: hashes the normalised Python values row by row."""
     from competitors.compare import rows
 
+    if drop:
+        t = t.drop_columns([c for c in drop if c in t.column_names])
     h = hashlib.blake2b(digest_size=12)
     h.update(",".join(t.column_names).encode())
     for r in rows(t):
@@ -86,14 +88,22 @@ def run_system(system, data_dir, datasets, scale, args, report):
     for ds in datasets:
         cat = json.loads((data_dir / ds / "catalog.json").read_text())
         workdir = Path(args.workdir) / scale / system / ds
+        a = None
         try:
             a = registry.make(system, workdir, threads=args.threads, memory_limit_mb=args.memory_mb)
             print(f"[{system}] {ds}: loading ...", flush=True)
             load = a.load(data_dir / ds, cat)
         except registry.Unavailable as e:
-            print(f"[{system}] unavailable: {e}")
-            report["systems"][system] = {"unavailable": str(e)}
-            return
+            if a is None:
+                print(f"[{system}] unavailable: {e}")
+                report["systems"][system] = {"unavailable": str(e)}
+                return
+            print(f"[{system}] {ds}: skipped: {e}")
+            sysrep = report["systems"].setdefault(system, {"notes": a.notes, "version": a.version(),
+                                                           "datasets": {}})
+            sysrep.setdefault("skipped", {})[ds] = str(e)
+            a.close()
+            continue
         sysrep = report["systems"].setdefault(system, {"notes": a.notes, "version": a.version(),
                                                        "datasets": {}})
         drep = sysrep["datasets"][ds] = {
@@ -101,7 +111,11 @@ def run_system(system, data_dir, datasets, scale, args, report):
             "bytes_on_disk": load["bytes_on_disk"],
             "bytes_per_version": round(load["bytes_on_disk"] / max(1, cat["stats"]["versions"]), 2),
             "queries": {},
+            "exact_system_time": getattr(a, "exact", True),
         }
+        for k, val in load.items():
+            if k not in ("ingest_seconds", "bytes_on_disk"):
+                drep[k] = val
         print(f"[{system}] {ds}: ingest {load['ingest_seconds']:.1f}s, "
               f"{load['bytes_on_disk'] / 1e6:.1f} MB", flush=True)
         qs = workload_for(ds, cat, scale, set(args.queries.split(",")) if args.queries else None)
@@ -114,6 +128,7 @@ def run_system(system, data_dir, datasets, scale, args, report):
             res = a.run(inst[0])
             cold = time.perf_counter() - t0
             hashes = {0: stable_hash(res)}
+            nosys = {0: stable_hash(res, drop=("system_time",))}
             rows = {0: res.num_rows}
             warm = []
             budget_end = time.perf_counter() + args.budget
@@ -125,6 +140,7 @@ def run_system(system, data_dir, datasets, scale, args, report):
                     warm.append(time.perf_counter() - t0)
                     if i not in hashes:
                         hashes[i] = stable_hash(r)
+                        nosys[i] = stable_hash(r, drop=("system_time",))
                         rows[i] = r.num_rows
                     if time.perf_counter() > budget_end and len(warm) >= 3:
                         done = True
@@ -139,6 +155,7 @@ def run_system(system, data_dir, datasets, scale, args, report):
                 "p99_ms": round(pct(warm, 99) * 1e3, 3),
                 "mean_rows": round(statistics.mean(rows.values()), 1),
                 "result_hashes": {str(k): v for k, v in sorted(hashes.items())},
+                "result_hashes_without_system_time": {str(k): v for k, v in sorted(nosys.items())},
             }
             print(f"[{system}] {ds}/{qid}: cold {cold * 1e3:.1f} ms, p50 "
                   f"{drep['queries'][qid]['p50_ms']:.1f} ms, p99 {drep['queries'][qid]['p99_ms']:.1f} ms "
@@ -150,16 +167,22 @@ def cross_check(report) -> dict:
     """For each (dataset, query, instance): do all systems agree?"""
     out = {}
     systems = {k: v for k, v in report["systems"].items() if "datasets" in v}
+    # a system that could not reproduce a dataset's system_time values (see its adapter)
+    # is compared on everything else for that dataset
+    inexact = {ds for rep in systems.values() for ds, d in rep["datasets"].items()
+               if not d.get("exact_system_time", True)}
     for s, rep in systems.items():
         for ds, d in rep["datasets"].items():
+            key = "result_hashes_without_system_time" if ds in inexact else "result_hashes"
             for qid, q in d["queries"].items():
-                for inst, h in q["result_hashes"].items():
+                for inst, h in q[key].items():
                     out.setdefault((ds, qid, inst), {})[s] = h
     disagreements = []
     for (ds, qid, inst), hs in out.items():
         if len(set(hs.values())) > 1:
             disagreements.append({"dataset": ds, "query": qid, "instance": inst, "hashes": hs})
-    return {"compared_results": len(out), "disagreements": disagreements}
+    return {"compared_results": len(out), "disagreements": disagreements,
+            "compared_without_system_time": sorted(inexact)}
 
 
 def fmt_bytes(n):
@@ -245,6 +268,10 @@ def markdown(report) -> str:
     else:
         L.append(f"All systems returned identical results for all {cc['compared_results']} "
                  "(dataset, query, instance) combinations.")
+    if cc.get("compared_without_system_time"):
+        L.append("")
+        L.append("Compared on every field except `system_time` (a system loaded them with "
+                 "coalesced batches, see its notes): " + ", ".join(cc["compared_without_system_time"]) + ".")
     L.append("")
     L.append("## Systems")
     L.append("")
@@ -253,6 +280,8 @@ def markdown(report) -> str:
             L.append(f"- **{s}**: not run ({v['unavailable']})")
         else:
             L.append(f"- **{s}** ({v['version']}): {v['notes']}")
+            for ds, why in v.get("skipped", {}).items():
+                L.append(f"  - {ds}: not run ({why})")
     L.append("")
     L.append("## What each query stresses")
     L.append("")
