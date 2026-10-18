@@ -131,7 +131,31 @@ fn parse_flag(cell: &str) -> Option<bool> {
 const ENGINE_FIELDS: [&str; 2] = ["system_time", "seq"];
 
 /// A source of `(line, row)` pairs.
-type RowIter<'a> = Box<dyn Iterator<Item = Res<(u64, WriteRow)>> + 'a>;
+/// A source of `(line, row, fingerprint)`: the fingerprint hashes the row's input text
+/// (not the resolved row, so `--received-time now` does not change it).
+type RowIter<'a> = Box<dyn Iterator<Item = Res<(u64, WriteRow, u64)>> + 'a>;
+
+/// 64-bit FNV-1a: a stable hash (the chunk ids it makes are persisted).
+pub fn fnv(mut h: u64, bytes: &[u8]) -> u64 {
+    for b in bytes {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
+/// FNV-1a offset basis.
+pub const FNV_SEED: u64 = 0xcbf2_9ce4_8422_2325;
+
+/// Stable hash of a sequence of fields (length-prefixed, so field boundaries count).
+fn fields_hash<'a>(seed: u64, fields: impl Iterator<Item = &'a str>) -> u64 {
+    let mut h = seed;
+    for f in fields {
+        h = fnv(h, &(f.len() as u64).to_le_bytes());
+        h = fnv(h, f.as_bytes());
+    }
+    h
+}
 
 struct Defaults {
     received: Option<Timestamp>,
@@ -188,6 +212,7 @@ fn csv_rows<'a>(
         .filter(|(i, _)| !fixed.contains(&Some(*i)))
         .map(|(i, h)| (i, h.clone()))
         .collect();
+    let header_hash = fields_hash(FNV_SEED, header.iter().map(String::as_str));
     let mut records = r.into_records();
     Ok(Box::new(std::iter::from_fn(move || {
         let rec = match records.next()? {
@@ -204,6 +229,7 @@ fn csv_rows<'a>(
             }
         };
         let line = rec.position().map_or(0, |p| p.line());
+        let fingerprint = fields_hash(header_hash, rec.iter());
         Some((|| {
             let series = &rec[series_i];
             if series.is_empty() {
@@ -288,6 +314,7 @@ fn csv_rows<'a>(
                     deleted,
                     values,
                 },
+                fingerprint,
             ))
         })())
     })))
@@ -435,14 +462,21 @@ fn ndjson_rows<'a>(
         loop {
             let (i, l) = lines.next()?;
             let line = i as u64 + 1;
-            let text = match l {
+            let mut text = match l {
                 Ok(t) => t,
                 Err(e) => return Some(Err(at(line, None, format!("io: {e}")))),
             };
+            // A UTF-8 byte order mark (Windows exports) is not part of the first object.
+            if i == 0 {
+                if let Some(rest) = text.strip_prefix('\u{feff}') {
+                    text = rest.to_owned();
+                }
+            }
             if text.trim().is_empty() {
                 continue;
             }
-            return Some(ndjson_row(line, &text, lookup, d).map(|r| (line, r)));
+            let fingerprint = fields_hash(FNV_SEED, std::iter::once(text.as_str()));
+            return Some(ndjson_row(line, &text, lookup, d).map(|r| (line, r, fingerprint)));
         }
     }))
 }
@@ -529,19 +563,33 @@ pub fn write(ctx: &Context, args: &WriteArgs) -> Res<()> {
     let mut totals = Totals::default();
     let mut buf: Vec<WriteRow> = Vec::new();
     let mut lines: Vec<u64> = Vec::new();
+    // Chunk ids (see docs/cli.md, "Atomicity and resuming"): `<id>/<k>/<hash>` where the
+    // hash covers the options that shape rows and the input text of every row of the
+    // chunk. A re-run skips exactly the chunks whose rows were committed before, and
+    // writes every other chunk.
+    let options_hash = fields_hash(
+        FNV_SEED,
+        [
+            format!("{:?}", args.time_format).as_str(),
+            args.received_time.as_deref().unwrap_or(""),
+        ]
+        .into_iter(),
+    );
+    let mut chunk_hash = options_hash;
     let mut k = 0u64;
-    let id_for = |k: u64| {
+    let id_for = |k: u64, hash: u64| {
         args.batch_id.as_ref().map(|id| match args.chunk_rows {
-            Some(_) => format!("{id}/{k}"),
+            Some(_) => format!("{id}/{k}/{hash:016x}"),
             None => id.clone(),
         })
     };
     let mut pending_err = None;
     for item in rows {
         match item {
-            Ok((line, row)) => {
+            Ok((line, row, fp)) => {
                 buf.push(row);
                 lines.push(line);
+                chunk_hash = fnv(chunk_hash, &fp.to_le_bytes());
             }
             Err(e) => {
                 pending_err = Some(e);
@@ -554,10 +602,11 @@ pub fn write(ctx: &Context, args: &WriteArgs) -> Res<()> {
                 ctx,
                 std::mem::take(&mut buf),
                 &lines,
-                id_for(k),
+                id_for(k, chunk_hash),
                 &mut totals,
             )?;
             lines.clear();
+            chunk_hash = options_hash;
             k += 1;
         }
     }
@@ -568,7 +617,7 @@ pub fn write(ctx: &Context, args: &WriteArgs) -> Res<()> {
                 e.message,
                 totals.batches,
                 if args.batch_id.is_some() {
-                    " with the same --batch-id to resume"
+                    " with the same --batch-id and --chunk-rows to resume"
                 } else {
                     " (duplicates are dropped if received_time is fixed)"
                 }
@@ -576,8 +625,10 @@ pub fn write(ctx: &Context, args: &WriteArgs) -> Res<()> {
         }
         return Err(e);
     }
-    if !buf.is_empty() || totals.batches == 0 {
-        commit(&db, ctx, buf, &lines, id_for(k), &mut totals)?;
+    // An input without rows commits nothing — not even its batch id, so that running the
+    // import again once the data is there is not mistaken for a repeat.
+    if !buf.is_empty() {
+        commit(&db, ctx, buf, &lines, id_for(k, chunk_hash), &mut totals)?;
     }
     output::line(&format!(
         "stored {}, duplicates {}, batches {}{}",
