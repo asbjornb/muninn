@@ -1,0 +1,26 @@
+{
+  "name": "read-errors",
+  "description": "§8 read errors and their precedence when a read has several problems (AMBIGUITIES A7): unknown_table, then unknown_series, then invalid_timestamp, then invalid_range. Covers every read op, including asof_join left rows with a bad value_time or a missing frontier.",
+  "steps": [
+    {"op": "create_table", "name": "prices", "columns": [{"name": "value", "type": "f64"}]},
+    {"op": "create_series", "name": "dk1", "table": "prices"},
+    {"op": "latest", "table": "nope", "series": ["nope"], "frontier": "bad", "value_from": "2025-01-02T00:00:00Z", "value_to": "2025-01-01T00:00:00Z", "expect": {"error": "unknown_table"}},
+    {"op": "latest", "table": "prices", "series": ["nope"], "frontier": "bad", "value_from": "2025-01-02T00:00:00Z", "value_to": "2025-01-01T00:00:00Z", "expect": {"error": "unknown_series"}},
+    {"op": "latest", "table": "prices", "frontier": "bad", "value_from": "2025-01-02T00:00:00Z", "value_to": "2025-01-01T00:00:00Z", "expect": {"error": "invalid_timestamp"}},
+    {"op": "latest", "table": "prices", "value_from": "2025-01-02T00:00:00Z", "value_to": "2025-01-01T00:00:00Z", "expect": {"error": "invalid_range"}},
+    {"op": "latest", "table": "prices", "system": "2025-13-01T00:00:00Z", "expect": {"error": "invalid_timestamp"}},
+    {"op": "latest", "table": "prices", "value_to": "2025-01-01", "expect": {"error": "invalid_timestamp"}},
+    {"op": "history", "table": "prices", "frontier": "bad", "expect": {"error": "invalid_timestamp"}},
+    {"op": "history", "table": "prices", "series": ["nope"], "system": "bad", "expect": {"error": "unknown_series"}},
+    {"op": "replay", "table": "prices", "from": "bad", "expect": {"error": "invalid_timestamp"}},
+    {"op": "replay", "table": "prices", "to": "bad", "from": "2025-01-02T00:00:00Z", "expect": {"error": "invalid_timestamp"}},
+    {"op": "replay", "table": "prices", "from": "2025-01-02T00:00:00Z", "to": "2025-01-01T00:00:00Z", "expect": {"error": "invalid_range"}},
+    {"op": "grid", "table": "prices", "frontiers": ["bad"], "window_start": "36h", "window_end": "12h", "expect": {"error": "invalid_timestamp"}},
+    {"op": "grid", "table": "prices", "series": ["nope"], "frontiers": ["bad"], "expect": {"error": "unknown_series"}},
+    {"op": "asof_join", "table": "prices", "left": [{"series": "nope", "value_time": "bad", "frontier": "bad"}], "expect": {"error": "unknown_series"}},
+    {"op": "asof_join", "table": "prices", "left": [{"series": "dk1", "value_time": "bad", "frontier": "2025-01-01T00:00:00Z"}], "expect": {"error": "invalid_timestamp"}},
+    {"op": "asof_join", "table": "prices", "left": [{"series": "dk1", "value_time": "2025-01-01T00:00:00Z", "frontier": "2025-01-01T00:00:00Z"}, {"series": "nope", "value_time": "bad"}], "expect": {"error": "unknown_series"}},
+    {"op": "asof_join", "table": "prices", "left": [{"series": "dk1", "value_time": "2025-01-01T00:00:00Z"}], "expect": {"error": "invalid_timestamp"}},
+    {"op": "asof_join", "table": "prices", "system": "bad", "left": [], "expect": {"error": "invalid_timestamp"}}
+  ]
+}

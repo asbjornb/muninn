@@ -1,0 +1,21 @@
+{
+  "name": "published-after-received",
+  "description": "§5: published_time may be later than received_time (we were sent a file before its official publication). Under the published clock it stays invisible until its published time even though we hold it; and the published clock ORDERS by published time, so at 13:00 the 13:00-published version A beats B, which was published earlier but received later.",
+  "steps": [
+    {"op": "create_table", "name": "prices", "columns": [{"name": "value", "type": "f64"}]},
+    {"op": "create_series", "name": "dk1_spot", "table": "prices"},
+    {"op": "write", "system_time": "2025-01-15T12:46:00Z",
+     "rows": [{"series": "dk1_spot", "value_time": "2025-01-16T00:00:00Z", "published_time": "2025-01-15T13:00:00Z", "received_time": "2025-01-15T12:45:00Z", "values": {"value": 60.0}}]},
+    {"op": "latest", "table": "prices", "clock": "published", "frontier": "2025-01-15T12:50:00Z", "expect": {"rows": []}},
+    {"op": "latest", "table": "prices", "clock": "received", "frontier": "2025-01-15T12:50:00Z", "expect": {"values": [["dk1_spot", "2025-01-16T00:00:00Z", {"value": 60.0}]]}},
+    {"op": "latest", "table": "prices", "clock": "published", "frontier": "2025-01-15T13:00:00Z", "expect": {"values": [["dk1_spot", "2025-01-16T00:00:00Z", {"value": 60.0}]]}},
+    {"op": "write", "system_time": "2025-01-15T12:56:00Z",
+     "rows": [{"series": "dk1_spot", "value_time": "2025-01-16T00:00:00Z", "published_time": "2025-01-15T12:50:00Z", "received_time": "2025-01-15T12:55:00Z", "values": {"value": 61.0}}]},
+    {"op": "latest", "table": "prices", "clock": "published", "frontier": "2025-01-15T12:55:00Z", "expect": {"values": [["dk1_spot", "2025-01-16T00:00:00Z", {"value": 61.0}]]}},
+    {"op": "latest", "table": "prices", "clock": "published", "frontier": "2025-01-15T13:00:00Z",
+     "expect": {"rows": [
+       {"series": "dk1_spot", "value_time": "2025-01-16T00:00:00Z", "published_time": "2025-01-15T13:00:00Z", "received_time": "2025-01-15T12:45:00Z", "system_time": "2025-01-15T12:46:00Z", "seq": 1, "values": {"value": 60.0}}]}},
+    {"op": "latest", "table": "prices", "clock": "received", "expect": {"values": [["dk1_spot", "2025-01-16T00:00:00Z", {"value": 61.0}]]}},
+    {"op": "latest", "table": "prices", "clock": "published", "frontier": "2025-01-15T12:58:00Z", "system": "2025-01-15T12:50:00Z", "expect": {"rows": []}}
+  ]
+}

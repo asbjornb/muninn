@@ -1,0 +1,45 @@
+{
+  "name": "validation-order-across-rows",
+  "description": "§4.1: rows are checked in input order and the first failing row decides the error, even if a later row fails an 'earlier' check (an invalid_timestamp in row 2 beats an unknown_series in row 3). Rows may belong to different tables. Nothing from any rejected batch is stored; the first successful write gets seq 1.",
+  "steps": [
+    {"op": "create_table", "name": "prices", "columns": [{"name": "value", "type": "f64"}]},
+    {"op": "create_table", "name": "wind", "columns": [{"name": "mw", "type": "f64"}]},
+    {"op": "create_series", "name": "dk1", "table": "prices"},
+    {"op": "create_series", "name": "wind_dk1", "table": "wind"},
+    {"op": "write", "system_time": "2025-01-01T10:00:00Z",
+     "rows": [
+       {"series": "dk1", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": 1.0}},
+       {"series": "wind_dk1", "value_time": "2025-01-02", "received_time": "2025-01-01T09:00:00Z", "values": {"mw": 1.0}},
+       {"series": "nope", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z"}],
+     "expect": {"error": "invalid_timestamp"}},
+    {"op": "write", "system_time": "2025-01-01T10:00:00Z",
+     "rows": [
+       {"series": "nope", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z"},
+       {"series": "dk1", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": true}}],
+     "expect": {"error": "unknown_series"}},
+    {"op": "write", "system_time": "2025-01-01T10:00:00Z",
+     "rows": [
+       {"series": "dk1", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": 1.0}},
+       {"series": "wind_dk1", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "deleted": true, "values": {"mw": 0.0}},
+       {"series": "dk1", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"mw": 1.0}}],
+     "expect": {"error": "tombstone_with_values"}},
+    {"op": "write", "system_time": "2025-01-01T10:00:00Z",
+     "rows": [
+       {"series": "wind_dk1", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"mw": 1.0}},
+       {"series": "dk1", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"mw": 1.0}}],
+     "expect": {"error": "unknown_column"}},
+    {"op": "history", "table": "prices", "expect": {"rows": []}},
+    {"op": "history", "table": "wind", "expect": {"rows": []}},
+    {"op": "write", "system_time": "2025-01-01T10:00:00Z",
+     "rows": [
+       {"series": "wind_dk1", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"mw": 1.0}},
+       {"series": "dk1", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": 1.0}}],
+     "expect": {"stored": 2, "duplicates": 0, "batch_already_committed": false}},
+    {"op": "latest", "table": "prices",
+     "expect": {"rows": [
+       {"series": "dk1", "value_time": "2025-01-02T00:00:00Z", "published_time": null, "received_time": "2025-01-01T09:00:00Z", "system_time": "2025-01-01T10:00:00Z", "seq": 2, "values": {"value": 1.0}}]}},
+    {"op": "latest", "table": "wind",
+     "expect": {"rows": [
+       {"series": "wind_dk1", "value_time": "2025-01-02T00:00:00Z", "published_time": null, "received_time": "2025-01-01T09:00:00Z", "system_time": "2025-01-01T10:00:00Z", "seq": 1, "values": {"mw": 1.0}}]}}
+  ]
+}

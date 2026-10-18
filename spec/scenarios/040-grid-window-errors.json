@@ -1,0 +1,29 @@
+{
+  "name": "grid-window-errors",
+  "description": "§6.4/§8 bad windows are invalid_range: window_start > window_end, unparsable durations (space, upper-case unit, unknown unit 'w', leading '+', fraction), only one end given, relative and absolute window mixed (AMBIGUITIES A6), and a duration that does not fit in i64 microseconds. The largest representable windows are fine: bounds beyond the timestamp range just admit everything (§6.4 exact sums). Bad frontier text is invalid_timestamp.",
+  "steps": [
+    {"op": "create_table", "name": "t", "columns": [{"name": "value", "type": "f64"}]},
+    {"op": "create_series", "name": "s", "table": "t"},
+    {"op": "write", "system_time": "2025-01-01T00:00:00Z",
+     "rows": [{"series": "s", "value_time": "2025-01-01T00:00:00Z", "received_time": "2025-01-01T00:00:00Z", "values": {"value": 1.0}}]},
+    {"op": "grid", "table": "t", "frontiers": ["2025-01-01T00:00:00Z"], "window_start": "36h", "window_end": "12h", "expect": {"error": "invalid_range"}},
+    {"op": "grid", "table": "t", "frontiers": ["2025-01-01T00:00:00Z"], "window_start": "12 h", "window_end": "36h", "expect": {"error": "invalid_range"}},
+    {"op": "grid", "table": "t", "frontiers": ["2025-01-01T00:00:00Z"], "window_start": "12H", "window_end": "36h", "expect": {"error": "invalid_range"}},
+    {"op": "grid", "table": "t", "frontiers": ["2025-01-01T00:00:00Z"], "window_start": "0h", "window_end": "1w", "expect": {"error": "invalid_range"}},
+    {"op": "grid", "table": "t", "frontiers": ["2025-01-01T00:00:00Z"], "window_start": "+1h", "window_end": "2h", "expect": {"error": "invalid_range"}},
+    {"op": "grid", "table": "t", "frontiers": ["2025-01-01T00:00:00Z"], "window_start": "0h", "window_end": "1.5h", "expect": {"error": "invalid_range"}},
+    {"op": "grid", "table": "t", "frontiers": ["2025-01-01T00:00:00Z"], "window_start": "0h", "window_end": "", "expect": {"error": "invalid_range"}},
+    {"op": "grid", "table": "t", "frontiers": ["2025-01-01T00:00:00Z"], "window_start": "0h", "expect": {"error": "invalid_range"}},
+    {"op": "grid", "table": "t", "frontiers": ["2025-01-01T00:00:00Z"], "window_end": "1h", "expect": {"error": "invalid_range"}},
+    {"op": "grid", "table": "t", "frontiers": ["2025-01-01T00:00:00Z"], "window_start": "0h", "window_end": "1h", "value_from": "2025-01-01T00:00:00Z", "expect": {"error": "invalid_range"}},
+    {"op": "grid", "table": "t", "frontiers": ["2025-01-01T00:00:00Z"], "window_start": "0h", "window_end": "106751992d", "expect": {"error": "invalid_range"}},
+    {"op": "grid", "table": "t", "frontiers": ["2025-01-01T00:00:00Z"], "window_start": "-106751991d", "window_end": "106751991d",
+     "expect": {"values": [["2025-01-01T00:00:00Z", "s", "2025-01-01T00:00:00Z", {"value": 1.0}]]}},
+    {"op": "grid", "table": "t", "frontiers": ["2025-01-01T00:00:00Z"], "window_start": "-9223372036854775808us", "window_end": "9223372036854775807us",
+     "expect": {"values": [["2025-01-01T00:00:00Z", "s", "2025-01-01T00:00:00Z", {"value": 1.0}]]}},
+    {"op": "grid", "table": "t", "frontiers": ["2025-01-01T00:00:00Z"], "window_start": "-0h", "window_end": "1us",
+     "expect": {"values": [["2025-01-01T00:00:00Z", "s", "2025-01-01T00:00:00Z", {"value": 1.0}]]}},
+    {"op": "grid", "table": "t", "frontiers": ["2025-01-01T00:00:00Z"], "window_start": "1us", "window_end": "1d", "expect": {"rows": []}},
+    {"op": "grid", "table": "t", "frontiers": ["2025-01-01T00:00:00Z", "tomorrow"], "expect": {"error": "invalid_timestamp"}}
+  ]
+}

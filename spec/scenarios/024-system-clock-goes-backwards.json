@@ -1,0 +1,32 @@
+{
+  "name": "system-clock-goes-backwards",
+  "description": "§4.2: batch.system_time = max(c, last). When the writer clock goes backwards (11:00, then 11:59:59 after a 12:00 commit) the batch gets system_time = last = 12:00, shared by all its rows; seq still orders them. Ties on (t_clock, system_time) are broken by seq.",
+  "steps": [
+    {"op": "create_table", "name": "t", "columns": [{"name": "value", "type": "f64"}]},
+    {"op": "create_series", "name": "s", "table": "t"},
+    {"op": "write", "system_time": "2025-01-15T12:00:00Z",
+     "rows": [{"series": "s", "value_time": "2025-01-16T00:00:00Z", "received_time": "2025-01-15T11:00:00Z", "values": {"value": 1.0}}]},
+    {"op": "write", "system_time": "2025-01-15T11:00:00Z",
+     "rows": [
+       {"series": "s", "value_time": "2025-01-16T00:00:00Z", "received_time": "2025-01-15T11:30:00Z", "values": {"value": 2.0}},
+       {"series": "s", "value_time": "2025-01-16T01:00:00Z", "received_time": "2025-01-15T11:30:00Z", "values": {"value": 3.0}}]},
+    {"op": "write", "system_time": "2025-01-15T11:59:59Z",
+     "rows": [{"series": "s", "value_time": "2025-01-16T00:00:00Z", "received_time": "2025-01-15T11:30:00Z", "values": {"value": 4.0}}]},
+    {"op": "write", "system_time": "2025-01-15T13:00:00Z",
+     "rows": [{"series": "s", "value_time": "2025-01-16T01:00:00Z", "received_time": "2025-01-15T11:00:00Z", "values": {"value": 5.0}}]},
+    {"op": "history", "table": "t",
+     "expect": {"rows": [
+       {"series": "s", "value_time": "2025-01-16T00:00:00Z", "published_time": null, "received_time": "2025-01-15T11:00:00Z", "system_time": "2025-01-15T12:00:00Z", "seq": 1, "deleted": false, "values": {"value": 1.0}},
+       {"series": "s", "value_time": "2025-01-16T00:00:00Z", "published_time": null, "received_time": "2025-01-15T11:30:00Z", "system_time": "2025-01-15T12:00:00Z", "seq": 2, "deleted": false, "values": {"value": 2.0}},
+       {"series": "s", "value_time": "2025-01-16T00:00:00Z", "published_time": null, "received_time": "2025-01-15T11:30:00Z", "system_time": "2025-01-15T12:00:00Z", "seq": 4, "deleted": false, "values": {"value": 4.0}},
+       {"series": "s", "value_time": "2025-01-16T01:00:00Z", "published_time": null, "received_time": "2025-01-15T11:00:00Z", "system_time": "2025-01-15T13:00:00Z", "seq": 5, "deleted": false, "values": {"value": 5.0}},
+       {"series": "s", "value_time": "2025-01-16T01:00:00Z", "published_time": null, "received_time": "2025-01-15T11:30:00Z", "system_time": "2025-01-15T12:00:00Z", "seq": 3, "deleted": false, "values": {"value": 3.0}}]}},
+    {"op": "latest", "table": "t", "clock": "system",
+     "expect": {"values": [["s", "2025-01-16T00:00:00Z", {"value": 4.0}], ["s", "2025-01-16T01:00:00Z", {"value": 5.0}]]}},
+    {"op": "latest", "table": "t",
+     "expect": {"values": [["s", "2025-01-16T00:00:00Z", {"value": 4.0}], ["s", "2025-01-16T01:00:00Z", {"value": 3.0}]]}},
+    {"op": "latest", "table": "t", "system": "2025-01-15T12:00:00Z",
+     "expect": {"values": [["s", "2025-01-16T00:00:00Z", {"value": 4.0}], ["s", "2025-01-16T01:00:00Z", {"value": 3.0}]]}},
+    {"op": "latest", "table": "t", "system": "2025-01-15T11:59:59Z", "expect": {"rows": []}}
+  ]
+}

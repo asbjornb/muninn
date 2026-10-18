@@ -1,0 +1,33 @@
+{
+  "name": "string-and-bool-columns",
+  "description": "§2.1/§4.1: string columns take JSON strings (empty string and the text 'NaN' are ordinary strings; unicode round-trips), bool columns take JSON true/false. Cross-type values are type_mismatch ('true' for bool, 1 for bool, 5 for string). Missing keys read null. Dedup compares by equality: '' vs null and true vs false differ.",
+  "steps": [
+    {"op": "create_table", "name": "status", "columns": [{"name": "state", "type": "string"}, {"name": "available", "type": "bool"}]},
+    {"op": "create_series", "name": "plant_a", "table": "status"},
+    {"op": "write", "system_time": "2025-01-01T10:00:00Z",
+     "rows": [
+       {"series": "plant_a", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"state": "online", "available": true}},
+       {"series": "plant_a", "value_time": "2025-01-02T01:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"state": "", "available": false}},
+       {"series": "plant_a", "value_time": "2025-01-02T02:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"state": "NaN"}},
+       {"series": "plant_a", "value_time": "2025-01-02T03:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"state": "Ærø ☃ \"quoted\""}}]},
+    {"op": "latest", "table": "status",
+     "expect": {"rows": [
+       {"series": "plant_a", "value_time": "2025-01-02T00:00:00Z", "published_time": null, "received_time": "2025-01-01T09:00:00Z", "system_time": "2025-01-01T10:00:00Z", "seq": 1, "values": {"state": "online", "available": true}},
+       {"series": "plant_a", "value_time": "2025-01-02T01:00:00Z", "published_time": null, "received_time": "2025-01-01T09:00:00Z", "system_time": "2025-01-01T10:00:00Z", "seq": 2, "values": {"state": "", "available": false}},
+       {"series": "plant_a", "value_time": "2025-01-02T02:00:00Z", "published_time": null, "received_time": "2025-01-01T09:00:00Z", "system_time": "2025-01-01T10:00:00Z", "seq": 3, "values": {"state": "NaN", "available": null}},
+       {"series": "plant_a", "value_time": "2025-01-02T03:00:00Z", "published_time": null, "received_time": "2025-01-01T09:00:00Z", "system_time": "2025-01-01T10:00:00Z", "seq": 4, "values": {"state": "Ærø ☃ \"quoted\"", "available": null}}]}},
+    {"op": "write", "system_time": "2025-01-01T11:00:00Z",
+     "rows": [
+       {"series": "plant_a", "value_time": "2025-01-02T01:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"state": "", "available": false}},
+       {"series": "plant_a", "value_time": "2025-01-02T01:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"state": null, "available": false}},
+       {"series": "plant_a", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"state": "online", "available": false}}],
+     "expect": {"stored": 2, "duplicates": 1, "batch_already_committed": false}},
+    {"op": "latest", "table": "status", "value_to": "2025-01-02T02:00:00Z",
+     "expect": {"values": [["plant_a", "2025-01-02T00:00:00Z", {"state": "online", "available": false}], ["plant_a", "2025-01-02T01:00:00Z", {"state": null, "available": false}]]}},
+    {"op": "write", "system_time": "2025-01-01T12:00:00Z", "rows": [{"series": "plant_a", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"available": "true"}}], "expect": {"error": "type_mismatch"}},
+    {"op": "write", "system_time": "2025-01-01T12:00:00Z", "rows": [{"series": "plant_a", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"available": 1}}], "expect": {"error": "type_mismatch"}},
+    {"op": "write", "system_time": "2025-01-01T12:00:00Z", "rows": [{"series": "plant_a", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"state": 5}}], "expect": {"error": "type_mismatch"}},
+    {"op": "write", "system_time": "2025-01-01T12:00:00Z", "rows": [{"series": "plant_a", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"state": true}}], "expect": {"error": "type_mismatch"}},
+    {"op": "write", "system_time": "2025-01-01T12:00:00Z", "rows": [{"series": "plant_a", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"state": ["a"]}}], "expect": {"error": "type_mismatch"}}
+  ]
+}

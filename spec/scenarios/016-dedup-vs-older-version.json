@@ -1,0 +1,27 @@
+{
+  "name": "dedup-vs-older-version",
+  "description": "§4.3: a row is a duplicate if it matches ANY stored version, not just the latest. Resending the superseded first run (same received_time) is dropped, so it cannot 'revert' the point; the original keeps system_time and seq. Sending the same content with a NEW received_time is a new version and becomes latest.",
+  "steps": [
+    {"op": "create_table", "name": "wind", "columns": [{"name": "value", "type": "f64"}]},
+    {"op": "create_series", "name": "wind_dk1", "table": "wind"},
+    {"op": "write", "system_time": "2025-01-15T10:00:00Z",
+     "rows": [{"series": "wind_dk1", "value_time": "2025-01-16T00:00:00Z", "published_time": "2025-01-15T08:00:00Z", "received_time": "2025-01-15T09:00:00Z", "values": {"value": 1.0}}]},
+    {"op": "write", "system_time": "2025-01-15T11:00:00Z",
+     "rows": [{"series": "wind_dk1", "value_time": "2025-01-16T00:00:00Z", "published_time": "2025-01-15T10:00:00Z", "received_time": "2025-01-15T10:30:00Z", "values": {"value": 2.0}}]},
+    {"op": "write", "system_time": "2025-01-15T12:00:00Z",
+     "rows": [{"series": "wind_dk1", "value_time": "2025-01-16T00:00:00Z", "published_time": "2025-01-15T08:00:00Z", "received_time": "2025-01-15T09:00:00Z", "values": {"value": 1.0}}],
+     "expect": {"stored": 0, "duplicates": 1, "batch_already_committed": false}},
+    {"op": "latest", "table": "wind", "clock": "system", "expect": {"values": [["wind_dk1", "2025-01-16T00:00:00Z", {"value": 2.0}]]}},
+    {"op": "history", "table": "wind",
+     "expect": {"rows": [
+       {"series": "wind_dk1", "value_time": "2025-01-16T00:00:00Z", "published_time": "2025-01-15T08:00:00Z", "received_time": "2025-01-15T09:00:00Z", "system_time": "2025-01-15T10:00:00Z", "seq": 1, "deleted": false, "values": {"value": 1.0}},
+       {"series": "wind_dk1", "value_time": "2025-01-16T00:00:00Z", "published_time": "2025-01-15T10:00:00Z", "received_time": "2025-01-15T10:30:00Z", "system_time": "2025-01-15T11:00:00Z", "seq": 2, "deleted": false, "values": {"value": 2.0}}]}},
+    {"op": "write", "system_time": "2025-01-15T13:00:00Z",
+     "rows": [{"series": "wind_dk1", "value_time": "2025-01-16T00:00:00Z", "published_time": "2025-01-15T08:00:00Z", "received_time": "2025-01-15T12:30:00Z", "values": {"value": 1.0}}],
+     "expect": {"stored": 1, "duplicates": 0, "batch_already_committed": false}},
+    {"op": "latest", "table": "wind",
+     "expect": {"rows": [
+       {"series": "wind_dk1", "value_time": "2025-01-16T00:00:00Z", "published_time": "2025-01-15T08:00:00Z", "received_time": "2025-01-15T12:30:00Z", "system_time": "2025-01-15T13:00:00Z", "seq": 3, "values": {"value": 1.0}}]}},
+    {"op": "latest", "table": "wind", "clock": "published", "expect": {"values": [["wind_dk1", "2025-01-16T00:00:00Z", {"value": 2.0}]]}}
+  ]
+}

@@ -1,0 +1,53 @@
+{
+  "name": "day-ahead-backtest",
+  "description": "End-to-end leakage check for a DK1 day-ahead strategy. Wind forecasts (received clock) and auction prices (published clock: the 12:42 publication). At the 11:30 decision time the grid gives the forecast known then and asof_join finds no prices for the next day (the auction is not published yet) — no lookahead. At 13:00 prices are found. A re-run of the forecast ingest overlapping the old one stores only the new rows.",
+  "steps": [
+    {"op": "create_table", "name": "wind_fc", "columns": [{"name": "p50", "type": "f64"}]},
+    {"op": "create_table", "name": "spot", "columns": [{"name": "eur_mwh", "type": "f64"}], "default_clock": "published"},
+    {"op": "create_series", "name": "wind_dk1", "table": "wind_fc", "resolution": "1h", "tags": {"area": "DK1", "provider": "ecmwf"}},
+    {"op": "create_series", "name": "dk1_spot", "table": "spot", "resolution": "1h", "timezone": "Europe/Copenhagen", "tags": {"area": "DK1"}},
+    {"op": "write", "system_time": "2025-01-14T05:01:00Z", "batch_id": "wind-2025-01-14T00",
+     "rows": [
+       {"series": "wind_dk1", "value_time": "2025-01-15T00:00:00Z", "published_time": "2025-01-14T04:30:00Z", "received_time": "2025-01-14T05:00:00Z", "values": {"p50": 1800.0}},
+       {"series": "wind_dk1", "value_time": "2025-01-15T01:00:00Z", "published_time": "2025-01-14T04:30:00Z", "received_time": "2025-01-14T05:00:00Z", "values": {"p50": 1750.0}}]},
+    {"op": "write", "system_time": "2025-01-14T11:01:00Z",
+     "rows": [
+       {"series": "wind_dk1", "value_time": "2025-01-15T00:00:00Z", "published_time": "2025-01-14T04:30:00Z", "received_time": "2025-01-14T05:00:00Z", "values": {"p50": 1800.0}},
+       {"series": "wind_dk1", "value_time": "2025-01-15T01:00:00Z", "published_time": "2025-01-14T04:30:00Z", "received_time": "2025-01-14T05:00:00Z", "values": {"p50": 1750.0}},
+       {"series": "wind_dk1", "value_time": "2025-01-15T00:00:00Z", "published_time": "2025-01-14T10:30:00Z", "received_time": "2025-01-14T11:00:00Z", "values": {"p50": 1650.0}},
+       {"series": "wind_dk1", "value_time": "2025-01-15T01:00:00Z", "published_time": "2025-01-14T10:30:00Z", "received_time": "2025-01-14T11:00:00Z", "values": {"p50": 1700.0}}],
+     "expect": {"stored": 2, "duplicates": 2, "batch_already_committed": false}},
+    {"op": "write", "system_time": "2025-01-14T12:46:00Z",
+     "rows": [
+       {"series": "dk1_spot", "value_time": "2025-01-15T00:00:00Z", "published_time": "2025-01-14T12:42:00Z", "received_time": "2025-01-14T12:45:00Z", "values": {"eur_mwh": 95.12}},
+       {"series": "dk1_spot", "value_time": "2025-01-15T01:00:00Z", "published_time": "2025-01-14T12:42:00Z", "received_time": "2025-01-14T12:45:00Z", "values": {"eur_mwh": 91.4}}]},
+    {"op": "grid", "table": "wind_fc", "frontiers": ["2025-01-14T11:30:00Z", "2025-01-14T06:00:00Z"], "window_start": "12h30m", "window_end": "36h", "expect": {"error": "invalid_range"}},
+    {"op": "grid", "table": "wind_fc", "frontiers": ["2025-01-14T11:30:00Z", "2025-01-14T06:00:00Z"], "window_start": "750m", "window_end": "1d",
+     "expect": {"values": [
+       ["2025-01-14T06:00:00Z", "wind_dk1", "2025-01-15T00:00:00Z", {"p50": 1800.0}],
+       ["2025-01-14T06:00:00Z", "wind_dk1", "2025-01-15T01:00:00Z", {"p50": 1750.0}],
+       ["2025-01-14T11:30:00Z", "wind_dk1", "2025-01-15T00:00:00Z", {"p50": 1650.0}],
+       ["2025-01-14T11:30:00Z", "wind_dk1", "2025-01-15T01:00:00Z", {"p50": 1700.0}]]}},
+    {"op": "asof_join", "table": "spot",
+     "left": [
+       {"series": "dk1_spot", "value_time": "2025-01-15T00:00:00Z", "frontier": "2025-01-14T11:30:00Z"},
+       {"series": "dk1_spot", "value_time": "2025-01-15T01:00:00Z", "frontier": "2025-01-14T11:30:00Z"},
+       {"series": "dk1_spot", "value_time": "2025-01-15T00:00:00Z", "frontier": "2025-01-14T12:42:00Z"},
+       {"series": "dk1_spot", "value_time": "2025-01-15T01:00:00Z", "frontier": "2025-01-14T13:00:00Z"}],
+     "expect": {"values": [
+       ["dk1_spot", "2025-01-15T00:00:00Z", "2025-01-14T11:30:00Z", null],
+       ["dk1_spot", "2025-01-15T01:00:00Z", "2025-01-14T11:30:00Z", null],
+       ["dk1_spot", "2025-01-15T00:00:00Z", "2025-01-14T12:42:00Z", {"eur_mwh": 95.12}],
+       ["dk1_spot", "2025-01-15T01:00:00Z", "2025-01-14T13:00:00Z", {"eur_mwh": 91.4}]]}},
+    {"op": "asof_join", "table": "spot", "clock": "received",
+     "left": [{"series": "dk1_spot", "value_time": "2025-01-15T00:00:00Z", "frontier": "2025-01-14T12:42:00Z"}],
+     "expect": {"values": [["dk1_spot", "2025-01-15T00:00:00Z", "2025-01-14T12:42:00Z", null]]}},
+    {"op": "write", "system_time": "2025-01-14T13:00:00Z", "batch_id": "wind-2025-01-14T00",
+     "rows": [{"series": "wind_dk1", "value_time": "2025-01-15T00:00:00Z", "received_time": "2025-01-14T05:00:00Z", "values": {"p50": 0.0}}],
+     "expect": {"stored": 0, "duplicates": 0, "batch_already_committed": true}},
+    {"op": "latest", "table": "wind_fc",
+     "expect": {"rows": [
+       {"series": "wind_dk1", "value_time": "2025-01-15T00:00:00Z", "published_time": "2025-01-14T10:30:00Z", "received_time": "2025-01-14T11:00:00Z", "system_time": "2025-01-14T11:01:00Z", "seq": 3, "values": {"p50": 1650.0}},
+       {"series": "wind_dk1", "value_time": "2025-01-15T01:00:00Z", "published_time": "2025-01-14T10:30:00Z", "received_time": "2025-01-14T11:00:00Z", "system_time": "2025-01-14T11:01:00Z", "seq": 4, "values": {"p50": 1700.0}}]}}
+  ]
+}

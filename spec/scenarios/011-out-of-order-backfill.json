@@ -1,0 +1,22 @@
+{
+  "name": "out-of-order-backfill",
+  "description": "Decision 0003: the 12:00 forecast run is ingested live; the older 06:00 run is backfilled the next day. Under the received (and published) clock the older run, written later, must NOT override the newer run; it only fills in what was knowable at 07:00. Under the system clock (write order) the backfill does win. The system frontier shows the backfill was not in the DB before it was loaded.",
+  "steps": [
+    {"op": "create_table", "name": "wind", "columns": [{"name": "value", "type": "f64"}]},
+    {"op": "create_series", "name": "wind_dk1", "table": "wind", "resolution": "1h"},
+    {"op": "write", "system_time": "2025-01-15T12:31:00Z",
+     "rows": [{"series": "wind_dk1", "value_time": "2025-01-16T00:00:00Z", "published_time": "2025-01-15T12:00:00Z", "received_time": "2025-01-15T12:30:00Z", "values": {"value": 90.0}}]},
+    {"op": "write", "system_time": "2025-01-16T09:00:00Z",
+     "rows": [{"series": "wind_dk1", "value_time": "2025-01-16T00:00:00Z", "published_time": "2025-01-15T06:00:00Z", "received_time": "2025-01-15T06:30:00Z", "values": {"value": 100.0}}]},
+    {"op": "latest", "table": "wind", "expect": {"values": [["wind_dk1", "2025-01-16T00:00:00Z", {"value": 90.0}]]}},
+    {"op": "latest", "table": "wind", "clock": "published", "expect": {"values": [["wind_dk1", "2025-01-16T00:00:00Z", {"value": 90.0}]]}},
+    {"op": "latest", "table": "wind", "frontier": "2025-01-15T07:00:00Z",
+     "expect": {"rows": [
+       {"series": "wind_dk1", "value_time": "2025-01-16T00:00:00Z", "published_time": "2025-01-15T06:00:00Z", "received_time": "2025-01-15T06:30:00Z", "system_time": "2025-01-16T09:00:00Z", "seq": 2, "values": {"value": 100.0}}]}},
+    {"op": "latest", "table": "wind", "frontier": "2025-01-15T07:00:00Z", "system": "2025-01-16T08:59:59Z", "expect": {"rows": []}},
+    {"op": "latest", "table": "wind", "clock": "system", "expect": {"values": [["wind_dk1", "2025-01-16T00:00:00Z", {"value": 100.0}]]}},
+    {"op": "latest", "table": "wind", "clock": "system", "frontier": "2025-01-16T08:00:00Z", "expect": {"values": [["wind_dk1", "2025-01-16T00:00:00Z", {"value": 90.0}]]}},
+    {"op": "history", "table": "wind",
+     "expect": {"values": [["wind_dk1", "2025-01-16T00:00:00Z", {"value": 100.0}], ["wind_dk1", "2025-01-16T00:00:00Z", {"value": 90.0}]]}}
+  ]
+}

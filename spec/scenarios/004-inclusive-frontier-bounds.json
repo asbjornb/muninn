@@ -1,0 +1,29 @@
+{
+  "name": "inclusive-frontier-bounds",
+  "description": "§5: both visibility bounds are inclusive, at microsecond precision. A version is visible at frontier F iff t_clock <= F (1us earlier: invisible), and at system frontier S iff system_time <= S. Checked under the received and the system clock and with the system bound.",
+  "steps": [
+    {"op": "create_table", "name": "prices", "columns": [{"name": "value", "type": "f64"}]},
+    {"op": "create_series", "name": "dk1", "table": "prices"},
+    {"op": "write", "system_time": "2025-01-15T11:00:00.000002Z",
+     "rows": [{"series": "dk1", "value_time": "2025-01-16T00:00:00Z", "received_time": "2025-01-15T10:00:00.000001Z", "values": {"value": 50.0}}],
+     "expect": {"stored": 1, "duplicates": 0, "batch_already_committed": false}},
+    {"op": "latest", "table": "prices", "frontier": "2025-01-15T10:00:00Z", "expect": {"rows": []}},
+    {"op": "latest", "table": "prices", "frontier": "2025-01-15T10:00:00.000001Z",
+     "expect": {"rows": [
+       {"series": "dk1", "value_time": "2025-01-16T00:00:00Z", "published_time": null, "received_time": "2025-01-15T10:00:00.000001Z", "system_time": "2025-01-15T11:00:00.000002Z", "seq": 1, "values": {"value": 50.0}}]}},
+    {"op": "latest", "table": "prices", "frontier": "2025-01-15T10:00:00.000002Z",
+     "expect": {"values": [["dk1", "2025-01-16T00:00:00Z", {"value": 50.0}]]}},
+    {"op": "latest", "table": "prices", "clock": "published", "frontier": "2025-01-15T10:00:00Z", "expect": {"rows": []}},
+    {"op": "latest", "table": "prices", "clock": "published", "frontier": "2025-01-15T10:00:00.000001Z",
+     "expect": {"values": [["dk1", "2025-01-16T00:00:00Z", {"value": 50.0}]]}},
+    {"op": "latest", "table": "prices", "clock": "system", "frontier": "2025-01-15T11:00:00.000001Z", "expect": {"rows": []}},
+    {"op": "latest", "table": "prices", "clock": "system", "frontier": "2025-01-15T11:00:00.000002Z",
+     "expect": {"values": [["dk1", "2025-01-16T00:00:00Z", {"value": 50.0}]]}},
+    {"op": "latest", "table": "prices", "system": "2025-01-15T11:00:00.000001Z", "expect": {"rows": []}},
+    {"op": "latest", "table": "prices", "system": "2025-01-15T11:00:00.000002Z",
+     "expect": {"values": [["dk1", "2025-01-16T00:00:00Z", {"value": 50.0}]]}},
+    {"op": "history", "table": "prices", "frontier": "2025-01-15T10:00:00Z", "expect": {"rows": []}},
+    {"op": "history", "table": "prices", "frontier": "2025-01-15T10:00:00.000001Z", "system": "2025-01-15T11:00:00.000002Z",
+     "expect": {"values": [["dk1", "2025-01-16T00:00:00Z", {"value": 50.0}]]}}
+  ]
+}

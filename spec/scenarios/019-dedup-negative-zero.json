@@ -1,0 +1,27 @@
+{
+  "name": "dedup-negative-zero",
+  "description": "§4.3: f64 is compared bitwise, so -0.0 and 0.0 are different values: writing -0.0 after 0.0 stores a new version, and the sign survives the round trip (§9 compares f64 bitwise). Resending 0.0 (or the integer 0, which converts to +0.0) afterwards is a duplicate of the first version.",
+  "steps": [
+    {"op": "create_table", "name": "t", "columns": [{"name": "value", "type": "f64"}]},
+    {"op": "create_series", "name": "s", "table": "t"},
+    {"op": "write", "system_time": "2025-01-01T10:00:00Z",
+     "rows": [{"series": "s", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": 0.0}}]},
+    {"op": "write", "system_time": "2025-01-01T11:00:00Z",
+     "rows": [{"series": "s", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": -0.0}}],
+     "expect": {"stored": 1, "duplicates": 0, "batch_already_committed": false}},
+    {"op": "latest", "table": "t", "expect": {"values": [["s", "2025-01-02T00:00:00Z", {"value": -0.0}]]}},
+    {"op": "write", "system_time": "2025-01-01T12:00:00Z",
+     "rows": [{"series": "s", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": 0.0}}],
+     "expect": {"stored": 0, "duplicates": 1, "batch_already_committed": false}},
+    {"op": "write", "system_time": "2025-01-01T13:00:00Z",
+     "rows": [{"series": "s", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": 0}}],
+     "expect": {"stored": 0, "duplicates": 1, "batch_already_committed": false}},
+    {"op": "write", "system_time": "2025-01-01T14:00:00Z",
+     "rows": [{"series": "s", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": -0.0}}],
+     "expect": {"stored": 0, "duplicates": 1, "batch_already_committed": false}},
+    {"op": "history", "table": "t",
+     "expect": {"rows": [
+       {"series": "s", "value_time": "2025-01-02T00:00:00Z", "published_time": null, "received_time": "2025-01-01T09:00:00Z", "system_time": "2025-01-01T10:00:00Z", "seq": 1, "deleted": false, "values": {"value": 0.0}},
+       {"series": "s", "value_time": "2025-01-02T00:00:00Z", "published_time": null, "received_time": "2025-01-01T09:00:00Z", "system_time": "2025-01-01T11:00:00Z", "seq": 2, "deleted": false, "values": {"value": -0.0}}]}}
+  ]
+}

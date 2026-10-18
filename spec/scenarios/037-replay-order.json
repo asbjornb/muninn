@@ -1,0 +1,48 @@
+{
+  "name": "replay-order",
+  "description": "§6.3 replay: every version with t_clock in [from, to) and system_time <= S, ordered by k_clock = (t_clock, system_time, seq) ACROSS series (not by series first). Under the published clock null published_time falls back to received_time. from == to is empty; from > to is invalid_range. The order changes completely with the clock.",
+  "steps": [
+    {"op": "create_table", "name": "prices", "columns": [{"name": "value", "type": "f64"}], "default_clock": "published"},
+    {"op": "create_series", "name": "a", "table": "prices"},
+    {"op": "create_series", "name": "b", "table": "prices"},
+    {"op": "write", "system_time": "2025-01-15T10:00:00Z",
+     "rows": [
+       {"series": "b", "value_time": "2025-01-16T00:00:00Z", "published_time": "2025-01-15T09:00:00Z", "received_time": "2025-01-15T09:10:00Z", "values": {"value": 1.0}},
+       {"series": "a", "value_time": "2025-01-16T00:00:00Z", "published_time": null, "received_time": "2025-01-15T09:05:00Z", "values": {"value": 2.0}},
+       {"series": "a", "value_time": "2025-01-16T01:00:00Z", "published_time": "2025-01-15T09:05:00Z", "received_time": "2025-01-15T09:30:00Z", "values": {"value": 3.0}}]},
+    {"op": "write", "system_time": "2025-01-15T11:00:00Z",
+     "rows": [
+       {"series": "b", "value_time": "2025-01-16T01:00:00Z", "published_time": "2025-01-15T09:05:00Z", "received_time": "2025-01-15T10:30:00Z", "values": {"value": 4.0}},
+       {"series": "a", "value_time": "2025-01-16T00:00:00Z", "published_time": "2025-01-15T09:00:00Z", "received_time": "2025-01-15T10:45:00Z", "values": {"value": 5.0}}]},
+    {"op": "replay", "table": "prices",
+     "expect": {"values": [
+       ["b", "2025-01-16T00:00:00Z", {"value": 1.0}],
+       ["a", "2025-01-16T00:00:00Z", {"value": 5.0}],
+       ["a", "2025-01-16T00:00:00Z", {"value": 2.0}],
+       ["a", "2025-01-16T01:00:00Z", {"value": 3.0}],
+       ["b", "2025-01-16T01:00:00Z", {"value": 4.0}]]}},
+    {"op": "replay", "table": "prices", "from": "2025-01-15T09:05:00Z",
+     "expect": {"values": [["a", "2025-01-16T00:00:00Z", {"value": 2.0}], ["a", "2025-01-16T01:00:00Z", {"value": 3.0}], ["b", "2025-01-16T01:00:00Z", {"value": 4.0}]]}},
+    {"op": "replay", "table": "prices", "to": "2025-01-15T09:05:00Z",
+     "expect": {"values": [["b", "2025-01-16T00:00:00Z", {"value": 1.0}], ["a", "2025-01-16T00:00:00Z", {"value": 5.0}]]}},
+    {"op": "replay", "table": "prices", "from": "2025-01-15T09:00:00Z", "to": "2025-01-15T09:00:00Z", "expect": {"rows": []}},
+    {"op": "replay", "table": "prices", "from": "2025-01-15T09:05:00Z", "to": "2025-01-15T09:00:00Z", "expect": {"error": "invalid_range"}},
+    {"op": "replay", "table": "prices", "system": "2025-01-15T10:00:00Z",
+     "expect": {"values": [["b", "2025-01-16T00:00:00Z", {"value": 1.0}], ["a", "2025-01-16T00:00:00Z", {"value": 2.0}], ["a", "2025-01-16T01:00:00Z", {"value": 3.0}]]}},
+    {"op": "replay", "table": "prices", "clock": "received",
+     "expect": {"values": [
+       ["a", "2025-01-16T00:00:00Z", {"value": 2.0}],
+       ["b", "2025-01-16T00:00:00Z", {"value": 1.0}],
+       ["a", "2025-01-16T01:00:00Z", {"value": 3.0}],
+       ["b", "2025-01-16T01:00:00Z", {"value": 4.0}],
+       ["a", "2025-01-16T00:00:00Z", {"value": 5.0}]]}},
+    {"op": "replay", "table": "prices", "clock": "system", "from": "2025-01-15T10:00:00Z", "to": "2025-01-15T11:00:00Z",
+     "expect": {"values": [["b", "2025-01-16T00:00:00Z", {"value": 1.0}], ["a", "2025-01-16T00:00:00Z", {"value": 2.0}], ["a", "2025-01-16T01:00:00Z", {"value": 3.0}]]}},
+    {"op": "replay", "table": "prices", "series": ["b"],
+     "expect": {"rows": [
+       {"series": "b", "value_time": "2025-01-16T00:00:00Z", "published_time": "2025-01-15T09:00:00Z", "received_time": "2025-01-15T09:10:00Z", "system_time": "2025-01-15T10:00:00Z", "seq": 1, "deleted": false, "values": {"value": 1.0}},
+       {"series": "b", "value_time": "2025-01-16T01:00:00Z", "published_time": "2025-01-15T09:05:00Z", "received_time": "2025-01-15T10:30:00Z", "system_time": "2025-01-15T11:00:00Z", "seq": 4, "deleted": false, "values": {"value": 4.0}}]}},
+    {"op": "replay", "table": "prices", "value_from": "2025-01-16T01:00:00Z",
+     "expect": {"values": [["a", "2025-01-16T01:00:00Z", {"value": 3.0}], ["b", "2025-01-16T01:00:00Z", {"value": 4.0}]]}}
+  ]
+}

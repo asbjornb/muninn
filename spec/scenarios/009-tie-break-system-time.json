@@ -1,0 +1,25 @@
+{
+  "name": "tie-break-system-time",
+  "description": "§5 knowledge order (t_clock, system_time, seq): two versions with the same received_time from different batches -> the later-committed one wins. A version committed even later but with an earlier received_time does not win under the received clock (t_clock dominates). Published clock with both published_times null ties on the received fallback the same way.",
+  "steps": [
+    {"op": "create_table", "name": "t", "columns": [{"name": "value", "type": "f64"}]},
+    {"op": "create_series", "name": "s", "table": "t"},
+    {"op": "write", "system_time": "2025-01-01T10:00:00Z",
+     "rows": [{"series": "s", "value_time": "2025-01-01T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": 1.0}}]},
+    {"op": "write", "system_time": "2025-01-01T11:00:00Z",
+     "rows": [{"series": "s", "value_time": "2025-01-01T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": 2.0}}]},
+    {"op": "latest", "table": "t", "expect": {"values": [["s", "2025-01-01T00:00:00Z", {"value": 2.0}]]}},
+    {"op": "latest", "table": "t", "frontier": "2025-01-01T09:00:00Z", "expect": {"values": [["s", "2025-01-01T00:00:00Z", {"value": 2.0}]]}},
+    {"op": "latest", "table": "t", "system": "2025-01-01T10:30:00Z", "expect": {"values": [["s", "2025-01-01T00:00:00Z", {"value": 1.0}]]}},
+    {"op": "latest", "table": "t", "clock": "published", "expect": {"values": [["s", "2025-01-01T00:00:00Z", {"value": 2.0}]]}},
+    {"op": "write", "system_time": "2025-01-01T12:00:00Z",
+     "rows": [{"series": "s", "value_time": "2025-01-01T00:00:00Z", "received_time": "2025-01-01T08:00:00Z", "values": {"value": 3.0}}]},
+    {"op": "latest", "table": "t", "expect": {"values": [["s", "2025-01-01T00:00:00Z", {"value": 2.0}]]}},
+    {"op": "latest", "table": "t", "clock": "system", "expect": {"values": [["s", "2025-01-01T00:00:00Z", {"value": 3.0}]]}},
+    {"op": "history", "table": "t",
+     "expect": {"rows": [
+       {"series": "s", "value_time": "2025-01-01T00:00:00Z", "published_time": null, "received_time": "2025-01-01T08:00:00Z", "system_time": "2025-01-01T12:00:00Z", "seq": 3, "deleted": false, "values": {"value": 3.0}},
+       {"series": "s", "value_time": "2025-01-01T00:00:00Z", "published_time": null, "received_time": "2025-01-01T09:00:00Z", "system_time": "2025-01-01T10:00:00Z", "seq": 1, "deleted": false, "values": {"value": 1.0}},
+       {"series": "s", "value_time": "2025-01-01T00:00:00Z", "published_time": null, "received_time": "2025-01-01T09:00:00Z", "system_time": "2025-01-01T11:00:00Z", "seq": 2, "deleted": false, "values": {"value": 2.0}}]}}
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "name": "dedup-added-column-compares-null",
+  "description": "§2.1/§4.3: a column added after a version was written reads as null and compares as null for dedup. Resending the old row (with the new column missing or explicitly null) is a duplicate; resending it with a value in the new column is a new version.",
+  "steps": [
+    {"op": "create_table", "name": "wind", "columns": [{"name": "value", "type": "f64"}]},
+    {"op": "create_series", "name": "s", "table": "wind"},
+    {"op": "write", "system_time": "2025-01-01T10:00:00Z",
+     "rows": [{"series": "s", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": 5.0}}]},
+    {"op": "add_column", "table": "wind", "name": "quality", "type": "string"},
+    {"op": "write", "system_time": "2025-01-01T11:00:00Z",
+     "rows": [{"series": "s", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": 5.0}}],
+     "expect": {"stored": 0, "duplicates": 1, "batch_already_committed": false}},
+    {"op": "write", "system_time": "2025-01-01T12:00:00Z",
+     "rows": [{"series": "s", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": 5.0, "quality": null}}],
+     "expect": {"stored": 0, "duplicates": 1, "batch_already_committed": false}},
+    {"op": "write", "system_time": "2025-01-01T13:00:00Z",
+     "rows": [{"series": "s", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": 5.0, "quality": "good"}}],
+     "expect": {"stored": 1, "duplicates": 0, "batch_already_committed": false}},
+    {"op": "history", "table": "wind",
+     "expect": {"rows": [
+       {"series": "s", "value_time": "2025-01-02T00:00:00Z", "published_time": null, "received_time": "2025-01-01T09:00:00Z", "system_time": "2025-01-01T10:00:00Z", "seq": 1, "deleted": false, "values": {"value": 5.0, "quality": null}},
+       {"series": "s", "value_time": "2025-01-02T00:00:00Z", "published_time": null, "received_time": "2025-01-01T09:00:00Z", "system_time": "2025-01-01T13:00:00Z", "seq": 2, "deleted": false, "values": {"value": 5.0, "quality": "good"}}]}},
+    {"op": "latest", "table": "wind", "expect": {"values": [["s", "2025-01-02T00:00:00Z", {"quality": "good"}]]}}
+  ]
+}

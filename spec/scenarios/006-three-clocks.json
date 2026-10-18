@@ -1,0 +1,37 @@
+{
+  "name": "three-clocks",
+  "description": "§5: the clock picks both visibility and order. Three versions of one forecast hour where the newest-published (A), newest-received (B) and last-committed (C, a delayed load) are three different versions, so each clock has a different winner. Also: an omitted clock uses the table's default_clock (received for 'wind', system for 'audit').",
+  "steps": [
+    {"op": "create_table", "name": "wind", "columns": [{"name": "value", "type": "f64"}]},
+    {"op": "create_table", "name": "audit", "columns": [{"name": "value", "type": "f64"}], "default_clock": "system", "partition": "month"},
+    {"op": "create_series", "name": "wind_dk1", "table": "wind"},
+    {"op": "create_series", "name": "a1", "table": "audit"},
+    {"op": "write", "system_time": "2025-01-15T08:11:00Z",
+     "rows": [{"series": "wind_dk1", "value_time": "2025-01-16T12:00:00Z", "published_time": "2025-01-15T08:00:00Z", "received_time": "2025-01-15T08:10:00Z", "values": {"value": 100.0}}]},
+    {"op": "write", "system_time": "2025-01-15T09:01:00Z",
+     "rows": [{"series": "wind_dk1", "value_time": "2025-01-16T12:00:00Z", "published_time": "2025-01-15T06:00:00Z", "received_time": "2025-01-15T09:00:00Z", "values": {"value": 110.0}}]},
+    {"op": "write", "system_time": "2025-01-15T09:30:00Z",
+     "rows": [{"series": "wind_dk1", "value_time": "2025-01-16T12:00:00Z", "published_time": "2025-01-15T07:00:00Z", "received_time": "2025-01-15T08:20:00Z", "values": {"value": 130.0}}]},
+    {"op": "latest", "table": "wind", "expect": {"values": [["wind_dk1", "2025-01-16T12:00:00Z", {"value": 110.0}]]}},
+    {"op": "latest", "table": "wind", "clock": "received", "expect": {"values": [["wind_dk1", "2025-01-16T12:00:00Z", {"value": 110.0}]]}},
+    {"op": "latest", "table": "wind", "clock": "published", "expect": {"values": [["wind_dk1", "2025-01-16T12:00:00Z", {"value": 100.0}]]}},
+    {"op": "latest", "table": "wind", "clock": "system", "expect": {"values": [["wind_dk1", "2025-01-16T12:00:00Z", {"value": 130.0}]]}},
+    {"op": "latest", "table": "wind", "clock": "received", "frontier": "2025-01-15T08:15:00Z", "expect": {"values": [["wind_dk1", "2025-01-16T12:00:00Z", {"value": 100.0}]]}},
+    {"op": "latest", "table": "wind", "clock": "received", "frontier": "2025-01-15T08:25:00Z", "expect": {"values": [["wind_dk1", "2025-01-16T12:00:00Z", {"value": 130.0}]]}},
+    {"op": "latest", "table": "wind", "clock": "system", "frontier": "2025-01-15T08:25:00Z", "expect": {"values": [["wind_dk1", "2025-01-16T12:00:00Z", {"value": 100.0}]]}},
+    {"op": "latest", "table": "wind", "clock": "published", "frontier": "2025-01-15T07:30:00Z", "expect": {"values": [["wind_dk1", "2025-01-16T12:00:00Z", {"value": 130.0}]]}},
+    {"op": "latest", "table": "wind", "clock": "received", "frontier": "2025-01-15T07:30:00Z", "expect": {"rows": []}},
+    {"op": "history", "table": "wind", "clock": "published",
+     "expect": {"values": [
+       ["wind_dk1", "2025-01-16T12:00:00Z", {"value": 110.0}],
+       ["wind_dk1", "2025-01-16T12:00:00Z", {"value": 130.0}],
+       ["wind_dk1", "2025-01-16T12:00:00Z", {"value": 100.0}]]}},
+    {"op": "write", "system_time": "2025-01-15T12:00:00Z",
+     "rows": [{"series": "a1", "value_time": "2025-01-01T00:00:00Z", "received_time": "2025-01-15T10:00:00Z", "values": {"value": 1.0}}]},
+    {"op": "write", "system_time": "2025-01-15T13:00:00Z",
+     "rows": [{"series": "a1", "value_time": "2025-01-01T00:00:00Z", "received_time": "2025-01-15T09:00:00Z", "values": {"value": 2.0}}]},
+    {"op": "latest", "table": "audit", "expect": {"values": [["a1", "2025-01-01T00:00:00Z", {"value": 2.0}]]}},
+    {"op": "latest", "table": "audit", "clock": "received", "expect": {"values": [["a1", "2025-01-01T00:00:00Z", {"value": 1.0}]]}},
+    {"op": "latest", "table": "audit", "frontier": "2025-01-15T12:30:00Z", "expect": {"values": [["a1", "2025-01-01T00:00:00Z", {"value": 1.0}]]}}
+  ]
+}
