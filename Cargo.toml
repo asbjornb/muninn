@@ -1,0 +1,25 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[workspace.dependencies]
+muninn-core = { path = "crates/muninn-core" }
+muninn-store = { path = "crates/muninn-store" }
+muninn-conformance = { path = "crates/muninn-conformance" }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+proptest = { version = "1", default-features = false, features = ["std"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
