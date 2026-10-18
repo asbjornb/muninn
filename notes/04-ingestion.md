@@ -19,7 +19,7 @@
 ## Idempotency
 
 Re-sending a batch must be harmless. Idempotency key candidates:
-`(series, value_time, [issue_time], received_time, payload hash)` or a client-supplied
+`(series_id, value_time, received_time, values hash)` or a client-supplied
 batch id. A retry with the same key is dropped; a different payload for the same key is a
 new version (a correction).
 
@@ -30,7 +30,8 @@ it" but "when we first got this exact content".
 ## Corrections and tombstones
 
 - Correction = new version, same identity, new payload and/or new published_time.
-- Delete = tombstone version (`is_deleted = 1`). Invisible at frontiers after it.
+- Delete = tombstone version (`deleted = 1`). Its own times say when the deletion was
+  published/received/written; invisible at frontiers after it.
 - Optional `supersedes` pointer (from the early notes) is probably unnecessary when
   identity is explicit; versions are ordered by frontier/system time anyway.
 

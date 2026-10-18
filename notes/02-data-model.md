@@ -1,64 +1,88 @@
 # Data model
 
-## Shape
+## One kind of series
 
-Keep the engine-level model tiny:
+There's no fundamental difference between forecasts and actuals. Both record a value
+about some moment (`value_time`), become known at some point, and can be corrected.
+Actuals are mostly recorded *backwards* in time (value_time < published_time), forecasts
+*forwards* (value_time > published_time), but the data and the semantics are the same.
+
+What looked like a forecast-specific need — "what did the 06:00 run say?" — is just an
+as-of read with the frontier just after that run was received. Each new forecast run is
+a new version of the same `(series, value_time)` points, superseding the previous run.
+
+Edge cases to keep an eye on (not reasons to split the model):
+
+- A run that only covers part of the horizon: as-of reads then mix the new run with older
+  values for the points it didn't cover. That's correct "latest known" semantics, but
+  differs from "exactly the 12:00 run". If that's needed, `issue_time` as a normal column
+  plus a filter gives it.
+- Different models/providers for the same quantity are **different series**, not versions.
+
+## Rows: engine columns + values
+
+Every row has a small fixed set of columns the engine understands, plus one or more
+value columns:
 
 ```
-series     -- interned symbol (e.g. 'DK1.spot.price', or (area, metric, model) tuple)
-value_time -- what the value is about
-<times>    -- published_time, received_time, system_time (see 01-time-model.md)
-version    -- implicit, from system_time + insert sequence
-payload    -- one or more typed columns (double, int, symbol, fixed-size vector...)
-meta       -- optional extra columns: issue_time, model_run_time, last_input_time, ...
-is_deleted -- tombstone flag
+series_id       -- compact integer key into the series catalog (see below)
+value_time      -- what moment the values are about
+published_time  -- when it became public (may be provisional / corrected)
+received_time   -- when we got it
+system_time     -- when this version was written (engine-assigned) + seq for ties
+deleted         -- tombstone flag
+<values...>     -- user columns: one or many typed scalars
 ```
 
-## Realized series vs. forecasts
+There's no real difference between "payload" and "meta" columns. A row is a
+multivariate scalar record: `value`, or `p10, p50, p90`, or `price, volume`, or
+`value, issue_time, model_run_time`. The engine treats them all the same — stores them
+columnar, zone-maps them, returns them. Only the engine columns have visibility
+semantics.
 
-These differ in what identifies a logical point:
+## Tombstones
 
-- **Realized / observed** (prices, actuals): one logical value per `(series, value_time)`.
-  Revisions supersede.
-- **Forecasts**: many logical values per `(series, value_time)` — one per issue. A
-  forecast issued at 06:00 and one issued at 12:00 are *different facts*, not revisions of
-  each other. A revision of the 06:00 forecast is a new version of that issue.
+A delete is just another version whose `deleted` flag is set. It doesn't need its own
+"deleted_at" timestamp: like any version it already has `published_time`,
+`received_time` and `system_time`, and those *are* when the deletion happened (and was
+known). Reads at frontiers before it still see the value; reads after don't. Un-deleting
+is one more version.
 
-Options:
+## Series catalog (metadata store)
 
-1. Make `issue_time` (or a generic "issue key") part of the identity for forecast tables.
-2. Treat forecasts as realized series where each issue supersedes the previous one, and
-   rely on frontier queries to get "latest issue as of T". Simpler, but loses the ability to
-   ask "what did the 06:00 run say" once the 12:00 run is in.
+Rows carry only `series_id` — a small integer (int32 is probably plenty). Everything
+else about a series lives once, in a catalog:
 
-Leaning towards (1): a table declares its identity columns; the default is
-`(series, value_time)`, forecast tables add `issue_time`.
+- descriptive tags: provider, country, bidding zone, metric, model, unit, source...
+- **time zone / calendar** (e.g. `Europe/Copenhagen` for a DK1 delivery day),
+- **resolution** (15 min, hourly, daily, irregular),
+- value column schema (names, types),
+- default frontier (received vs. published), retention, etc.
 
-## Keys and interning
+Rows are always stored in UTC; the series' time zone is used for things like "delivery
+day 2025-01-16" or daily rollups in local time, including DST days with 23/25 hours.
 
-- Series keys are interned into a global symbol dictionary (kdb-style). Fast compares,
-  small storage.
-- Low-cardinality descriptive fields (model, provider, source, pt_confidence) also interned.
-- Unclear: is a series a flat symbol, or a structured tuple `(area, metric, model, ...)`
-  with a separate series catalog holding the attributes? The catalog approach makes
-  "all DK* price forecasts" queries natural without parsing strings.
+To consumers this is mostly invisible: they query by tags or names
+(`area = 'DK1' AND metric = 'spot_price'`), the catalog resolves that to a set of
+`series_id`s, and the scan runs on integers.
 
-## Extra timestamps and metadata
+Open:
 
-Things like forecast time, model run time, last input data time are plain typed
-columns. The engine stores and returns them, may zone-map them, but doesn't give them
-visibility semantics. If one of them turns out to be needed as a frontier, that's a
-signal to revisit — not to add it up front.
+- Does catalog metadata change over time (provider renamed, unit fixed), and do those
+  changes need to be versioned/as-of too? Probably yes for some fields, but simple
+  versioning (a history table) is likely enough — not the full time model.
+- Catalog storage: a tiny embedded store (SQLite?) vs. our own append-only log.
+- Can one series' value schema evolve (adding p95 later)? Additive only, presumably.
 
 ## Schema evolution
 
-- Additive only in v1: a new column starts existing from some segment onwards; older
-  segments read it as null.
+- Additive only in v1: a new value column starts existing from some segment onwards;
+  older segments read it as null.
 - No type changes in place; add a new column instead.
 
 ## Provenance / QA (nice to have)
 
-- `provider`, `source_id`, `pt_source`, `pt_confidence`.
+- Per-version: `pt_confidence` (`provisional | claimed | authoritative`), `pt_source`.
+  Possibly engine-level, since they qualify an engine column.
 - Derived stats: publication lateness (`published_time - value_time`, or relative to an
-  expected schedule), our latency (`received_time - published_time`), correction delay
-  (time between first version and a correction).
+  expected schedule), our latency (`received_time - published_time`), correction delay.

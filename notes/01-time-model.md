@@ -60,11 +60,12 @@ Probably the query names one frontier explicitly, and there's a per-table defaul
 
 ## Versions and corrections
 
-A logical point is identified by `(series, value_time)` plus, for forecasts, whatever
-distinguishes issues (see `02-data-model.md`). Each logical point has a chain of versions.
+A logical point is identified by `(series, value_time)`. Forecasts and actuals are the
+same thing here (see `02-data-model.md`). Each logical point has a chain of versions.
 
 A new version is appended when:
 
+- a new forecast run arrives for that value_time,
 - the value is revised (provider correction),
 - the published time is corrected (we learn the real publication time later),
 - the point is retracted (tombstone).
@@ -99,7 +100,8 @@ from the single writer makes this total.
 ## Representation
 
 - All times UTC, int64 nanoseconds (or microseconds? see open questions).
-- Calendars/time zones are a query-layer concern (delivery days in CET etc.), never storage.
+- Each series' time zone/calendar lives in the series catalog (`02-data-model.md`), not
+  on rows. Used at query time for delivery days, local-time rollups, DST.
 
 ## Open
 

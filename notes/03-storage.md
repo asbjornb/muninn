@@ -4,6 +4,10 @@ Mostly borrowed from kdb+ (layout) and ClickHouse (segments + zone maps).
 
 ## Layout
 
+Everything below is described as a directory tree, but it must work equally well on
+object storage (S3 / Azure Blob / GCS) — see `08-deployment.md`. Segments are
+immutable once written; the only mutable thing is the manifest, committed atomically.
+
 ```
 db/
   catalog/            symbol dictionary, table schemas, series catalog
@@ -24,7 +28,10 @@ db/
   Open: is daily right for all tables? Monthly for sparse data?
 - **Within a partition, sort by** `(series, value_time, frontier_time, system_time, seq)`
   so "latest version as of F per (series, value_time)" is a single forward scan.
-- **One file per column**, mmap'd. Opening a table is just reading manifests.
+- **One file per column**, mmap'd locally. Opening a table is just reading manifests.
+  On object storage, one-file-per-column means many small GETs; a single segment file
+  with column chunks at known offsets (Parquet-like, ranged reads) may be better.
+  mmap then applies to the local cache, not the source of truth.
 
 ## Segment footer
 

@@ -2,8 +2,13 @@
 
 ## One sentence
 
-A database where every read is implicitly "as of some moment of knowledge", so that
-backtests cannot leak future information unless you explicitly ask them to.
+A database where time is always part of the read — most reads are "as of some moment
+of knowledge" — and those reads are fast and correct by default, so backtests can't
+leak future information by accident.
+
+Not every read has to be as-of (latest-known-today, full version history and arrival-order
+replay are all first-class too), but no read ignores time, and the as-of path is the one
+that must be really fast.
 
 ## Primary use case
 
@@ -53,9 +58,8 @@ Typical questions:
 
 ## Open framing questions
 
-- Embedded library (DuckDB/SQLite-style) vs. a server process (kdb-style) vs. both
-  (library first, thin server wrapper later)? Embedded-first seems simpler and fits
-  backtesting in Python notebooks well.
+- Embedded library vs. server vs. both, and how this lives in a cloud-first world — see
+  `08-deployment.md`.
 - Implementation language. Candidates: Rust (ecosystem: Arrow, Parquet, DataFusion pieces),
   C# (familiar, good mmap/Span story, but weaker data-ecosystem interop), Zig/C++.
   See `open-questions.md`.

@@ -1,6 +1,9 @@
-# tsdb (working name)
+# Muninn
 
-A small, opinionated, single-node database for **point-in-time-correct time series** —
+*Named after Odin's raven of memory, who flies out over the world and reports
+back what happened. Name may still change.*
+
+A small, opinionated database for **point-in-time-correct time series** —
 the kind of data you backtest trading/forecasting strategies against, where "what did we
 know, and when could we act on it" matters as much as the value itself.
 
@@ -37,6 +40,7 @@ simpler than a general database because it refuses to do most things.
 | [notes/05-query.md](notes/05-query.md) | Query surface: AS OF, as-of joins, latest-known |
 | [notes/06-prior-art.md](notes/06-prior-art.md) | Steal sheet: kdb+, Postgres, ClickHouse, Timescale, others |
 | [notes/07-roadmap.md](notes/07-roadmap.md) | Rough MVP build order |
+| [notes/08-deployment.md](notes/08-deployment.md) | Single-node vs. cloud, object storage, adoption, local testing |
 | [notes/open-questions.md](notes/open-questions.md) | Unresolved questions, grouped by topic |
 | [decisions/](decisions/) | Decision records, once things actually get decided |
 | [inbox/](inbox/) | Raw, unedited input (earlier conversations etc.) |

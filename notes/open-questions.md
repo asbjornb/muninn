@@ -6,7 +6,9 @@ Move to `decisions/` once answered.
 
 - Build an engine, or build a semantic layer (DuckDB extension / library over Parquet)?
   Roadmap step 0 should answer this with data rather than taste.
-- Embedded library, server, or both? (Leaning: embedded first.)
+- Embedded library, server, or both? Object storage as the source of truth from day
+  one? See `08-deployment.md`.
+- How would this actually be deployed at work (cloud provider, k8s or not, .NET clients)?
 - Implementation language: Rust vs. C# vs. something else. Trade-offs: Arrow/Parquet
   ecosystem and Python bindings (Rust strong) vs. familiarity (C#).
 - What's the realistic data size? Rows per day, number of series, version churn. Drives
@@ -27,9 +29,11 @@ Move to `decisions/` once answered.
 
 ## Data model
 
-- Forecast identity: `issue_time` as identity column vs. issues-supersede-each-other.
-- Series as flat symbols vs. structured series catalog with attributes.
-- Multi-value payloads (e.g. quantile forecasts, vectors) — columns or fixed-size arrays?
+- ~~Forecast identity~~ → forecasts and actuals are one model; runs supersede.
+- ~~Flat symbols vs. catalog~~ → integer `series_id` on rows + series catalog.
+- Is series catalog metadata versioned over time? How (history table vs. full as-of)?
+- Catalog storage: SQLite-like embedded store vs. own log?
+- Fixed-size array values (e.g. quantile vectors) — or always separate scalar columns?
 - Interval-valued points (delivery periods of varying length: 15-min, hourly, blocks)?
   Store start + duration, or just start?
 
