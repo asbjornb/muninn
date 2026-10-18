@@ -1,0 +1,27 @@
+{
+  "name": "dedup-exact-resend",
+  "description": "§4.3/§4.2: resending a batch without batch_id stores nothing (every row is a duplicate) and consumes no seq. The next real write gets seq 3, not 5. The stored versions keep their original system_time and seq.",
+  "steps": [
+    {"op": "create_table", "name": "prices", "columns": [{"name": "value", "type": "f64"}]},
+    {"op": "create_series", "name": "dk1", "table": "prices"},
+    {"op": "write", "system_time": "2025-01-15T10:00:00Z",
+     "rows": [
+       {"series": "dk1", "value_time": "2025-01-16T00:00:00Z", "published_time": "2025-01-15T09:42:00Z", "received_time": "2025-01-15T09:45:00Z", "values": {"value": 45.5}},
+       {"series": "dk1", "value_time": "2025-01-16T01:00:00Z", "published_time": "2025-01-15T09:42:00Z", "received_time": "2025-01-15T09:45:00Z", "values": {"value": 44.25}}],
+     "expect": {"stored": 2, "duplicates": 0, "batch_already_committed": false}},
+    {"op": "write", "system_time": "2025-01-15T11:00:00Z",
+     "rows": [
+       {"series": "dk1", "value_time": "2025-01-16T00:00:00Z", "published_time": "2025-01-15T09:42:00Z", "received_time": "2025-01-15T09:45:00Z", "values": {"value": 45.5}},
+       {"series": "dk1", "value_time": "2025-01-16T01:00:00Z", "published_time": "2025-01-15T09:42:00Z", "received_time": "2025-01-15T09:45:00Z", "values": {"value": 44.25}}],
+     "expect": {"stored": 0, "duplicates": 2, "batch_already_committed": false}},
+    {"op": "write", "system_time": "2025-01-15T12:00:00Z",
+     "rows": [
+       {"series": "dk1", "value_time": "2025-01-16T02:00:00Z", "published_time": "2025-01-15T09:42:00Z", "received_time": "2025-01-15T09:45:00Z", "values": {"value": 43.0}}],
+     "expect": {"stored": 1, "duplicates": 0, "batch_already_committed": false}},
+    {"op": "history", "table": "prices",
+     "expect": {"rows": [
+       {"series": "dk1", "value_time": "2025-01-16T00:00:00Z", "published_time": "2025-01-15T09:42:00Z", "received_time": "2025-01-15T09:45:00Z", "system_time": "2025-01-15T10:00:00Z", "seq": 1, "deleted": false, "values": {"value": 45.5}},
+       {"series": "dk1", "value_time": "2025-01-16T01:00:00Z", "published_time": "2025-01-15T09:42:00Z", "received_time": "2025-01-15T09:45:00Z", "system_time": "2025-01-15T10:00:00Z", "seq": 2, "deleted": false, "values": {"value": 44.25}},
+       {"series": "dk1", "value_time": "2025-01-16T02:00:00Z", "published_time": "2025-01-15T09:42:00Z", "received_time": "2025-01-15T09:45:00Z", "system_time": "2025-01-15T12:00:00Z", "seq": 3, "deleted": false, "values": {"value": 43.0}}]}}
+  ]
+}

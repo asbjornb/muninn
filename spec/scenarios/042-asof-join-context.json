@@ -1,0 +1,46 @@
+{
+  "name": "asof-join-context",
+  "description": "§6.5: asof_join takes clock and system from the context and the frontier from each left row. The same three left rows give different answers under the received clock (default), the published clock (null published_time falls back to received), the system clock, and with a system bound that excludes a late-ingested version.",
+  "steps": [
+    {"op": "create_table", "name": "prices", "columns": [{"name": "value", "type": "f64"}]},
+    {"op": "create_series", "name": "dk1", "table": "prices"},
+    {"op": "write", "system_time": "2025-01-15T12:11:00Z",
+     "rows": [{"series": "dk1", "value_time": "2025-01-16T00:00:00Z", "published_time": "2025-01-15T12:00:00Z", "received_time": "2025-01-15T12:10:00Z", "values": {"value": 80.0}}]},
+    {"op": "write", "system_time": "2025-01-15T12:21:00Z",
+     "rows": [{"series": "dk1", "value_time": "2025-01-16T00:00:00Z", "published_time": "2025-01-15T12:30:00Z", "received_time": "2025-01-15T12:20:00Z", "values": {"value": 85.0}}]},
+    {"op": "write", "system_time": "2025-01-16T09:00:00Z",
+     "rows": [{"series": "dk1", "value_time": "2025-01-16T00:00:00Z", "received_time": "2025-01-15T12:40:00Z", "values": {"value": 90.0}}]},
+    {"op": "asof_join", "table": "prices",
+     "left": [
+       {"series": "dk1", "value_time": "2025-01-16T00:00:00Z", "frontier": "2025-01-15T12:15:00Z"},
+       {"series": "dk1", "value_time": "2025-01-16T00:00:00Z", "frontier": "2025-01-15T12:25:00Z"},
+       {"series": "dk1", "value_time": "2025-01-16T00:00:00Z", "frontier": "2025-01-15T12:45:00Z"}],
+     "expect": {"values": [
+       ["dk1", "2025-01-16T00:00:00Z", "2025-01-15T12:15:00Z", {"value": 80.0}],
+       ["dk1", "2025-01-16T00:00:00Z", "2025-01-15T12:25:00Z", {"value": 85.0}],
+       ["dk1", "2025-01-16T00:00:00Z", "2025-01-15T12:45:00Z", {"value": 90.0}]]}},
+    {"op": "asof_join", "table": "prices", "clock": "published",
+     "left": [
+       {"series": "dk1", "value_time": "2025-01-16T00:00:00Z", "frontier": "2025-01-15T12:15:00Z"},
+       {"series": "dk1", "value_time": "2025-01-16T00:00:00Z", "frontier": "2025-01-15T12:25:00Z"},
+       {"series": "dk1", "value_time": "2025-01-16T00:00:00Z", "frontier": "2025-01-15T12:45:00Z"}],
+     "expect": {"values": [
+       ["dk1", "2025-01-16T00:00:00Z", "2025-01-15T12:15:00Z", {"value": 80.0}],
+       ["dk1", "2025-01-16T00:00:00Z", "2025-01-15T12:25:00Z", {"value": 80.0}],
+       ["dk1", "2025-01-16T00:00:00Z", "2025-01-15T12:45:00Z", {"value": 90.0}]]}},
+    {"op": "asof_join", "table": "prices", "system": "2025-01-15T23:00:00Z",
+     "left": [{"series": "dk1", "value_time": "2025-01-16T00:00:00Z", "frontier": "2025-01-15T12:45:00Z"}],
+     "expect": {"values": [["dk1", "2025-01-16T00:00:00Z", "2025-01-15T12:45:00Z", {"value": 85.0}]]}},
+    {"op": "asof_join", "table": "prices", "clock": "system",
+     "left": [
+       {"series": "dk1", "value_time": "2025-01-16T00:00:00Z", "frontier": "2025-01-15T12:15:00Z"},
+       {"series": "dk1", "value_time": "2025-01-16T00:00:00Z", "frontier": "2025-01-15T12:25:00Z"},
+       {"series": "dk1", "value_time": "2025-01-16T00:00:00Z", "frontier": "2025-01-15T12:45:00Z"},
+       {"series": "dk1", "value_time": "2025-01-16T00:00:00Z", "frontier": "2025-01-15T12:10:59Z"}],
+     "expect": {"values": [
+       ["dk1", "2025-01-16T00:00:00Z", "2025-01-15T12:15:00Z", {"value": 80.0}],
+       ["dk1", "2025-01-16T00:00:00Z", "2025-01-15T12:25:00Z", {"value": 85.0}],
+       ["dk1", "2025-01-16T00:00:00Z", "2025-01-15T12:45:00Z", {"value": 85.0}],
+       ["dk1", "2025-01-16T00:00:00Z", "2025-01-15T12:10:59Z", null]]}}
+  ]
+}

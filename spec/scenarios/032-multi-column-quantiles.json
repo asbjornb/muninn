@@ -1,0 +1,22 @@
+{
+  "name": "multi-column-quantiles",
+  "description": "§3/§6.1: a version carries all of a table's columns. A probabilistic wind forecast stores p10/p50/p90; a later run that only sends p50 is a whole new version, and latest returns it as is (p10/p90 null) — values are NOT merged column-wise across versions.",
+  "steps": [
+    {"op": "create_table", "name": "wind_fc", "columns": [{"name": "p10", "type": "f64"}, {"name": "p50", "type": "f64"}, {"name": "p90", "type": "f64"}]},
+    {"op": "create_series", "name": "wind_dk1", "table": "wind_fc", "resolution": "1h"},
+    {"op": "write", "system_time": "2025-01-15T06:31:00Z",
+     "rows": [
+       {"series": "wind_dk1", "value_time": "2025-01-16T00:00:00Z", "published_time": "2025-01-15T06:00:00Z", "received_time": "2025-01-15T06:30:00Z", "values": {"p10": 80.0, "p50": 100.0, "p90": 120.0}},
+       {"series": "wind_dk1", "value_time": "2025-01-16T01:00:00Z", "published_time": "2025-01-15T06:00:00Z", "received_time": "2025-01-15T06:30:00Z", "values": {"p90": 125.0, "p10": 85.0, "p50": 105.0}}]},
+    {"op": "write", "system_time": "2025-01-15T12:31:00Z",
+     "rows": [{"series": "wind_dk1", "value_time": "2025-01-16T00:00:00Z", "published_time": "2025-01-15T12:00:00Z", "received_time": "2025-01-15T12:30:00Z", "values": {"p50": 95.0}}]},
+    {"op": "latest", "table": "wind_fc",
+     "expect": {"rows": [
+       {"series": "wind_dk1", "value_time": "2025-01-16T00:00:00Z", "published_time": "2025-01-15T12:00:00Z", "received_time": "2025-01-15T12:30:00Z", "system_time": "2025-01-15T12:31:00Z", "seq": 3, "values": {"p10": null, "p50": 95.0, "p90": null}},
+       {"series": "wind_dk1", "value_time": "2025-01-16T01:00:00Z", "published_time": "2025-01-15T06:00:00Z", "received_time": "2025-01-15T06:30:00Z", "system_time": "2025-01-15T06:31:00Z", "seq": 2, "values": {"p10": 85.0, "p50": 105.0, "p90": 125.0}}]}},
+    {"op": "latest", "table": "wind_fc", "frontier": "2025-01-15T12:00:00Z",
+     "expect": {"values": [["wind_dk1", "2025-01-16T00:00:00Z", {"p10": 80.0, "p50": 100.0, "p90": 120.0}], ["wind_dk1", "2025-01-16T01:00:00Z", {"p50": 105.0}]]}},
+    {"op": "history", "table": "wind_fc", "value_to": "2025-01-16T01:00:00Z",
+     "expect": {"values": [["wind_dk1", "2025-01-16T00:00:00Z", {"p10": 80.0, "p90": 120.0}], ["wind_dk1", "2025-01-16T00:00:00Z", {"p10": null, "p90": null}]]}}
+  ]
+}

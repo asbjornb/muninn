@@ -1,0 +1,46 @@
+{
+  "name": "i64-columns",
+  "description": "§4.1 i64: integral JSON numbers in i64 range or decimal strings (needed beyond 2^53). 2^53+1, i64 min and max round-trip exactly; '007' is 7. 1.5, 2.0 and 1e3 (fraction/exponent, AMBIGUITIES A3), '+5', '1.5', true and out-of-range values are type_mismatch. The same integer as number or as string is a duplicate.",
+  "steps": [
+    {"op": "create_table", "name": "trades", "columns": [{"name": "count", "type": "i64"}]},
+    {"op": "create_series", "name": "dk1_trades", "table": "trades"},
+    {"op": "write", "system_time": "2025-01-01T10:00:00Z",
+     "rows": [
+       {"series": "dk1_trades", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"count": 42}},
+       {"series": "dk1_trades", "value_time": "2025-01-02T01:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"count": "9007199254740993"}},
+       {"series": "dk1_trades", "value_time": "2025-01-02T02:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"count": "-9223372036854775808"}},
+       {"series": "dk1_trades", "value_time": "2025-01-02T03:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"count": 9223372036854775807}},
+       {"series": "dk1_trades", "value_time": "2025-01-02T04:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"count": "007"}},
+       {"series": "dk1_trades", "value_time": "2025-01-02T05:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"count": -1}}],
+     "expect": {"stored": 6, "duplicates": 0, "batch_already_committed": false}},
+    {"op": "latest", "table": "trades",
+     "expect": {"values": [
+       ["dk1_trades", "2025-01-02T00:00:00Z", {"count": 42}],
+       ["dk1_trades", "2025-01-02T01:00:00Z", {"count": "9007199254740993"}],
+       ["dk1_trades", "2025-01-02T02:00:00Z", {"count": "-9223372036854775808"}],
+       ["dk1_trades", "2025-01-02T03:00:00Z", {"count": "9223372036854775807"}],
+       ["dk1_trades", "2025-01-02T04:00:00Z", {"count": 7}],
+       ["dk1_trades", "2025-01-02T05:00:00Z", {"count": "-1"}]]}},
+    {"op": "latest", "table": "trades", "value_from": "2025-01-02T01:00:00Z", "value_to": "2025-01-02T02:00:00Z",
+     "expect": {"rows": [
+       {"series": "dk1_trades", "value_time": "2025-01-02T01:00:00Z", "published_time": null, "received_time": "2025-01-01T09:00:00Z", "system_time": "2025-01-01T10:00:00Z", "seq": 2, "values": {"count": 9007199254740993}}]}},
+    {"op": "write", "system_time": "2025-01-01T11:00:00Z",
+     "rows": [
+       {"series": "dk1_trades", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"count": "42"}},
+       {"series": "dk1_trades", "value_time": "2025-01-02T01:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"count": 9007199254740993}},
+       {"series": "dk1_trades", "value_time": "2025-01-02T01:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"count": 9007199254740992}}],
+     "expect": {"stored": 1, "duplicates": 2, "batch_already_committed": false}},
+    {"op": "write", "system_time": "2025-01-01T12:00:00Z", "rows": [{"series": "dk1_trades", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"count": 1.5}}], "expect": {"error": "type_mismatch"}},
+    {"op": "write", "system_time": "2025-01-01T12:00:00Z", "rows": [{"series": "dk1_trades", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"count": 2.0}}], "expect": {"error": "type_mismatch"}},
+    {"op": "write", "system_time": "2025-01-01T12:00:00Z", "rows": [{"series": "dk1_trades", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"count": 1e3}}], "expect": {"error": "type_mismatch"}},
+    {"op": "write", "system_time": "2025-01-01T12:00:00Z", "rows": [{"series": "dk1_trades", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"count": "1.5"}}], "expect": {"error": "type_mismatch"}},
+    {"op": "write", "system_time": "2025-01-01T12:00:00Z", "rows": [{"series": "dk1_trades", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"count": "+5"}}], "expect": {"error": "type_mismatch"}},
+    {"op": "write", "system_time": "2025-01-01T12:00:00Z", "rows": [{"series": "dk1_trades", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"count": " 5"}}], "expect": {"error": "type_mismatch"}},
+    {"op": "write", "system_time": "2025-01-01T12:00:00Z", "rows": [{"series": "dk1_trades", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"count": true}}], "expect": {"error": "type_mismatch"}},
+    {"op": "write", "system_time": "2025-01-01T12:00:00Z", "rows": [{"series": "dk1_trades", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"count": "9223372036854775808"}}], "expect": {"error": "type_mismatch"}},
+    {"op": "write", "system_time": "2025-01-01T12:00:00Z", "rows": [{"series": "dk1_trades", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"count": 9223372036854775808}}], "expect": {"error": "type_mismatch"}},
+    {"op": "write", "system_time": "2025-01-01T12:00:00Z", "rows": [{"series": "dk1_trades", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"count": -9223372036854775809}}], "expect": {"error": "type_mismatch"}},
+    {"op": "history", "table": "trades", "value_from": "2025-01-02T01:00:00Z", "value_to": "2025-01-02T02:00:00Z",
+     "expect": {"values": [["dk1_trades", "2025-01-02T01:00:00Z", {"count": "9007199254740993"}], ["dk1_trades", "2025-01-02T01:00:00Z", {"count": 9007199254740992}]]}}
+  ]
+}

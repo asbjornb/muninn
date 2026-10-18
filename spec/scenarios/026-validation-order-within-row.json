@@ -1,0 +1,37 @@
+{
+  "name": "validation-order-within-row",
+  "description": "§4.1: checks run in a fixed order and the first failure wins: unknown_series, unknown_column (all keys before any type check), type_mismatch, tombstone_with_values, invalid_timestamp. Each write below breaks several rules at once. A missing received_time is invalid_timestamp (AMBIGUITIES A5). A tombstone with explicit nulls and published_time null is fine.",
+  "steps": [
+    {"op": "create_table", "name": "t", "columns": [{"name": "value", "type": "f64"}]},
+    {"op": "create_series", "name": "s", "table": "t"},
+    {"op": "write", "system_time": "2025-01-01T10:00:00Z",
+     "rows": [{"series": "nope", "value_time": "bad", "received_time": "bad", "deleted": true, "values": {"bogus": "x"}}],
+     "expect": {"error": "unknown_series"}},
+    {"op": "write", "system_time": "2025-01-01T10:00:00Z",
+     "rows": [{"series": "s", "value_time": "bad", "received_time": "bad", "deleted": true, "values": {"value": "abc", "bogus": 1.0}}],
+     "expect": {"error": "unknown_column"}},
+    {"op": "write", "system_time": "2025-01-01T10:00:00Z",
+     "rows": [{"series": "s", "value_time": "bad", "received_time": "bad", "deleted": true, "values": {"value": "abc"}}],
+     "expect": {"error": "type_mismatch"}},
+    {"op": "write", "system_time": "2025-01-01T10:00:00Z",
+     "rows": [{"series": "s", "value_time": "bad", "received_time": "bad", "deleted": true, "values": {"value": 1.0}}],
+     "expect": {"error": "tombstone_with_values"}},
+    {"op": "write", "system_time": "2025-01-01T10:00:00Z",
+     "rows": [{"series": "s", "value_time": "2025-13-01T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": 1.0}}],
+     "expect": {"error": "invalid_timestamp"}},
+    {"op": "write", "system_time": "2025-01-01T10:00:00Z",
+     "rows": [{"series": "s", "value_time": "2025-01-02T00:00:00Z", "values": {"value": 1.0}}],
+     "expect": {"error": "invalid_timestamp"}},
+    {"op": "write", "system_time": "2025-01-01T10:00:00Z",
+     "rows": [{"series": "s", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "published_time": "yesterday", "values": {"value": 1.0}}],
+     "expect": {"error": "invalid_timestamp"}},
+    {"op": "latest", "table": "t", "expect": {"rows": []}},
+    {"op": "write", "system_time": "2025-01-01T10:00:00Z",
+     "rows": [{"series": "s", "value_time": "2025-01-02T00:00:00Z", "published_time": null, "received_time": "2025-01-01T09:00:00Z", "deleted": true, "values": {"value": null}}],
+     "expect": {"stored": 1, "duplicates": 0, "batch_already_committed": false}},
+    {"op": "latest", "table": "t", "expect": {"rows": []}},
+    {"op": "history", "table": "t",
+     "expect": {"rows": [
+       {"series": "s", "value_time": "2025-01-02T00:00:00Z", "published_time": null, "received_time": "2025-01-01T09:00:00Z", "system_time": "2025-01-01T10:00:00Z", "seq": 1, "deleted": true, "values": {"value": null}}]}}
+  ]
+}

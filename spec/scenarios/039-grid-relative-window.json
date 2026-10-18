@@ -1,0 +1,43 @@
+{
+  "name": "grid-relative-window",
+  "description": "§6.4 relative window: for each frontier F the value range is [F + window_start, F + window_end). Day-ahead backtest: at 12:00 each day, the next delivery day is [F+12h, F+36h) — half-open, so the next midnight is excluded. A negative window [-1d, 0h) looks back at actuals. Durations in any unit (43200000ms = 720m = 12h); equal ends give an empty window.",
+  "steps": [
+    {"op": "create_table", "name": "wind", "columns": [{"name": "mw", "type": "f64"}]},
+    {"op": "create_series", "name": "wind_dk1", "table": "wind", "resolution": "1h"},
+    {"op": "write", "system_time": "2025-01-14T06:31:00Z",
+     "rows": [
+       {"series": "wind_dk1", "value_time": "2025-01-15T00:00:00Z", "received_time": "2025-01-14T06:30:00Z", "values": {"mw": 100.0}},
+       {"series": "wind_dk1", "value_time": "2025-01-15T23:00:00Z", "received_time": "2025-01-14T06:30:00Z", "values": {"mw": 110.0}},
+       {"series": "wind_dk1", "value_time": "2025-01-16T00:00:00Z", "received_time": "2025-01-14T06:30:00Z", "values": {"mw": 120.0}}]},
+    {"op": "write", "system_time": "2025-01-15T06:31:00Z",
+     "rows": [
+       {"series": "wind_dk1", "value_time": "2025-01-15T23:00:00Z", "received_time": "2025-01-15T06:30:00Z", "values": {"mw": 111.0}},
+       {"series": "wind_dk1", "value_time": "2025-01-16T00:00:00Z", "received_time": "2025-01-15T06:30:00Z", "values": {"mw": 121.0}},
+       {"series": "wind_dk1", "value_time": "2025-01-16T23:00:00Z", "received_time": "2025-01-15T06:30:00Z", "values": {"mw": 131.0}},
+       {"series": "wind_dk1", "value_time": "2025-01-17T00:00:00Z", "received_time": "2025-01-15T06:30:00Z", "values": {"mw": 141.0}}]},
+    {"op": "grid", "table": "wind", "frontiers": ["2025-01-15T12:00:00Z", "2025-01-14T12:00:00Z"], "window_start": "12h", "window_end": "36h",
+     "expect": {"values": [
+       ["2025-01-14T12:00:00Z", "wind_dk1", "2025-01-15T00:00:00Z", {"mw": 100.0}],
+       ["2025-01-14T12:00:00Z", "wind_dk1", "2025-01-15T23:00:00Z", {"mw": 110.0}],
+       ["2025-01-15T12:00:00Z", "wind_dk1", "2025-01-16T00:00:00Z", {"mw": 121.0}],
+       ["2025-01-15T12:00:00Z", "wind_dk1", "2025-01-16T23:00:00Z", {"mw": 131.0}]]}},
+    {"op": "grid", "table": "wind", "frontiers": ["2025-01-14T12:00:00Z", "2025-01-15T12:00:00Z"], "window_start": "43200000ms", "window_end": "2160m",
+     "expect": {"values": [
+       ["2025-01-14T12:00:00Z", "wind_dk1", "2025-01-15T00:00:00Z", {"mw": 100.0}],
+       ["2025-01-14T12:00:00Z", "wind_dk1", "2025-01-15T23:00:00Z", {"mw": 110.0}],
+       ["2025-01-15T12:00:00Z", "wind_dk1", "2025-01-16T00:00:00Z", {"mw": 121.0}],
+       ["2025-01-15T12:00:00Z", "wind_dk1", "2025-01-16T23:00:00Z", {"mw": 131.0}]]}},
+    {"op": "grid", "table": "wind", "frontiers": ["2025-01-14T12:00:00Z", "2025-01-15T12:00:00Z"], "window_start": "-1d", "window_end": "0h",
+     "expect": {"values": [["2025-01-15T12:00:00Z", "wind_dk1", "2025-01-15T00:00:00Z", {"mw": 100.0}]]}},
+    {"op": "grid", "table": "wind", "frontiers": ["2025-01-15T12:00:00Z"], "window_start": "-12h", "window_end": "-12h", "expect": {"rows": []}},
+    {"op": "grid", "table": "wind", "frontiers": ["2025-01-15T12:00:00Z"], "window_start": "-36h", "window_end": "86400000000us",
+     "expect": {"values": [
+       ["2025-01-15T12:00:00Z", "wind_dk1", "2025-01-15T00:00:00Z", {"mw": 100.0}],
+       ["2025-01-15T12:00:00Z", "wind_dk1", "2025-01-15T23:00:00Z", {"mw": 111.0}],
+       ["2025-01-15T12:00:00Z", "wind_dk1", "2025-01-16T00:00:00Z", {"mw": 121.0}]]}},
+    {"op": "grid", "table": "wind", "frontiers": ["2025-01-15T06:30:00Z"], "window_start": "-6h30m", "window_end": "0h", "expect": {"error": "invalid_range"}},
+    {"op": "grid", "table": "wind", "frontiers": ["2025-01-15T06:30:00Z"], "window_start": "1050m", "window_end": "1051m",
+     "expect": {"rows": [
+       {"frontier": "2025-01-15T06:30:00Z", "series": "wind_dk1", "value_time": "2025-01-16T00:00:00Z", "published_time": null, "received_time": "2025-01-15T06:30:00Z", "system_time": "2025-01-15T06:31:00Z", "seq": 5, "values": {"mw": 121.0}}]}}
+  ]
+}

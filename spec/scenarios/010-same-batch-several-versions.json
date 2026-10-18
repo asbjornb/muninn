@@ -1,0 +1,33 @@
+{
+  "name": "same-batch-several-versions",
+  "description": "§4.2/§5: one batch carrying four versions of the same point. All share the batch system_time; seq follows input order (1..4). The winner is decided by t_clock first (the 09:30 row, although it is not last in the batch); among equal t_clock the later seq wins.",
+  "steps": [
+    {"op": "create_table", "name": "t", "columns": [{"name": "value", "type": "f64"}]},
+    {"op": "create_series", "name": "s", "table": "t"},
+    {"op": "write", "system_time": "2025-01-01T10:00:00Z",
+     "rows": [
+       {"series": "s", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": 1.0}},
+       {"series": "s", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:30:00Z", "values": {"value": 2.0}},
+       {"series": "s", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": 3.0}},
+       {"series": "s", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:15:00Z", "values": {"value": 4.0}}],
+     "expect": {"stored": 4, "duplicates": 0, "batch_already_committed": false}},
+    {"op": "latest", "table": "t", "expect": {"values": [["s", "2025-01-02T00:00:00Z", {"value": 2.0}]]}},
+    {"op": "latest", "table": "t", "frontier": "2025-01-01T09:00:00Z",
+     "expect": {"rows": [
+       {"series": "s", "value_time": "2025-01-02T00:00:00Z", "published_time": null, "received_time": "2025-01-01T09:00:00Z", "system_time": "2025-01-01T10:00:00Z", "seq": 3, "values": {"value": 3.0}}]}},
+    {"op": "latest", "table": "t", "frontier": "2025-01-01T09:20:00Z", "expect": {"values": [["s", "2025-01-02T00:00:00Z", {"value": 4.0}]]}},
+    {"op": "latest", "table": "t", "clock": "system", "expect": {"values": [["s", "2025-01-02T00:00:00Z", {"value": 4.0}]]}},
+    {"op": "history", "table": "t",
+     "expect": {"rows": [
+       {"series": "s", "value_time": "2025-01-02T00:00:00Z", "published_time": null, "received_time": "2025-01-01T09:00:00Z", "system_time": "2025-01-01T10:00:00Z", "seq": 1, "deleted": false, "values": {"value": 1.0}},
+       {"series": "s", "value_time": "2025-01-02T00:00:00Z", "published_time": null, "received_time": "2025-01-01T09:00:00Z", "system_time": "2025-01-01T10:00:00Z", "seq": 3, "deleted": false, "values": {"value": 3.0}},
+       {"series": "s", "value_time": "2025-01-02T00:00:00Z", "published_time": null, "received_time": "2025-01-01T09:15:00Z", "system_time": "2025-01-01T10:00:00Z", "seq": 4, "deleted": false, "values": {"value": 4.0}},
+       {"series": "s", "value_time": "2025-01-02T00:00:00Z", "published_time": null, "received_time": "2025-01-01T09:30:00Z", "system_time": "2025-01-01T10:00:00Z", "seq": 2, "deleted": false, "values": {"value": 2.0}}]}},
+    {"op": "history", "table": "t", "clock": "system",
+     "expect": {"values": [
+       ["s", "2025-01-02T00:00:00Z", {"value": 1.0}],
+       ["s", "2025-01-02T00:00:00Z", {"value": 2.0}],
+       ["s", "2025-01-02T00:00:00Z", {"value": 3.0}],
+       ["s", "2025-01-02T00:00:00Z", {"value": 4.0}]]}}
+  ]
+}

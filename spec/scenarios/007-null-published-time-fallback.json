@@ -1,0 +1,27 @@
+{
+  "name": "null-published-time-fallback",
+  "description": "§5: t_published = published_time, or received_time when published_time is null. Under the published clock a version with unknown publication time becomes visible (and is ordered) at its received time. The stored null is still returned as null. Includes a synthetic backfill with null published time received before the official publication.",
+  "steps": [
+    {"op": "create_table", "name": "prices", "columns": [{"name": "value", "type": "f64"}], "default_clock": "published"},
+    {"op": "create_series", "name": "dk1_spot", "table": "prices"},
+    {"op": "write", "system_time": "2025-01-15T12:06:00Z",
+     "rows": [{"series": "dk1_spot", "value_time": "2025-01-16T00:00:00Z", "published_time": "2025-01-15T12:00:00Z", "received_time": "2025-01-15T12:05:00Z", "values": {"value": 80.0}}]},
+    {"op": "write", "system_time": "2025-01-15T12:31:00Z",
+     "rows": [{"series": "dk1_spot", "value_time": "2025-01-16T00:00:00Z", "published_time": null, "received_time": "2025-01-15T12:30:00Z", "values": {"value": 81.0}}]},
+    {"op": "latest", "table": "prices", "frontier": "2025-01-15T11:59:59Z", "expect": {"rows": []}},
+    {"op": "latest", "table": "prices", "frontier": "2025-01-15T12:00:00Z", "expect": {"values": [["dk1_spot", "2025-01-16T00:00:00Z", {"value": 80.0}]]}},
+    {"op": "latest", "table": "prices", "frontier": "2025-01-15T12:29:59.999999Z", "expect": {"values": [["dk1_spot", "2025-01-16T00:00:00Z", {"value": 80.0}]]}},
+    {"op": "latest", "table": "prices", "frontier": "2025-01-15T12:30:00Z",
+     "expect": {"rows": [
+       {"series": "dk1_spot", "value_time": "2025-01-16T00:00:00Z", "published_time": null, "received_time": "2025-01-15T12:30:00Z", "system_time": "2025-01-15T12:31:00Z", "seq": 2, "values": {"value": 81.0}}]}},
+    {"op": "write", "system_time": "2025-01-15T13:00:00Z",
+     "rows": [{"series": "dk1_spot", "value_time": "2025-01-16T00:00:00Z", "received_time": "2025-01-15T11:50:00Z", "values": {"value": 79.0}}]},
+    {"op": "latest", "table": "prices", "frontier": "2025-01-15T11:55:00Z", "expect": {"values": [["dk1_spot", "2025-01-16T00:00:00Z", {"value": 79.0}]]}},
+    {"op": "latest", "table": "prices", "frontier": "2025-01-15T12:00:00Z", "expect": {"values": [["dk1_spot", "2025-01-16T00:00:00Z", {"value": 80.0}]]}},
+    {"op": "latest", "table": "prices", "expect": {"values": [["dk1_spot", "2025-01-16T00:00:00Z", {"value": 81.0}]]}},
+    {"op": "replay", "table": "prices", "from": "2025-01-15T11:00:00Z", "to": "2025-01-15T12:30:00Z",
+     "expect": {"rows": [
+       {"series": "dk1_spot", "value_time": "2025-01-16T00:00:00Z", "published_time": null, "received_time": "2025-01-15T11:50:00Z", "system_time": "2025-01-15T13:00:00Z", "seq": 3, "deleted": false, "values": {"value": 79.0}},
+       {"series": "dk1_spot", "value_time": "2025-01-16T00:00:00Z", "published_time": "2025-01-15T12:00:00Z", "received_time": "2025-01-15T12:05:00Z", "system_time": "2025-01-15T12:06:00Z", "seq": 1, "deleted": false, "values": {"value": 80.0}}]}}
+  ]
+}

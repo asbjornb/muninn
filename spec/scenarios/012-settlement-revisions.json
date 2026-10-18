@@ -1,0 +1,43 @@
+{
+  "name": "settlement-revisions",
+  "description": "Late corrections: hourly DK1 consumption actuals settled at D+1, revised at D+5 and again at M+3 (only one hour changes). Re-sending an unchanged value with a new received_time is a new version (§4.3). latest at a frontier returns the settlement known then; grid over the three revision dates shows the evolution.",
+  "steps": [
+    {"op": "create_table", "name": "consumption", "columns": [{"name": "mwh", "type": "f64"}]},
+    {"op": "create_series", "name": "dk1_consumption", "table": "consumption", "resolution": "1h"},
+    {"op": "write", "system_time": "2025-01-11T10:00:00Z",
+     "rows": [
+       {"series": "dk1_consumption", "value_time": "2025-01-10T00:00:00Z", "published_time": "2025-01-11T08:00:00Z", "received_time": "2025-01-11T09:00:00Z", "values": {"mwh": 3500.0}},
+       {"series": "dk1_consumption", "value_time": "2025-01-10T01:00:00Z", "published_time": "2025-01-11T08:00:00Z", "received_time": "2025-01-11T09:00:00Z", "values": {"mwh": 3400.0}}],
+     "expect": {"stored": 2, "duplicates": 0, "batch_already_committed": false}},
+    {"op": "write", "system_time": "2025-01-15T10:00:00Z",
+     "rows": [
+       {"series": "dk1_consumption", "value_time": "2025-01-10T00:00:00Z", "published_time": "2025-01-15T08:00:00Z", "received_time": "2025-01-15T09:00:00Z", "values": {"mwh": 3520.0}},
+       {"series": "dk1_consumption", "value_time": "2025-01-10T01:00:00Z", "published_time": "2025-01-15T08:00:00Z", "received_time": "2025-01-15T09:00:00Z", "values": {"mwh": 3400.0}}],
+     "expect": {"stored": 2, "duplicates": 0, "batch_already_committed": false}},
+    {"op": "write", "system_time": "2025-04-10T10:00:00Z",
+     "rows": [
+       {"series": "dk1_consumption", "value_time": "2025-01-10T00:00:00Z", "published_time": "2025-04-10T08:00:00Z", "received_time": "2025-04-10T09:00:00Z", "values": {"mwh": 3525.5}}],
+     "expect": {"stored": 1, "duplicates": 0, "batch_already_committed": false}},
+    {"op": "latest", "table": "consumption", "frontier": "2025-01-12T00:00:00Z",
+     "expect": {"values": [["dk1_consumption", "2025-01-10T00:00:00Z", {"mwh": 3500.0}], ["dk1_consumption", "2025-01-10T01:00:00Z", {"mwh": 3400.0}]]}},
+    {"op": "latest", "table": "consumption", "frontier": "2025-02-01T00:00:00Z",
+     "expect": {"rows": [
+       {"series": "dk1_consumption", "value_time": "2025-01-10T00:00:00Z", "published_time": "2025-01-15T08:00:00Z", "received_time": "2025-01-15T09:00:00Z", "system_time": "2025-01-15T10:00:00Z", "seq": 3, "values": {"mwh": 3520.0}},
+       {"series": "dk1_consumption", "value_time": "2025-01-10T01:00:00Z", "published_time": "2025-01-15T08:00:00Z", "received_time": "2025-01-15T09:00:00Z", "system_time": "2025-01-15T10:00:00Z", "seq": 4, "values": {"mwh": 3400.0}}]}},
+    {"op": "latest", "table": "consumption",
+     "expect": {"values": [["dk1_consumption", "2025-01-10T00:00:00Z", {"mwh": 3525.5}], ["dk1_consumption", "2025-01-10T01:00:00Z", {"mwh": 3400.0}]]}},
+    {"op": "history", "table": "consumption", "value_from": "2025-01-10T00:00:00Z", "value_to": "2025-01-10T01:00:00Z",
+     "expect": {"values": [
+       ["dk1_consumption", "2025-01-10T00:00:00Z", {"mwh": 3500.0}],
+       ["dk1_consumption", "2025-01-10T00:00:00Z", {"mwh": 3520.0}],
+       ["dk1_consumption", "2025-01-10T00:00:00Z", {"mwh": 3525.5}]]}},
+    {"op": "grid", "table": "consumption", "frontiers": ["2025-01-11T09:00:00Z", "2025-01-15T09:00:00Z", "2025-04-10T09:00:00Z"],
+     "expect": {"values": [
+       ["2025-01-11T09:00:00Z", "dk1_consumption", "2025-01-10T00:00:00Z", {"mwh": 3500.0}],
+       ["2025-01-11T09:00:00Z", "dk1_consumption", "2025-01-10T01:00:00Z", {"mwh": 3400.0}],
+       ["2025-01-15T09:00:00Z", "dk1_consumption", "2025-01-10T00:00:00Z", {"mwh": 3520.0}],
+       ["2025-01-15T09:00:00Z", "dk1_consumption", "2025-01-10T01:00:00Z", {"mwh": 3400.0}],
+       ["2025-04-10T09:00:00Z", "dk1_consumption", "2025-01-10T00:00:00Z", {"mwh": 3525.5}],
+       ["2025-04-10T09:00:00Z", "dk1_consumption", "2025-01-10T01:00:00Z", {"mwh": 3400.0}]]}}
+  ]
+}

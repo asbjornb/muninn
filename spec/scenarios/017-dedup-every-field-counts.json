@@ -1,0 +1,41 @@
+{
+  "name": "dedup-every-field-counts",
+  "description": "§4.3 content identity covers series, value_time, published_time, received_time, deleted and every value. Changing any one of them (other series, other value_time, published_time set, received_time +1us, one column differs, a column null) makes a new version. Not differences: an f64 written as integer 1 vs 1.0, value-key order, an explicit null vs a missing key. A tombstone differs from the value version it retracts.",
+  "steps": [
+    {"op": "create_table", "name": "t", "columns": [{"name": "a", "type": "f64"}, {"name": "b", "type": "string"}]},
+    {"op": "create_series", "name": "s1", "table": "t"},
+    {"op": "create_series", "name": "s2", "table": "t"},
+    {"op": "write", "system_time": "2025-01-01T10:00:00Z",
+     "rows": [{"series": "s1", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"a": 1.0, "b": "x"}}]},
+    {"op": "write", "system_time": "2025-01-01T11:00:00Z",
+     "rows": [
+       {"series": "s1", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"a": 1.0, "b": "x"}},
+       {"series": "s2", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"a": 1.0, "b": "x"}},
+       {"series": "s1", "value_time": "2025-01-02T01:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"a": 1.0, "b": "x"}},
+       {"series": "s1", "value_time": "2025-01-02T00:00:00Z", "published_time": "2025-01-01T09:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"a": 1.0, "b": "x"}},
+       {"series": "s1", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00.000001Z", "values": {"a": 1.0, "b": "x"}},
+       {"series": "s1", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"a": 1.0, "b": "y"}},
+       {"series": "s1", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"a": 1.0}},
+       {"series": "s1", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"a": 1, "b": "x"}},
+       {"series": "s1", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"b": "x", "a": 1.0}},
+       {"series": "s1", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "deleted": true},
+       {"series": "s1", "value_time": "2025-01-02T00:00:00Z", "published_time": null, "received_time": "2025-01-01T09:00:00Z", "deleted": true, "values": {"a": null}}],
+     "expect": {"stored": 7, "duplicates": 4, "batch_already_committed": false}},
+    {"op": "history", "table": "t",
+     "expect": {"values": [
+       ["s1", "2025-01-02T00:00:00Z", {"a": 1.0, "b": "x"}],
+       ["s1", "2025-01-02T00:00:00Z", {"a": 1.0, "b": "x"}],
+       ["s1", "2025-01-02T00:00:00Z", {"a": 1.0, "b": "y"}],
+       ["s1", "2025-01-02T00:00:00Z", {"a": 1.0, "b": null}],
+       ["s1", "2025-01-02T00:00:00Z", "deleted"],
+       ["s1", "2025-01-02T00:00:00Z", {"a": 1.0, "b": "x"}],
+       ["s1", "2025-01-02T01:00:00Z", {"a": 1.0, "b": "x"}],
+       ["s2", "2025-01-02T00:00:00Z", {"a": 1.0, "b": "x"}]]}},
+    {"op": "latest", "table": "t",
+     "expect": {"rows": [
+       {"series": "s1", "value_time": "2025-01-02T00:00:00Z", "published_time": null, "received_time": "2025-01-01T09:00:00.000001Z", "system_time": "2025-01-01T11:00:00Z", "seq": 5, "values": {"a": 1.0, "b": "x"}},
+       {"series": "s1", "value_time": "2025-01-02T01:00:00Z", "published_time": null, "received_time": "2025-01-01T09:00:00Z", "system_time": "2025-01-01T11:00:00Z", "seq": 3, "values": {"a": 1.0, "b": "x"}},
+       {"series": "s2", "value_time": "2025-01-02T00:00:00Z", "published_time": null, "received_time": "2025-01-01T09:00:00Z", "system_time": "2025-01-01T11:00:00Z", "seq": 2, "values": {"a": 1.0, "b": "x"}}]}},
+    {"op": "latest", "table": "t", "frontier": "2025-01-01T09:00:00Z", "series": ["s1"], "expect": {"values": [["s1", "2025-01-02T01:00:00Z", {"a": 1.0}]]}}
+  ]
+}

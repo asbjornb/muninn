@@ -1,0 +1,33 @@
+{
+  "name": "dedup-nan-and-infinities",
+  "description": "§4.1/§4.3: non-finite f64 values are written as the strings NaN, inf, -inf and are legal. Dedup compares f64 bitwise, so a resent NaN IS a duplicate of the stored NaN (NaN != NaN numerically but has the same bits), and inf vs -inf are different. Expectations compare NaN bitwise too.",
+  "steps": [
+    {"op": "create_table", "name": "t", "columns": [{"name": "value", "type": "f64"}]},
+    {"op": "create_series", "name": "s", "table": "t"},
+    {"op": "write", "system_time": "2025-01-01T10:00:00Z",
+     "rows": [
+       {"series": "s", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": "NaN"}},
+       {"series": "s", "value_time": "2025-01-02T01:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": "inf"}},
+       {"series": "s", "value_time": "2025-01-02T02:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": "-inf"}},
+       {"series": "s", "value_time": "2025-01-02T03:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": 1e308}}],
+     "expect": {"stored": 4, "duplicates": 0, "batch_already_committed": false}},
+    {"op": "write", "system_time": "2025-01-01T11:00:00Z",
+     "rows": [
+       {"series": "s", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": "NaN"}},
+       {"series": "s", "value_time": "2025-01-02T01:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": "inf"}},
+       {"series": "s", "value_time": "2025-01-02T02:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": "-inf"}},
+       {"series": "s", "value_time": "2025-01-02T03:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": 1e308}}],
+     "expect": {"stored": 0, "duplicates": 4, "batch_already_committed": false}},
+    {"op": "write", "system_time": "2025-01-01T12:00:00Z",
+     "rows": [
+       {"series": "s", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": "NaN"}},
+       {"series": "s", "value_time": "2025-01-02T01:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": "-inf"}}],
+     "expect": {"stored": 1, "duplicates": 1, "batch_already_committed": false}},
+    {"op": "latest", "table": "t",
+     "expect": {"rows": [
+       {"series": "s", "value_time": "2025-01-02T00:00:00Z", "published_time": null, "received_time": "2025-01-01T09:00:00Z", "system_time": "2025-01-01T10:00:00Z", "seq": 1, "values": {"value": "NaN"}},
+       {"series": "s", "value_time": "2025-01-02T01:00:00Z", "published_time": null, "received_time": "2025-01-01T09:00:00Z", "system_time": "2025-01-01T12:00:00Z", "seq": 5, "values": {"value": "-inf"}},
+       {"series": "s", "value_time": "2025-01-02T02:00:00Z", "published_time": null, "received_time": "2025-01-01T09:00:00Z", "system_time": "2025-01-01T10:00:00Z", "seq": 3, "values": {"value": "-inf"}},
+       {"series": "s", "value_time": "2025-01-02T03:00:00Z", "published_time": null, "received_time": "2025-01-01T09:00:00Z", "system_time": "2025-01-01T10:00:00Z", "seq": 4, "values": {"value": 1e308}}]}}
+  ]
+}

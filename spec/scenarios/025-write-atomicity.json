@@ -1,0 +1,33 @@
+{
+  "name": "write-atomicity",
+  "description": "§4: any validation error rejects the whole batch. Valid rows before the bad row are not stored, no seq is consumed (the next stored row gets seq 2) and the rejected batch's clock (15:00) does not affect later system_times.",
+  "steps": [
+    {"op": "create_table", "name": "t", "columns": [{"name": "value", "type": "f64"}]},
+    {"op": "create_series", "name": "s", "table": "t"},
+    {"op": "write", "system_time": "2025-01-01T10:00:00Z",
+     "rows": [{"series": "s", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": 1.0}}]},
+    {"op": "write", "system_time": "2025-01-01T11:00:00Z",
+     "rows": [
+       {"series": "s", "value_time": "2025-01-02T01:00:00Z", "received_time": "2025-01-01T10:00:00Z", "values": {"value": 2.0}},
+       {"series": "s", "value_time": "2025-01-02T02:00:00Z", "received_time": "2025-01-01T10:00:00Z", "values": {"value": 99.0}},
+       {"series": "s", "value_time": "2025-01-02T03:00:00Z", "received_time": "2025-01-01T10:00:00Z", "values": {"volume": 2.0}}],
+     "expect": {"error": "unknown_column"}},
+    {"op": "history", "table": "t", "expect": {"values": [["s", "2025-01-02T00:00:00Z", {"value": 1.0}]]}},
+    {"op": "write", "system_time": "2025-01-01T11:00:00Z",
+     "rows": [{"series": "s", "value_time": "2025-01-02T01:00:00Z", "received_time": "2025-01-01T10:00:00Z", "values": {"value": 2.0}}],
+     "expect": {"stored": 1, "duplicates": 0, "batch_already_committed": false}},
+    {"op": "write", "system_time": "2025-01-01T15:00:00Z",
+     "rows": [
+       {"series": "s", "value_time": "2025-01-02T02:00:00Z", "received_time": "2025-01-01T11:00:00Z", "values": {"value": 3.0}},
+       {"series": "s", "value_time": "2025-01-02T03:00:00Z", "received_time": "2025-01-01T25:00:00Z", "values": {"value": 4.0}}],
+     "expect": {"error": "invalid_timestamp"}},
+    {"op": "write", "system_time": "2025-01-01T12:00:00Z",
+     "rows": [{"series": "s", "value_time": "2025-01-02T02:00:00Z", "received_time": "2025-01-01T11:00:00Z", "values": {"value": 3.0}}],
+     "expect": {"stored": 1, "duplicates": 0, "batch_already_committed": false}},
+    {"op": "latest", "table": "t",
+     "expect": {"rows": [
+       {"series": "s", "value_time": "2025-01-02T00:00:00Z", "published_time": null, "received_time": "2025-01-01T09:00:00Z", "system_time": "2025-01-01T10:00:00Z", "seq": 1, "values": {"value": 1.0}},
+       {"series": "s", "value_time": "2025-01-02T01:00:00Z", "published_time": null, "received_time": "2025-01-01T10:00:00Z", "system_time": "2025-01-01T11:00:00Z", "seq": 2, "values": {"value": 2.0}},
+       {"series": "s", "value_time": "2025-01-02T02:00:00Z", "published_time": null, "received_time": "2025-01-01T11:00:00Z", "system_time": "2025-01-01T12:00:00Z", "seq": 3, "values": {"value": 3.0}}]}}
+  ]
+}
