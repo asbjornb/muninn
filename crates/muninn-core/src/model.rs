@@ -159,15 +159,13 @@ impl State {
     // Catalog
     // -----------------------------------------------------------------------------------
     //
-    // Check order for catalog operations (the spec does not fix one; see
-    // crates/SPEC-QUESTIONS.md): (1) referenced table exists, (2) every name is valid,
-    // (3) uniqueness.
+    // Check order for catalog operations: SPEC §10.4. Structure (§10.3) is guaranteed by
+    // the typed API, or checked by `wire` for JSON input.
 
     fn create_table(&self, req: &CreateTable) -> Result<(State, TableDef)> {
+        // §10.4: table name syntax, table uniqueness, then each column in order (name
+        // syntax / reserved name, uniqueness within the table).
         validate_table_name(&req.name)?;
-        for c in &req.columns {
-            validate_column_name(&c.name)?;
-        }
         if self.tables.iter().any(|t| t.name == req.name) {
             return Err(Error::new(
                 ErrorKind::AlreadyExists,
@@ -175,6 +173,7 @@ impl State {
             ));
         }
         for (i, c) in req.columns.iter().enumerate() {
+            validate_column_name(&c.name)?;
             if req.columns[..i].iter().any(|p| p.name == c.name) {
                 return Err(Error::new(
                     ErrorKind::AlreadyExists,
@@ -224,8 +223,9 @@ impl State {
     }
 
     fn create_series(&self, req: &CreateSeries) -> Result<(State, SeriesDef)> {
-        self.table(&req.table)?;
+        // §10.4: empty name, unknown_table, uniqueness.
         validate_series_name(&req.name)?;
+        self.table(&req.table)?;
         if self.series.iter().any(|s| *s.name == *req.name) {
             return Err(Error::new(
                 ErrorKind::AlreadyExists,
@@ -274,13 +274,10 @@ impl State {
         // 3. Every non-null value matches its column's type. Missing keys are null.
         let mut values: Vec<Option<_>> = vec![None; table.columns.len()];
         for (name, value) in &row.values {
-            if let Some(v) = value {
-                let i = table.column_index(name).expect("checked in step 2");
-                let coerced = v.coerce_to(table.columns[i].ty).map_err(|e| {
-                    Error::new(e.kind(), format!("column {name:?}: {}", e.message()))
-                })?;
-                values[i] = Some(coerced);
-            }
+            let i = table.column_index(name).expect("checked in step 2");
+            values[i] = value
+                .coerce_to(table.columns[i].ty)
+                .map_err(|e| Error::new(e.kind(), format!("column {name:?}: {}", e.message())))?;
         }
         // 4. Tombstone with any non-null value.
         if row.deleted && values.iter().any(Option::is_some) {
@@ -310,12 +307,13 @@ impl State {
     }
 
     fn write(&self, batch: &WriteBatch) -> Result<(Option<State>, WriteResult)> {
-        // SPEC §4.4: a batch id must be non-empty; a known one makes the write a no-op
-        // without any validation.
+        // SPEC §10.4 order: structure (an empty batch id is invalid_argument, §10.3), the
+        // §4.4 no-op for a known batch id (no further validation), the writer clock, then
+        // §4.1 steps 1-5 per row.
         if let Some(id) = &batch.batch_id {
             if id.is_empty() {
                 return Err(Error::new(
-                    ErrorKind::InvalidName,
+                    ErrorKind::InvalidArgument,
                     "batch_id must be non-empty",
                 ));
             }
@@ -330,6 +328,11 @@ impl State {
             }
         }
 
+        let clock = batch
+            .clock
+            .resolve()
+            .map_err(|e| Error::new(e.kind(), format!("writer clock: {}", e.message())))?;
+
         // SPEC §4.1: rows checked in input order; any failure rejects the whole batch.
         let mut candidates = Vec::with_capacity(batch.rows.len());
         for (i, row) in batch.rows.iter().enumerate() {
@@ -341,8 +344,8 @@ impl State {
 
         // SPEC §4.2: batch.system_time = max(c, last); all rows share it.
         let system_time = match self.last_system_time() {
-            Some(last) => batch.clock.max(last),
-            None => batch.clock,
+            Some(last) => clock.max(last),
+            None => clock,
         };
 
         // SPEC §4.3: drop rows content-identical to any stored version or to an earlier
@@ -510,7 +513,9 @@ impl State {
         req.range.validate()?;
         req.arrival.validate()?;
         let clock = req.clock.unwrap_or(table.default_clock);
-        // System bound applies; the frontier does not — `arrival` bounds t_clock instead.
+        // System bound applies; the frontier does not. `arrival` bounds t_clock as the
+        // open-closed interval (from, to] (SPEC §6.3): exactly the versions that become
+        // visible when the frontier moves from `from` to `to`.
         let vis = Visibility {
             clock,
             frontier: None,
@@ -520,7 +525,7 @@ impl State {
             .versions
             .iter()
             .filter(|v| ids.contains(&v.series) && req.range.contains(v.value_time))
-            .filter(|v| vis.admits_version(v) && req.arrival.contains(v.t_clock(clock)))
+            .filter(|v| vis.admits_version(v) && req.arrival.contains_open_closed(v.t_clock(clock)))
             .collect();
         hits.sort_by_key(|v| v.knowledge_key(clock));
         let rows = hits.into_iter().map(|v| self.to_row(table, v)).collect();

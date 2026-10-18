@@ -9,7 +9,7 @@ use std::fmt;
 
 use crate::time::{ParseDurationError, ParseTimestampError};
 
-/// The kind of an [`Error`]. The first nine variants map 1:1 to SPEC §8 codes.
+/// The kind of an [`Error`]. The first ten variants map 1:1 to SPEC §8 codes.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ErrorKind {
     /// `unknown_table`: table name not in catalog.
@@ -30,6 +30,8 @@ pub enum ErrorKind {
     InvalidName,
     /// `already_exists`: duplicate table, column or series name.
     AlreadyExists,
+    /// `invalid_argument`: structurally malformed request (SPEC §10.3).
+    InvalidArgument,
     /// Engine only: the underlying storage failed. Never a spec outcome.
     Io,
     /// Engine only: another writer committed first (decision 0004). Never a spec outcome.
@@ -40,7 +42,7 @@ pub enum ErrorKind {
 
 impl ErrorKind {
     /// All SPEC §8 kinds, in table order.
-    pub const SPEC_KINDS: [ErrorKind; 9] = [
+    pub const SPEC_KINDS: [ErrorKind; 10] = [
         ErrorKind::UnknownTable,
         ErrorKind::UnknownSeries,
         ErrorKind::UnknownColumn,
@@ -50,6 +52,7 @@ impl ErrorKind {
         ErrorKind::InvalidRange,
         ErrorKind::InvalidName,
         ErrorKind::AlreadyExists,
+        ErrorKind::InvalidArgument,
     ];
 
     /// The SPEC §8 code, or `None` for engine-only kinds.
@@ -64,6 +67,7 @@ impl ErrorKind {
             ErrorKind::InvalidRange => "invalid_range",
             ErrorKind::InvalidName => "invalid_name",
             ErrorKind::AlreadyExists => "already_exists",
+            ErrorKind::InvalidArgument => "invalid_argument",
             ErrorKind::Io | ErrorKind::Conflict | ErrorKind::Internal => return None,
         })
     }

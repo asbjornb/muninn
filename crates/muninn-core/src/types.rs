@@ -185,6 +185,80 @@ impl Value {
     }
 }
 
+/// A write input value as a client sent it, before SPEC §4.1 step 3 coercion.
+///
+/// Typed Rust callers use [`InputValue::Value`]; JSON front ends (the conformance runner,
+/// bindings, servers) use [`InputValue::Number`] for number tokens — so that `-0`, big
+/// integers and `2.0` keep the meaning SPEC §10.2 gives the exact token — and
+/// [`InputValue::Unsupported`] for JSON shapes that are never a value (arrays, objects),
+/// which coerce to nothing (`type_mismatch`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum InputValue {
+    /// JSON `null` / absent: the column is null.
+    Null,
+    /// A typed value, coerced with [`Value::coerce_to`].
+    Value(Value),
+    /// A JSON number token, exactly as written (e.g. `"-0"`, `"2.0"`, `"1e3"`,
+    /// `"18446744073709551616"`).
+    Number(String),
+    /// Any other JSON shape (array, object); the text is for error messages only.
+    Unsupported(String),
+}
+
+impl From<Value> for InputValue {
+    fn from(v: Value) -> InputValue {
+        InputValue::Value(v)
+    }
+}
+
+impl From<Option<Value>> for InputValue {
+    fn from(v: Option<Value>) -> InputValue {
+        v.map_or(InputValue::Null, InputValue::Value)
+    }
+}
+
+impl InputValue {
+    /// Coerces to column type `ty` per SPEC §4.1 step 3 / §10.2: `Ok(None)` for null,
+    /// `Err(type_mismatch)` if the value is not acceptable for the column.
+    pub fn coerce_to(&self, ty: ColumnType) -> Result<Option<Value>> {
+        let mismatch = |what: &str| {
+            Err(Error::new(
+                ErrorKind::TypeMismatch,
+                format!("value {what} does not match column type {ty}"),
+            ))
+        };
+        match self {
+            InputValue::Null => Ok(None),
+            InputValue::Value(v) => v.coerce_to(ty).map(Some),
+            InputValue::Unsupported(text) => mismatch(text),
+            InputValue::Number(tok) => {
+                let integer_token = !tok.contains(['.', 'e', 'E']);
+                match ty {
+                    ColumnType::F64 => {
+                        // §10.2: the integer token -0 denotes -0.0.
+                        if tok == "-0" {
+                            return Ok(Some(Value::F64(-0.0)));
+                        }
+                        match tok.parse::<f64>() {
+                            // An integer token too large for f64 is a mismatch; a
+                            // float token like 1e400 is +inf, as JSON readers give it.
+                            Ok(x) if integer_token && x.is_infinite() => mismatch(tok),
+                            Ok(x) => Ok(Some(Value::F64(x))),
+                            Err(_) => mismatch(tok),
+                        }
+                    }
+                    // §10.2: only tokens without fraction or exponent, in i64 range.
+                    ColumnType::I64 if integer_token => match parse_decimal_i64(tok) {
+                        Some(n) => Ok(Some(Value::I64(n))),
+                        None => mismatch(tok),
+                    },
+                    _ => mismatch(tok),
+                }
+            }
+        }
+    }
+}
+
 /// Parses `-?[0-9]+` into an `i64` (no `+`, no whitespace, no fraction).
 fn parse_decimal_i64(s: &str) -> Option<i64> {
     let digits = s.strip_prefix('-').unwrap_or(s);
@@ -596,9 +670,16 @@ impl TimeRange {
         }
     }
 
-    /// Does the range contain `t` (`from <= t < to`)?
+    /// Does the range contain `t` (`from <= t < to`)? This is the value-range reading
+    /// of SPEC §6.
     pub fn contains(&self, t: Timestamp) -> bool {
         self.from.is_none_or(|f| f <= t) && self.to.is_none_or(|e| t < e)
+    }
+
+    /// Does the open-closed interval `(from, to]` contain `t`? This is the reading of
+    /// `replay`'s arrival bounds (SPEC §6.3), matching inclusive frontiers.
+    pub fn contains_open_closed(&self, t: Timestamp) -> bool {
+        self.from.is_none_or(|f| f < t) && self.to.is_none_or(|e| t <= e)
     }
 
     /// The SPEC §6.4 relative window `[frontier + start, frontier + end)`.

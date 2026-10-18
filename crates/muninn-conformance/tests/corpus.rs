@@ -4,6 +4,7 @@ use std::path::Path;
 
 use muninn_conformance::{run_corpus, run_scenario_json, scenario_files, spec_scenarios_dir};
 use muninn_core::ModelDb;
+use muninn_core::wire::Wire;
 use serde_json::json;
 
 #[test]
@@ -29,7 +30,8 @@ fn finds_nested_scenarios_sorted() {
 }
 
 fn run(steps: serde_json::Value) -> Result<(), String> {
-    let scenario = json!({"name": "inline", "steps": steps});
+    let scenario = json!({"name": "inline", "description": "inline test", "steps": steps});
+    let scenario = Wire::parse(&scenario.to_string()).unwrap();
     run_scenario_json(Path::new("<inline>"), &scenario, &ModelDb::new()).map_err(|f| f.to_string())
 }
 
@@ -94,13 +96,13 @@ fn sugar_forms_and_all_read_ops() {
                 {"series": "a", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T00:00:00Z", "values": {"value": 1}},
                 {"series": "b", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T00:00:00Z", "values": {"value": 2}}]},
             {"op": "write", "system_time": "2025-01-01T00:00:00Z", "batch_id": "b1", "rows": [],
-             "expect": {"batch_already_committed": true, "stored": 0}},
+             "expect": {"batch_already_committed": true, "stored": 0, "duplicates": 0}},
             {"op": "write", "system_time": "2025-01-01T06:00:00Z", "rows": [
                 {"series": "a", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T06:00:00Z", "deleted": true}]},
             {"op": "history", "table": "t", "series": ["a"], "expect": {"values": [
                 ["a", "2025-01-02T00:00:00Z", {"value": 1.0}],
                 ["a", "2025-01-02T00:00:00Z", "deleted"]]}},
-            {"op": "replay", "table": "t", "from": "2025-01-01T00:00:00Z", "expect": {"values": [
+            {"op": "replay", "table": "t", "from": "2024-12-31T23:59:59.999999Z", "expect": {"values": [
                 ["a", "2025-01-02T00:00:00Z", {"value": 1.0, "n": null}],
                 ["b", "2025-01-02T00:00:00Z", {"value": 2.0}],
                 ["a", "2025-01-02T00:00:00Z", "deleted"]]}},
@@ -182,7 +184,7 @@ fn failures_are_reported_with_location_and_diff() {
         "{msg}"
     );
     assert!(
-        msg.contains("[1] - [\"a\",\"2025-01-01T01:00:00Z\",{\"value\":2.5}]"),
+        msg.contains("[1] - [\"a\", \"2025-01-01T01:00:00Z\", {\"value\": 2.5}]"),
         "{msg}"
     );
     assert!(
@@ -202,7 +204,7 @@ fn failures_are_reported_with_location_and_diff() {
         (json!([{"op": "frobnicate"}]), "unknown op \"frobnicate\""),
         (
             json!([{"op": "create_table", "name": "t", "colums": []}]),
-            "unknown key `colums`",
+            "unknown field `colums`",
         ),
         (
             json!([{"op": "create_table", "name": "t", "expect": {"error": "nope"}}]),
@@ -211,6 +213,10 @@ fn failures_are_reported_with_location_and_diff() {
         (
             json!([{"op": "create_table", "name": "t"}, {"op": "latest", "table": "t", "expect": {"rows": [], "values": []}}]),
             "exactly one of",
+        ),
+        (
+            json!([{"op": "create_table", "name": "t", "expect": {}}]),
+            "catalog steps take no expectation",
         ),
         (
             json!([{"op": "create_table", "name": "t", "columns": [{"name": "v", "type": "f64"}]},
@@ -228,7 +234,7 @@ fn failures_are_reported_with_location_and_diff() {
                 {"op": "write", "system_time": "2025-01-01T00:00:00Z", "rows": [
                     {"series": "s", "value_time": "2025-01-01T00:00:00Z", "received_time": "2025-01-01T00:00:00Z"}],
                  "expect": {"stored": 1, "duplicates": 1}}]),
-            "duplicates: expected 1, got 0",
+            "write result differs",
         ),
     ];
     for (steps, needle) in cases {
@@ -274,6 +280,6 @@ fn negative_zero_and_nan_are_compared_bitwise() {
     steps.as_array_mut().unwrap().push(json!({"op": "write", "system_time": "2025-01-01T00:00:00Z", "rows": [
         {"series": "a", "value_time": "2025-01-01T00:00:00Z", "received_time": "2025-01-01T00:00:00Z", "values": {"value": 0.0}},
         {"series": "b", "value_time": "2025-01-01T00:00:00Z", "received_time": "2025-01-01T00:00:00Z", "values": {"value": "NaN"}}],
-        "expect": {"stored": 1, "duplicates": 1}}));
+        "expect": {"stored": 1, "duplicates": 1, "batch_already_committed": false}}));
     run(steps).unwrap();
 }

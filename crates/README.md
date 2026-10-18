@@ -2,9 +2,9 @@
 
 | Crate | What it is |
 | --- | --- |
-| [`muninn-core`](muninn-core) | Shared vocabulary and the in-memory model. `time` (µs-UTC `Timestamp` with RFC 3339 text form and own civil-date math, `Duration`), `types` (column types, values with bitwise identity, catalog definitions, `Version`, clocks, visibility and knowledge-order functions, ranges), `error` (one kind per SPEC §8 code plus engine-only `Io`/`Conflict`/`Internal`), `api` (request/response types, the `Reader` and `Database` traits), and `model::ModelDb` — a naive, obviously-correct oracle of `spec/SPEC.md`. No dependencies. |
+| [`muninn-core`](muninn-core) | Shared vocabulary and the in-memory model. `time` (µs-UTC `Timestamp` with RFC 3339 text form and own civil-date math, `Duration`), `types` (column types, values with bitwise identity, catalog definitions, `Version`, clocks, visibility and knowledge-order functions, ranges), `error` (one kind per SPEC §8 code plus engine-only `Io`/`Conflict`/`Internal`), `api` (request/response types, the `Reader` and `Database` traits), `model::ModelDb` — a naive, obviously-correct oracle of `spec/SPEC.md` — and `wire`, which runs JSON requests (SPEC §9 shapes) against any `Database` with the §10 structure checks and check order (dependency-free JSON parser included). No dependencies. |
 | [`muninn-store`](muninn-store) | The sync object-store interface of decision 0005 (`Store`: `get`, `get_range`, `head`, `put`, `put_if_absent`, `list`, `delete`) with `MemoryStore`, `LocalFsStore` (atomic temp+fsync+rename/link) and `FaultyStore` (seeded fail-before / ambiguous fail-after / crash-at-op-N). `conformance` is a backend test suite every store must pass. No dependencies. |
-| [`muninn-conformance`](muninn-conformance) | Runs `spec/scenarios/**/*.json` (SPEC §9) against any `Database` via `run_scenario` / `run_corpus`. Depends on `serde_json`. |
+| [`muninn-conformance`](muninn-conformance) | Runs `spec/scenarios/**/*.json` (SPEC §9) against any `Database` via `run_scenario` / `run_corpus`, passing each request loose through `muninn_core::wire`. No runtime dependencies. |
 
 Planned (decision 0001): `muninn-format` (segment files), `muninn-engine` (writer, commit
 log, reads, compaction — must pass `muninn-conformance` and be differentially tested
