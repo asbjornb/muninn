@@ -14,6 +14,6 @@ versions or the catalog log)` — `c` being an optional clock reading passed by 
 callers — or no time before anything has one. Catalog changes do **not** advance `last`
 in §4.2, which is defined over stored versions only.
 
-To close: decide whether catalog changes share the write clock and `max(c, last)` rule
+To close: decide whether catalog changes share the write clock and the §4.2 `max(c, last + 1us)` rule
 (and whether they advance `last`), and add a clock field to catalog steps once
 point-in-time catalog reads exist.
