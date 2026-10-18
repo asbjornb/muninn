@@ -467,6 +467,12 @@ impl<S: Store> Engine<S> {
     /// removal time) and no live snapshot of this process references it. Readers in other
     /// processes are protected by the grace period only.
     pub fn gc(&self) -> Result<GcReport> {
+        self.gc_with_grace(self.shared.opts.gc_grace)
+    }
+
+    /// [`Engine::gc`] with an explicit grace period instead of
+    /// [`EngineOptions::gc_grace`].
+    pub fn gc_with_grace(&self, grace: std::time::Duration) -> Result<GcReport> {
         let mut w = lock(&self.writer);
         let st = self.fresh(&mut w)?;
         let mut referenced: BTreeSet<Key> = BTreeSet::new();
@@ -480,7 +486,7 @@ impl<S: Store> Engine<S> {
         }
         let retired: HashMap<&Key, i64> = st.retired.iter().map(|(k, t)| (k, *t)).collect();
         let now = self.wall();
-        let grace = i64::try_from(self.shared.opts.gc_grace.as_micros()).unwrap_or(i64::MAX);
+        let grace = i64::try_from(grace.as_micros()).unwrap_or(i64::MAX);
         let mut report = GcReport::default();
         let mut purged = Vec::new();
         let listed = self
