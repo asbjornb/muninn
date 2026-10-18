@@ -12,6 +12,7 @@ muninn-core.workspace = true
 muninn-store.workspace = true
 muninn-format.workspace = true
 serde.workspace = true
+crc32c.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]

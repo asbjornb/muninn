@@ -58,7 +58,6 @@ fn all(table: &str) -> LatestRequest {
 // ---------------------------------------------------------------------------------------
 
 #[test]
-#[ignore = "review finding 1"]
 fn gc_on_lagging_engine_deletes_other_writers_live_segments() {
     let store: Mem = Arc::new(MemoryStore::new());
     let opts = test_options(4, 0, false); // gc_grace = 0 (stands in for "older than grace")
@@ -431,16 +430,8 @@ fn run_extreme(ops: &[XOp], opts: EngineOptions) -> Result<(), TestCaseError> {
                 };
                 let x = render(model.grid(&req).map(|r| format!("{r:?}")));
                 let y = render(engine.grid(&req).map(|r| format!("{r:?}")));
-                // Finding 2 (known): skip the shape it covers so the fuzzer can look further.
-                let finding2 = window.is_some_and(|(a, _)| {
-                    frontiers.iter().any(|&f| {
-                        i128::from(times[f]) + i128::from(a)
-                            > i128::from(Timestamp::MAX.as_micros())
-                    })
-                });
-                if !finding2 || std::env::var("REVIEW_NO_SKIP").is_ok() {
-                    prop_assert_eq!(&y, &x, "step {} {:?}", step, req);
-                }
+                // Finding 2 (fixed): relative windows past MAX are checked too.
+                prop_assert_eq!(&y, &x, "step {} {:?}", step, req);
                 let snap = engine.snapshot().unwrap();
                 let z = render(snap.grid_by_repeated_latest(&req).map(|r| format!("{r:?}")));
                 prop_assert_eq!(&z, &x, "step {} by definition {:?}", step, req);
@@ -529,7 +520,6 @@ proptest! {
 // ---------------------------------------------------------------------------------------
 
 #[test]
-#[ignore = "review finding 2"]
 fn grid_relative_window_past_max_drops_rows_of_earlier_frontiers() {
     let store: Mem = Arc::new(MemoryStore::new());
     let e = Engine::open(store, test_options(4, 0, false)).unwrap();
@@ -643,12 +633,6 @@ proptest! {
                     };
                     let got = match e.write(&batch) {
                         Err(err) if err.kind() == muninn_core::ErrorKind::Conflict => e.write(&batch),
-                        // Finding 3 (known): a lagging engine whose live segments were
-                        // compacted away and GC'd elsewhere stays broken until refreshed.
-                        Err(err) if err.kind() == muninn_core::ErrorKind::Io => {
-                            e.refresh().unwrap();
-                            e.write(&batch)
-                        }
                         other => other,
                     };
                     let want = model.write(&batch);
@@ -662,13 +646,7 @@ proptest! {
                 }
                 TwoOp::Compact(which) => {
                     let e = &engines[usize::from(*which)];
-                    let r = match e.compact_all() {
-                        Err(err) if err.kind() == muninn_core::ErrorKind::Io => {
-                            e.refresh().unwrap(); // finding 3
-                            e.compact_all()
-                        }
-                        r => r,
-                    };
+                    let r = e.compact_all();
                     match r {
                         Err(err) if err.kind() == muninn_core::ErrorKind::Conflict => {}
                         r => { r.unwrap(); }
@@ -676,9 +654,10 @@ proptest! {
                 }
                 TwoOp::Checkpoint(which) => engines[usize::from(*which)].checkpoint().unwrap(),
                 TwoOp::Refresh(which) => { engines[usize::from(*which)].refresh().unwrap(); }
+                // Finding 1 (fixed): GC on a possibly lagging engine must establish the
+                // log head itself, so no refresh first.
                 TwoOp::GcAfterRefresh(which) => {
                     let e = &engines[usize::from(*which)];
-                    e.refresh().unwrap();
                     match e.gc() {
                         Err(err) if err.kind() == muninn_core::ErrorKind::Conflict => {}
                         r => { r.unwrap(); }
@@ -708,7 +687,6 @@ proptest! {
 // ---------------------------------------------------------------------------------------
 
 #[test]
-#[ignore = "review finding 3"]
 fn lagging_engine_recovers_after_its_segments_were_compacted_and_collected() {
     let store: Mem = Arc::new(MemoryStore::new());
     let opts = test_options(4, 0, false);
@@ -722,16 +700,13 @@ fn lagging_engine_recovers_after_its_segments_were_compacted_and_collected() {
         .unwrap();
     assert_eq!(a.compact_all().unwrap(), 1);
     a.gc().unwrap(); // deletes b's (now retired) segment
-    // b lags: its state still lists the deleted segment as live.
-    let first = b.latest(&all("t"));
-    assert!(
-        first.is_err(),
-        "expected the first read to notice: {first:?}"
-    );
-    // After that failure the engine must reload by itself.
-    let again = b
+    // b lags: its state still lists the deleted segment as live. The read notices the
+    // missing segment, reloads from the log and retries once, so it succeeds.
+    let first = b
         .latest(&all("t"))
-        .expect("engine stays broken until refresh()");
+        .expect("reload-and-retry on a missing segment");
+    assert_eq!(first.rows.len(), 2);
+    let again = b.latest(&all("t")).unwrap();
     assert_eq!(again.rows.len(), 2);
 }
 
@@ -743,7 +718,6 @@ fn lagging_engine_recovers_after_its_segments_were_compacted_and_collected() {
 // ---------------------------------------------------------------------------------------
 
 #[test]
-#[ignore = "review finding 5"]
 fn damaged_checkpoint_falls_back_to_the_log() {
     let store: Mem = Arc::new(MemoryStore::new());
     let opts = test_options(4, 0, false);

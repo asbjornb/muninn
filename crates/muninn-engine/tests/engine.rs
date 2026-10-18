@@ -154,6 +154,9 @@ fn gc_respects_grace_and_live_snapshots() {
     assert!(e.gc().unwrap().deleted.is_empty());
     assert_eq!(fingerprint(&snap), before);
     drop(snap);
+    // Unreferenced from now on: deleted one grace period after GC first sees that.
+    assert!(e.gc().unwrap().deleted.is_empty());
+    now.fetch_add(11_000_000, Ordering::SeqCst);
     assert_eq!(e.gc().unwrap().deleted.len(), 2);
     assert!(e.retired_segment_keys().is_empty());
     assert_eq!(fingerprint(&e), before);
@@ -476,4 +479,169 @@ fn perf_smoke() {
     let t = Instant::now();
     let hst = e.history(&all("t")).unwrap();
     eprintln!("history all ({} rows): {:?}", hst.rows.len(), t.elapsed());
+}
+
+/// A checkpoint is never trusted over the log: tampered content (valid JSON, wrong
+/// checksum) or a checkpoint that does not belong to this log's entry is skipped.
+#[test]
+fn tampered_or_foreign_checkpoints_fall_back_to_the_log() {
+    let store: Mem = Arc::new(MemoryStore::new());
+    let e = Engine::open(Arc::clone(&store), opts()).unwrap();
+    setup(&e);
+    write(&e, 1, vec![row("a", 0, 0, 1.0)]);
+    e.checkpoint().unwrap();
+    write(&e, 2, vec![row("a", 1, 1, 2.0)]);
+    let expected = fingerprint(&e);
+    let v = e.version() - 1;
+    let ck = log::checkpoint_key(v);
+    let good = store.get(&ck).unwrap();
+    // Tamper: drop a series from the checkpoint but keep it valid JSON.
+    let text = String::from_utf8(good.clone()).unwrap();
+    let tampered = text.replacen("\"next_seq\":2", "\"next_seq\":9", 1);
+    assert_ne!(tampered, text);
+    store.put(&ck, tampered.as_bytes()).unwrap();
+    assert_eq!(
+        fingerprint(&Engine::open(Arc::clone(&store), opts()).unwrap()),
+        expected
+    );
+    // A checkpoint (correctly sealed) from a different database at the same version.
+    let other: Mem = Arc::new(MemoryStore::new());
+    let o = Engine::open(Arc::clone(&other), opts()).unwrap();
+    setup(&o);
+    write(&o, 1, vec![row("b", 5, 5, 7.0)]);
+    o.checkpoint().unwrap();
+    assert_eq!(o.version(), v);
+    store.put(&ck, &other.get(&ck).unwrap()).unwrap();
+    store
+        .put(&log::hint_key(), format!("{{\"version\": {v}}}").as_bytes())
+        .unwrap();
+    let reopened = Engine::open(Arc::clone(&store), opts()).unwrap();
+    assert_eq!(fingerprint(&reopened), expected);
+    // The genuine checkpoint is used again once restored.
+    store.put(&ck, &good).unwrap();
+    assert_eq!(
+        fingerprint(&Engine::open(Arc::clone(&store), opts()).unwrap()),
+        expected
+    );
+}
+
+fn rewrite_entry(store: &MemoryStore, v: u64, f: impl FnOnce(&mut serde_json::Value)) {
+    let k = log::entry_key(v);
+    let mut j: serde_json::Value = serde_json::from_slice(&store.get(&k).unwrap()).unwrap();
+    f(&mut j);
+    store.put(&k, &serde_json::to_vec(&j).unwrap()).unwrap();
+}
+
+/// A write entry whose segments do not hold exactly its seq range is corruption.
+#[test]
+fn inconsistent_log_entries_are_rejected() {
+    let store: Mem = Arc::new(MemoryStore::new());
+    let e = Engine::open(Arc::clone(&store), test_options(4, 0, false)).unwrap();
+    setup(&e);
+    write(&e, 1, vec![row("a", 0, 0, 1.0), row("a", 30, 0, 1.0)]); // two partitions
+    let v = e.version();
+    // Claim one more seq than the segments hold (as if two segments shared a seq).
+    rewrite_entry(&store, v, |j| j["next_seq"] = serde_json::json!(4));
+    let err = Engine::open(Arc::clone(&store), test_options(4, 0, false)).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::Io);
+    assert!(err.message().contains("corrupt"), "{err}");
+    rewrite_entry(&store, v, |j| {
+        j["next_seq"] = serde_json::json!(3);
+        j["kind"] = serde_json::json!("gc");
+    });
+    assert!(Engine::open(Arc::clone(&store), test_options(4, 0, false)).is_err());
+}
+
+/// A segment whose value column has a type the catalog does not give that column is
+/// reported as corruption, not decoded.
+#[test]
+fn footer_column_types_are_checked_against_the_catalog() {
+    use muninn_format::{Partition, ValueColumn, write_segment};
+    let store: Mem = Arc::new(MemoryStore::new());
+    let e = Engine::open(Arc::clone(&store), test_options(4, 0, false)).unwrap();
+    setup(&e);
+    write(&e, 1, vec![WriteRow::new("a", h(0), h(0))]);
+    let key = e.live_segment_keys().into_iter().next().unwrap();
+    let file = muninn_format::SegmentFile::open(&store.get(&key).unwrap())
+        .unwrap()
+        .versions()
+        .unwrap();
+    let bytes = write_segment(
+        "t",
+        Partition::of(muninn_core::Partitioning::Day, h(0)),
+        &[ValueColumn {
+            id: 0,
+            ty: ColumnType::I64,
+        }],
+        &file,
+        &muninn_format::WriteOptions::default(),
+    )
+    .unwrap();
+    store.put(&key, &bytes).unwrap();
+    rewrite_entry(&store, e.version(), |j| {
+        j["add"][0]["size"] = serde_json::json!(bytes.len())
+    });
+    let fresh = Engine::open(Arc::clone(&store), test_options(4, 0, false)).unwrap();
+    let err = fresh.latest(&all("t")).unwrap_err();
+    assert!(err.message().contains("is not a column of table"), "{err}");
+}
+
+/// A store whose segment puts stall.
+struct SlowSegments(Mem, std::time::Duration);
+
+impl Store for SlowSegments {
+    fn get(&self, k: &Key) -> muninn_store::Result<Vec<u8>> {
+        self.0.get(k)
+    }
+    fn get_range(&self, k: &Key, r: std::ops::Range<u64>) -> muninn_store::Result<Vec<u8>> {
+        self.0.get_range(k, r)
+    }
+    fn head(&self, k: &Key) -> muninn_store::Result<muninn_store::ObjectMeta> {
+        self.0.head(k)
+    }
+    fn put(&self, k: &Key, d: &[u8]) -> muninn_store::Result<()> {
+        self.0.put(k, d)
+    }
+    fn put_if_absent(&self, k: &Key, d: &[u8]) -> muninn_store::Result<muninn_store::PutOutcome> {
+        let r = self.0.put_if_absent(k, d);
+        if k.as_str().starts_with("segments/") {
+            std::thread::sleep(self.1);
+        }
+        r
+    }
+    fn list(&self, p: &str) -> muninn_store::Result<Vec<Key>> {
+        self.0.list(p)
+    }
+    fn delete(&self, k: &Key) -> muninn_store::Result<()> {
+        self.0.delete(k)
+    }
+}
+
+/// A writer that stalled for more than half the GC grace period after writing its
+/// segments does not commit them (a GC elsewhere may already treat them as orphans).
+#[test]
+fn stalled_writer_does_not_commit_old_segments() {
+    let inner: Mem = Arc::new(MemoryStore::new());
+    let o = EngineOptions {
+        gc_grace: std::time::Duration::from_millis(40),
+        ..test_options(4, 0, false)
+    };
+    let e = Engine::open(
+        SlowSegments(Arc::clone(&inner), std::time::Duration::from_millis(30)),
+        o,
+    )
+    .unwrap();
+    e.create_table(&CreateTable::new(
+        "t",
+        vec![ColumnDef::new("value", ColumnType::F64)],
+    ))
+    .unwrap();
+    e.create_series(&CreateSeries::new("a", "t")).unwrap();
+    let v = e.version();
+    let err = e
+        .write(&WriteBatch::new(h(1), vec![WriteRow::new("a", h(0), h(0))]))
+        .unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::Io);
+    assert_eq!(e.version(), v);
+    assert!(e.live_segment_keys().is_empty());
 }

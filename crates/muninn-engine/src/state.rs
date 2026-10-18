@@ -252,6 +252,50 @@ impl State {
         next.next_seq = e.next_seq;
         next.last_system_time = last;
 
+        // What the entry kind allows: a write adds exactly its stored rows (each seq of
+        // `[prev next_seq, next_seq)` once, so segment seq sets cannot overlap); a
+        // compaction replaces segments of one partition by one holding the same rows;
+        // other entries add or remove nothing.
+        match e.kind.as_str() {
+            "write" => {
+                let rows: u64 = e.add.iter().map(|j| j.rows).sum();
+                if !e.remove.is_empty() || rows != e.next_seq - self.next_seq {
+                    return Err(corrupt(format!(
+                        "entry {}: write adds {rows} rows for {} seqs",
+                        e.version,
+                        e.next_seq - self.next_seq
+                    )));
+                }
+            }
+            "compact" => {
+                let removed: Vec<&Arc<SegmentRef>> = e
+                    .remove
+                    .iter()
+                    .filter_map(|k| self.segments().find(|s| s.key.as_str() == k))
+                    .collect();
+                let ok = matches!(e.add.as_slice(), [new] if
+                    removed.len() == e.remove.len()
+                    && removed.len() >= 2
+                    && removed.iter().all(|s| s.table == new.table && s.partition.label() == new.partition)
+                    && removed.iter().map(|s| s.rows).sum::<u64>() == new.rows
+                    && removed.iter().map(|s| s.seq.0).min() == Some(new.seq[0])
+                    && removed.iter().map(|s| s.seq.1).max() == Some(new.seq[1]))
+                    && e.next_seq == self.next_seq
+                    && last == self.last_system_time;
+                if !ok {
+                    return Err(corrupt(format!("entry {}: invalid compaction", e.version)));
+                }
+            }
+            _ => {
+                if !e.add.is_empty() || !e.remove.is_empty() {
+                    return Err(corrupt(format!(
+                        "entry {}: a {:?} entry cannot add or remove segments",
+                        e.version, e.kind
+                    )));
+                }
+            }
+        }
+
         let mut retired = (*self.retired).clone();
         for k in &e.remove {
             let key = Key::new(k.clone()).map_err(|err| corrupt(format!("removed key: {err}")))?;
@@ -315,6 +359,8 @@ impl State {
                 .collect(),
             next_seq: self.next_seq,
             last_system_time: self.last_system_time.map(Timestamp::as_micros),
+            entry_crc32c: 0,
+            checksum: 0,
         }
     }
 

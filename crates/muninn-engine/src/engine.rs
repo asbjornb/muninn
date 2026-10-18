@@ -3,8 +3,9 @@
 use std::collections::hash_map::RandomState;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::hash::{BuildHasher, Hasher};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
+use std::time::Instant;
 
 use muninn_core::api::{
     AddColumn, AsofJoinRequest, AsofRow, CreateSeries, CreateTable, Database, GridRequest, GridRow,
@@ -24,7 +25,7 @@ use crate::log::{
     self, CatalogChangeJson, Checkpoint, Hint, LOG_FORMAT, LogEntry, from_json, to_json,
 };
 use crate::read::{EngineSnapshot, ScanSpec, Scanner};
-use crate::segio::{Shared, store_err};
+use crate::segio::{Shared, check_columns, is_missing_segment, store_err};
 use crate::state::{SegmentRef, State};
 
 /// What [`Engine::gc`] did.
@@ -55,12 +56,12 @@ pub struct Engine<S: Store> {
     shared: Arc<Shared<S>>,
     published: Mutex<Published>,
     writer: Mutex<Writer>,
-    /// Set when a commit failed in a way that leaves it unknown whether the log moved
-    /// (ambiguous store error, or another writer won the version). The next operation
-    /// reloads from the log before doing anything else.
-    stale: AtomicBool,
     nonce: RandomState,
     counter: AtomicU64,
+    /// GC: when this engine first saw each unreferenced segment file (its own wall
+    /// clock). A file is deleted only `gc_grace` after that, so no writer's clock is
+    /// trusted.
+    unreferenced_since: Mutex<HashMap<Key, i64>>,
 }
 
 impl<S: Store> std::fmt::Debug for Engine<S> {
@@ -102,9 +103,9 @@ impl<S: Store> Engine<S> {
                 live: Vec::new(),
             }),
             writer: Mutex::new(Writer),
-            stale: AtomicBool::new(false),
             nonce: RandomState::new(),
             counter: AtomicU64::new(0),
+            unreferenced_since: Mutex::new(HashMap::new()),
         })
     }
 
@@ -164,25 +165,59 @@ impl<S: Store> Engine<S> {
     /// writer lock.
     fn fresh(&self, _w: &mut Writer) -> Result<Arc<State>> {
         let cur = Arc::clone(&self.published().state);
-        if !self.stale.load(Ordering::SeqCst) {
+        if !self.shared.stale.load(Ordering::SeqCst) {
             return Ok(cur);
         }
         let next = Arc::new(catch_up(&self.shared, (*cur).clone())?);
         self.publish(Arc::clone(&next));
-        self.stale.store(false, Ordering::SeqCst);
+        self.shared.stale.store(false, Ordering::SeqCst);
         Ok(next)
+    }
+
+    /// Runs `f`; if it failed because a live segment was missing (another writer compacted
+    /// and collected it while our view lagged), the engine is marked stale, so running
+    /// `f` once more reloads from the log first.
+    fn retry_missing<T>(&self, f: impl Fn() -> Result<T>) -> Result<T> {
+        match f() {
+            Err(e) if is_missing_segment(&e) => f(),
+            r => r,
+        }
+    }
+
+    /// The state at the log head (reads every entry after ours). Holds the writer lock.
+    fn head(&self, w: &mut Writer) -> Result<Arc<State>> {
+        self.shared.stale.store(true, Ordering::SeqCst);
+        self.fresh(w)
+    }
+
+    /// Fails (without committing) if segments written at `since` might already be
+    /// considered orphans by a GC: writers must commit within half the grace period of
+    /// writing their segments (FORMAT.md §3.5). A zero grace period disables the check.
+    fn check_commit_age(&self, since: Instant) -> Result<()> {
+        let grace = self.shared.opts.gc_grace;
+        if !grace.is_zero() && since.elapsed() >= grace / 2 {
+            return Err(Error::new(
+                ErrorKind::Io,
+                format!(
+                    "segments were written {:?} ago, more than half the GC grace period; \
+                     not committing (retry the operation)",
+                    since.elapsed()
+                ),
+            ));
+        }
+        Ok(())
     }
 
     /// Picks up entries committed by other writers (or by an ambiguous failure of ours).
     pub fn refresh(&self) -> Result<u64> {
         let mut w = lock(&self.writer);
-        self.stale.store(true, Ordering::SeqCst);
+        self.shared.stale.store(true, Ordering::SeqCst);
         Ok(self.fresh(&mut w)?.version)
     }
 
     /// The current state (catching up first if a commit failed).
     fn current(&self) -> Result<Arc<State>> {
-        if self.stale.load(Ordering::SeqCst) {
+        if self.shared.stale.load(Ordering::SeqCst) {
             let mut w = lock(&self.writer);
             self.fresh(&mut w)?;
         }
@@ -236,7 +271,7 @@ impl<S: Store> Engine<S> {
         {
             Ok(PutOutcome::Created) => {}
             Ok(PutOutcome::AlreadyExists) => {
-                self.stale.store(true, Ordering::SeqCst);
+                self.shared.stale.store(true, Ordering::SeqCst);
                 return Err(Error::new(
                     ErrorKind::Conflict,
                     format!(
@@ -246,7 +281,7 @@ impl<S: Store> Engine<S> {
                 ));
             }
             Err(e) => {
-                self.stale.store(true, Ordering::SeqCst);
+                self.shared.stale.store(true, Ordering::SeqCst);
                 return Err(store_err(
                     &format!("committing log version {}", entry.version),
                     e,
@@ -263,8 +298,15 @@ impl<S: Store> Engine<S> {
     }
 
     fn write_checkpoint(&self, st: &State) -> Result<()> {
-        let bytes = to_json(&st.to_checkpoint())?;
         let store = &self.shared.store;
+        let mut ck = st.to_checkpoint();
+        if st.version > 0 {
+            let entry = store
+                .get(&log::entry_key(st.version))
+                .map_err(|e| store_err("reading the checkpointed entry", e))?;
+            ck.entry_crc32c = crc32c::crc32c(&entry);
+        }
+        let bytes = ck.seal()?;
         store
             .put_if_absent(&log::checkpoint_key(st.version), &bytes)
             .map_err(|e| store_err("writing checkpoint", e))?;
@@ -391,6 +433,10 @@ impl<S: Store> Engine<S> {
     /// Returns whether anything was compacted. Never changes a query result (SPEC §7.2):
     /// the new segment holds exactly the same versions.
     pub fn compact(&self, table: &str, partition_label: &str) -> Result<bool> {
+        self.retry_missing(|| self.compact_once(table, partition_label))
+    }
+
+    fn compact_once(&self, table: &str, partition_label: &str) -> Result<bool> {
         let mut w = lock(&self.writer);
         let st = self.fresh(&mut w)?;
         let t = st.catalog.table(table)?.clone();
@@ -402,6 +448,10 @@ impl<S: Store> Engine<S> {
     /// Compacts every partition that has more than one segment; returns how many were
     /// compacted.
     pub fn compact_all(&self) -> Result<usize> {
+        self.retry_missing(|| self.compact_all_once())
+    }
+
+    fn compact_all_once(&self) -> Result<usize> {
         let mut w = lock(&self.writer);
         let mut n = 0;
         let targets: Vec<(String, i64)> = {
@@ -441,19 +491,33 @@ impl<S: Store> Engine<S> {
         }
         let mut versions = Vec::new();
         for seg in segs.iter() {
-            let bytes = self
-                .shared
-                .store
-                .get(&seg.key)
-                .map_err(|e| store_err(&format!("reading {}", seg.key), e))?;
-            let file = SegmentFile::open(&bytes).map_err(|e| {
-                Error::new(ErrorKind::Io, format!("corrupt segment {}: {e}", seg.key))
+            let bytes = self.shared.store.get(&seg.key).map_err(|e| {
+                if e.kind() == StoreErrorKind::NotFound {
+                    self.shared.stale.store(true, Ordering::SeqCst);
+                    Error::new(
+                        ErrorKind::Io,
+                        format!("{}: {}", crate::segio::MISSING_SEGMENT, seg.key),
+                    )
+                } else {
+                    store_err(&format!("reading {}", seg.key), e)
+                }
             })?;
-            versions.extend(file.versions().map_err(|e| {
+            let corrupt = |e: muninn_format::Error| {
                 Error::new(ErrorKind::Io, format!("corrupt segment {}: {e}", seg.key))
-            })?);
+            };
+            let file = SegmentFile::open(&bytes).map_err(corrupt)?;
+            check_columns(&seg.key, file.footer(), t)?;
+            if file.footer().row_count != seg.rows || file.footer().partition != p {
+                return Err(Error::new(
+                    ErrorKind::Io,
+                    format!("corrupt segment {}: footer disagrees with the log", seg.key),
+                ));
+            }
+            versions.extend(file.versions_within(t.columns.len()).map_err(corrupt)?);
         }
+        let started = Instant::now();
         let new = self.put_segment(t, p, &versions)?;
+        self.check_commit_age(started)?;
         let mut entry = self.new_entry(st, "compact");
         entry.add.push(new.to_json());
         entry.remove = segs.iter().map(|s| s.key.as_str().to_owned()).collect();
@@ -462,66 +526,97 @@ impl<S: Store> Engine<S> {
     }
 
     /// Deletes segment files that no committed state references: orphans of failed
-    /// writes, and segments retired by compaction. A file is only deleted if it is older
-    /// than [`EngineOptions::gc_grace`] (by its creation time, or for retired segments its
-    /// removal time) and no live snapshot of this process references it. Readers in other
-    /// processes are protected by the grace period only.
+    /// writes (ours or another writer's) and segments retired by compaction.
+    ///
+    /// Guarantees (FORMAT.md §3.5): the decision is made against the **log head** (GC
+    /// first reads every entry it has not seen, so a lagging engine never mistakes
+    /// another writer's segments for orphans), and re-checked against the head again just
+    /// before deleting. A file is deleted only after *this engine* has seen it
+    /// unreferenced for [`EngineOptions::gc_grace`] (by its own clock — no writer clock
+    /// or segment name is trusted), and never while a live snapshot of this process
+    /// references it. Writers refuse to commit segments older than half the grace
+    /// period, so with a grace period longer than any store-call stall, GC cannot delete
+    /// a segment that is about to be committed. Readers in other processes are protected
+    /// by the grace period only.
     pub fn gc(&self) -> Result<GcReport> {
+        self.retry_missing(|| self.gc_once())
+    }
+
+    fn gc_once(&self) -> Result<GcReport> {
         let mut w = lock(&self.writer);
-        let st = self.fresh(&mut w)?;
-        let mut referenced: BTreeSet<Key> = BTreeSet::new();
-        {
+        let st = self.head(&mut w)?;
+        let referenced = |st: &State| -> BTreeSet<Key> {
+            let mut out: BTreeSet<Key> = st.segments().map(|x| x.key.clone()).collect();
             let mut p = self.published();
             p.live.retain(|s| s.strong_count() > 0);
-            let live: Vec<Arc<State>> = p.live.iter().filter_map(Weak::upgrade).collect();
-            for s in live.iter().chain([&p.state, &st]) {
-                referenced.extend(s.segments().map(|x| x.key.clone()));
+            for s in p.live.iter().filter_map(Weak::upgrade) {
+                out.extend(s.segments().map(|x| x.key.clone()));
             }
-        }
-        let retired: HashMap<&Key, i64> = st.retired.iter().map(|(k, t)| (k, *t)).collect();
+            out
+        };
+        let refs = referenced(&st);
+        let current: BTreeSet<&Key> = st.segments().map(|s| &s.key).collect();
+        let retired: BTreeSet<&Key> = st.retired.iter().map(|(k, _)| k).collect();
         let now = self.wall();
         let grace = i64::try_from(self.shared.opts.gc_grace.as_micros()).unwrap_or(i64::MAX);
-        let mut report = GcReport::default();
-        let mut purged = Vec::new();
         let listed = self
             .shared
             .store
             .list(log::SEGMENTS_PREFIX)
             .map_err(|e| store_err("listing segments", e))?;
         let listed_set: BTreeSet<&Key> = listed.iter().collect();
-        let current: BTreeSet<&Key> = st.segments().map(|s| &s.key).collect();
-        for key in &listed {
-            if referenced.contains(key) {
-                if !current.contains(key) {
-                    report.kept += 1; // retired, but a live snapshot still reads it
+        let mut report = GcReport::default();
+        let mut candidates = Vec::new();
+        {
+            let mut since = lock(&self.unreferenced_since);
+            since.retain(|k, _| listed_set.contains(k) && !refs.contains(k));
+            for key in &listed {
+                if refs.contains(key) {
+                    if !current.contains(key) {
+                        report.kept += 1; // retired, but a live snapshot still reads it
+                    }
+                    continue;
                 }
-                continue;
+                // Files whose name we do not recognise are not ours to delete.
+                if !retired.contains(key) && log::segment_created(key.as_str()).is_none() {
+                    continue;
+                }
+                let first = *since.entry(key.clone()).or_insert(now);
+                if now.saturating_sub(first) < grace {
+                    report.kept += 1;
+                    continue;
+                }
+                candidates.push(key.clone());
             }
-            let since = match retired.get(key) {
-                Some(&t) => Some(t),
-                None => log::segment_created(key.as_str()),
-            };
-            // Files whose name we do not recognise are not ours to delete.
-            let Some(since) = since else { continue };
-            if now.saturating_sub(since) < grace {
-                report.kept += 1;
-                continue;
-            }
+        }
+        // Close the window between deciding and deleting: anything an entry committed
+        // meanwhile references is spared.
+        let st = if candidates.is_empty() {
+            st
+        } else {
+            let head = self.head(&mut w)?;
+            let refs = referenced(&head);
+            candidates.retain(|k| !refs.contains(k));
+            head
+        };
+        let mut purged = Vec::new();
+        for key in candidates {
             self.shared
                 .store
-                .delete(key)
+                .delete(&key)
                 .map_err(|e| store_err(&format!("deleting {key}"), e))?;
-            if retired.contains_key(key) {
+            lock(&self.unreferenced_since).remove(&key);
+            if st.retired.iter().any(|(k, _)| *k == key) {
                 purged.push(key.as_str().to_owned());
             }
-            report.deleted.push(key.clone());
+            report.deleted.push(key);
         }
-        // Retired entries whose file is already gone (e.g. deleted by an earlier GC that
-        // crashed before committing) can be forgotten too.
-        for (k, t) in st.retired.iter() {
+        // Retired entries whose file is already gone (deleted by an earlier GC that
+        // crashed before committing, or by another writer's GC) can be forgotten too.
+        let refs = referenced(&st);
+        for (k, _) in st.retired.iter() {
             if !listed_set.contains(k)
-                && !referenced.contains(k)
-                && now.saturating_sub(*t) >= grace
+                && !refs.contains(k)
                 && !purged.iter().any(|p| p == k.as_str())
             {
                 purged.push(k.as_str().to_owned());
@@ -530,61 +625,101 @@ impl<S: Store> Engine<S> {
         if !purged.is_empty() {
             let mut entry = self.new_entry(&st, "gc");
             entry.purged = purged;
-            self.commit(&mut w, &st, entry)?;
+            match self.commit(&mut w, &st, entry) {
+                // Losing the race only delays forgetting the retired keys.
+                Err(e) if e.kind() == ErrorKind::Conflict => {}
+                r => {
+                    r?;
+                }
+            }
         }
         Ok(report)
     }
 }
 
-/// Reads the state from the log: checkpoint (via hint, else listing) + later entries.
+/// Reads the state from the log: the newest *valid* checkpoint (the hint's, else the
+/// newest listed) plus every later entry. A checkpoint is only an optimisation: one that
+/// is missing, unparsable, fails its checksum, does not match the log entry it claims to
+/// summarise, or from which the later entries do not apply is skipped in favour of an
+/// older one, and finally of a full replay of the log.
 fn load<S: Store>(shared: &Shared<S>) -> Result<State> {
     let store = &shared.store;
-    let mut start: Option<u64> = None;
+    let mut hint: Option<u64> = None;
     match store.get(&log::hint_key()) {
+        // An unreadable hint is ignored.
         Ok(bytes) => {
-            // The hint is an optimisation: if it is unreadable, fall back to listing.
-            if let Ok(h) = serde_json::from_slice::<Hint>(&bytes) {
-                start = Some(h.version);
-            }
+            hint = serde_json::from_slice::<Hint>(&bytes)
+                .ok()
+                .map(|h| h.version)
         }
         Err(e) if e.kind() == StoreErrorKind::NotFound => {}
         Err(e) => return Err(store_err("reading checkpoint hint", e)),
     }
-    let mut state = None;
-    if let Some(v) = start {
-        match store.get(&log::checkpoint_key(v)) {
-            Ok(bytes) => state = Some(checkpoint_state(&bytes, v)?),
-            Err(e) if e.kind() == StoreErrorKind::NotFound => {}
-            Err(e) => return Err(store_err("reading checkpoint", e)),
+    let mut tried = BTreeSet::new();
+    let mut listed: Option<Vec<u64>> = None;
+    loop {
+        let next = match hint.take() {
+            Some(v) => Some(v),
+            None => {
+                let all = match &mut listed {
+                    Some(l) => l,
+                    None => {
+                        let keys = store
+                            .list("log/")
+                            .map_err(|e| store_err("listing the log", e))?;
+                        let mut v: Vec<u64> = keys
+                            .iter()
+                            .filter_map(|k| log::parse_checkpoint_key(k.as_str()))
+                            .collect();
+                        v.sort_unstable();
+                        listed.insert(v)
+                    }
+                };
+                all.retain(|v| !tried.contains(v));
+                all.pop()
+            }
+        };
+        let Some(v) = next else { break };
+        if !tried.insert(v) {
+            continue;
+        }
+        let Some(state) = checkpoint_state(shared, v)? else {
+            continue;
+        };
+        match catch_up(shared, state) {
+            Ok(s) => return Ok(s),
+            Err(e) if log::is_corrupt(&e) => continue,
+            Err(e) => return Err(e),
         }
     }
-    if state.is_none() {
-        let keys = store
-            .list("log/")
-            .map_err(|e| store_err("listing the log", e))?;
-        if let Some(v) = keys
-            .iter()
-            .filter_map(|k| log::parse_checkpoint_key(k.as_str()))
-            .max()
-        {
-            let bytes = store
-                .get(&log::checkpoint_key(v))
-                .map_err(|e| store_err("reading checkpoint", e))?;
-            state = Some(checkpoint_state(&bytes, v)?);
-        }
-    }
-    catch_up(shared, state.unwrap_or_else(State::empty))
+    catch_up(shared, State::empty())
 }
 
-fn checkpoint_state(bytes: &[u8], v: u64) -> Result<State> {
-    let c: Checkpoint = from_json(bytes, "checkpoint")?;
-    if c.version != v {
-        return Err(log::corrupt(format!(
-            "checkpoint {v} says it is version {}",
-            c.version
-        )));
+/// Checkpoint `v` if it exists and verifies against the log; `Ok(None)` if it should be
+/// skipped; `Err` only for store failures.
+fn checkpoint_state<S: Store>(shared: &Shared<S>, v: u64) -> Result<Option<State>> {
+    let store = &shared.store;
+    let bytes = match store.get(&log::checkpoint_key(v)) {
+        Ok(b) => b,
+        Err(e) if e.kind() == StoreErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(store_err("reading checkpoint", e)),
+    };
+    let Ok(c) = Checkpoint::open(&bytes, v) else {
+        return Ok(None);
+    };
+    let entry_crc = if v == 0 {
+        0
+    } else {
+        match store.get(&log::entry_key(v)) {
+            Ok(b) => crc32c::crc32c(&b),
+            Err(e) if e.kind() == StoreErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(store_err("reading log entry", e)),
+        }
+    };
+    if entry_crc != c.entry_crc32c {
+        return Ok(None);
     }
-    State::from_checkpoint(&c)
+    Ok(State::from_checkpoint(&c).ok())
 }
 
 /// Applies every entry after `state.version` until the first missing one.
@@ -608,7 +743,7 @@ fn catch_up<S: Store>(shared: &Shared<S>, mut state: State) -> Result<State> {
 macro_rules! read_via_snapshot {
     ($($name:ident($req:ty) -> $out:ty;)*) => {$(
         fn $name(&self, req: $req) -> Result<$out> {
-            self.snapshot()?.$name(req)
+            self.retry_missing(|| self.snapshot()?.$name(req))
         }
     )*};
 }
@@ -696,6 +831,12 @@ impl<S: Store> Database for Engine<S> {
     }
 
     fn write(&self, batch: &WriteBatch) -> Result<WriteResult> {
+        self.retry_missing(|| self.write_once(batch))
+    }
+}
+
+impl<S: Store> Engine<S> {
+    fn write_once(&self, batch: &WriteBatch) -> Result<WriteResult> {
         let mut w = lock(&self.writer);
         let st = self.fresh(&mut w)?;
         // SPEC §4.4, §4.1 (shared with the model).
@@ -752,6 +893,7 @@ impl<S: Store> Database for Engine<S> {
         }
         let mut entry = self.new_entry(&st, "write");
         entry.batch_id = batch.batch_id.clone();
+        let started = Instant::now();
         for ((table, partition), versions) in &groups {
             let t = st.catalog.table(table)?;
             entry
@@ -762,6 +904,7 @@ impl<S: Store> Database for Engine<S> {
             entry.next_seq = st.next_seq + plan.kept.len() as u64;
             entry.last_system_time = Some(system_time.as_micros());
         }
+        self.check_commit_age(started)?;
         self.commit(&mut w, &st, entry)?;
         Ok(result)
     }

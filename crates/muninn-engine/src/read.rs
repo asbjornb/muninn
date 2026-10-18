@@ -161,7 +161,7 @@ impl<'a, S: Store> Scanner<'a, S> {
                 if !tc_ok(tcb.min, tcb.max) {
                     continue;
                 }
-                let footer = self.shared.footer(seg)?;
+                let footer = self.shared.footer(seg, spec.table)?;
                 // Series slices: footer series ∩ filter (∩ points).
                 let mut by_block: BTreeMap<usize, Vec<(u64, u64)>> = BTreeMap::new();
                 for e in &footer.series {
@@ -452,12 +452,31 @@ impl<S: Store> Reader for EngineSnapshot<S> {
                 rows: Vec::new(),
             });
         };
-        // The union of all frontiers' windows (windows move monotonically with F).
+        // The union of all frontiers' windows: `[F_1 + start, F_n + end)` in exact
+        // arithmetic (windows move monotonically with F), clamped to valid timestamps.
+        // Built directly rather than from the normalised per-frontier windows: the last
+        // frontier's window may be the empty sentinel `[MAX, MAX)` while earlier ones still
+        // contain MAX.
         let range = match p.window {
             GridWindow::Absolute(r) => r,
-            GridWindow::Relative { .. } => {
-                let (a, b) = (p.range_for(f_first)?, p.range_for(f_last)?);
-                TimeRange::new(a.from, b.to)
+            GridWindow::Relative { start, end } => {
+                let (min, max) = (
+                    i128::from(Timestamp::MIN.as_micros()),
+                    i128::from(Timestamp::MAX.as_micros()),
+                );
+                let lo = i128::from(f_first.as_micros()) + i128::from(start.as_micros());
+                let hi = i128::from(f_last.as_micros()) + i128::from(end.as_micros());
+                if lo > max || hi <= min || lo >= hi {
+                    return Ok(ReadResult {
+                        columns,
+                        rows: Vec::new(),
+                    });
+                }
+                let at = |x: i128| Timestamp::from_micros(x as i64);
+                TimeRange::new(
+                    if lo <= min { None } else { at(lo) },
+                    if hi > max { None } else { at(hi) },
+                )
             }
         };
         let mut scanner = Scanner::new(&self.shared, &self.state);
