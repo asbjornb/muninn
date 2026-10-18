@@ -573,8 +573,22 @@ A **receipt** records a read so it can be reproduced exactly later:
 
 `request` is the op's remaining arguments (series filter, value range, `from`/`to`,
 frontiers and window, left rows); `clock` is the effective clock (after the table
-default); `F` the frontier, if any; and `S` the system bound — when the read gave none,
-the greatest system_time of the snapshot it ran against. By §7.3, replaying a receipt
-against that snapshot or any later one returns the same rows, bit for bit (until an
-explicit purge). A receipt therefore identifies a backtest's input data without copying
-it.
+default); `F` the frontier, if any; and `S` the **effective system bound**:
+
+```
+L = the greatest system_time of the snapshot the read ran against (none if it is empty)
+S = min(S_given, L)   if the read gave a bound and L exists
+S = L                 if the read gave no bound and L exists
+S = EMPTY             if L does not exist
+```
+
+The clamp matters: a bound beyond `L` would let a later write (whose system_time is `> L`
+but may be `<= S_given`) enter the window. `EMPTY` is a marker, not a timestamp: replaying an
+`EMPTY` receipt returns no rows, whatever has been written since (a timestamp such as the
+minimum would not do — a first batch may legally be stamped with it). Within the
+snapshot, clamping never changes the result, since no version has system_time `> L`.
+
+By §7.3, replaying a receipt against that snapshot or any later one returns the same rows,
+bit for bit (until an explicit purge), with the same output schema (the table's columns
+*as of the receipt*, not columns added later). A receipt therefore identifies a backtest's
+input data without copying it.
