@@ -53,6 +53,7 @@ class DuckDBAdapter(Adapter):
     #: measurement (see README.md); the alternatives are kept so anyone can re-check.
     latest_strategy = "argmax"
     grid_strategy = "asof"
+    frontier_table = True
 
     def __init__(self, workdir, threads=6, memory_limit_mb=4096, **kw):
         super().__init__(workdir, threads, memory_limit_mb)
@@ -72,7 +73,10 @@ class DuckDBAdapter(Adapter):
     # ---------------------------------------------------------------------------------
     def _connect(self, read_only: bool, view: bool = True):
         cfg = {"threads": self.threads, "memory_limit": f"{self.memory_limit_mb}MB",
-               "temp_directory": str(self.workdir / "tmp")}
+               "temp_directory": str(self.workdir / "tmp"),
+               # The planner underestimates the (frontier x point) side of the grid and
+               # would swap ASOF for a nested loop below this many rows; always use ASOF.
+               "asof_loop_join_threshold": 0}
         if self.layout == "native":
             self.con = duckdb.connect(str(self.db_path), read_only=read_only, config=cfg)
         else:
@@ -199,7 +203,9 @@ class DuckDBAdapter(Adapter):
             s = (f"SELECT series_id, value_time, published_time, received_time, system_time, seq, "
                  f"deleted{self._cols()} FROM v WHERE {self._and(w)} ORDER BY {tc(clk)}, seq")
         elif op == "grid":
+            self._params = {}
             s = self._grid_sql(q, clk)
+            params = self._params
         elif op == "asof_join":
             s, params = self._asof_join_sql(q, clk)
         else:
@@ -224,7 +230,13 @@ class DuckDBAdapter(Adapter):
                 f"p.value_time >= {int(lo)}" if lo is not None else "",
                 f"p.value_time < {int(hi)}" if hi is not None else ""] if x) or "TRUE"
         base = self._and(self._where(q, frontier=False, value_range=span))
-        fl = f"(SELECT unnest([{_ints(fs)}]::BIGINT[]) AS frontier)"
+        if self.frontier_table:
+            # a registered Arrow table: the planner sees the real cardinality and picks a
+            # range join (IEJoin) for the window condition instead of a nested loop
+            self._params["frontiers"] = pa.table({"frontier": pa.array(fs, pa.int64())})
+            fl = "frontiers"
+        else:
+            fl = f"(SELECT unnest([{_ints(fs)}]::BIGINT[]) AS frontier)"
         if self.grid_strategy == "window":
             return (f"SELECT frontier, series_id, value_time, published_time, received_time, "
                     f"system_time, seq{self._cols()} FROM (SELECT f.frontier, p.* FROM "
@@ -233,11 +245,26 @@ class DuckDBAdapter(Adapter):
                     f"QUALIFY row_number() OVER (PARTITION BY f.frontier, p.series_id, p.value_time "
                     f"ORDER BY p.k DESC) = 1) WHERE NOT deleted "
                     f"ORDER BY frontier, series_id, value_time")
+        if relative:
+            # Frontiers are sorted, so the frontiers whose window holds a point form one
+            # index range: (#f <= vt - we) .. (#f <= vt - ws) - 1. Two ASOF joins against
+            # the (small) frontier list find it; unnest(range()) expands it. Linear in the
+            # output, instead of a points x frontiers range join.
+            pairs = (
+                f"fi AS (SELECT frontier, (row_number() OVER (ORDER BY frontier))::BIGINT AS n FROM {fl}), "
+                f"pr AS (SELECT p.series_id, p.value_time, coalesce(a.n, 0) AS lo, coalesce(b.n, 0) AS hi "
+                f"FROM p ASOF LEFT JOIN fi a ON p.value_time - {we} >= a.frontier "
+                f"ASOF LEFT JOIN fi b ON p.value_time - {ws} >= b.frontier), "
+                f"l AS (SELECT fi.frontier, x.series_id, x.value_time, "
+                f"fi.frontier::HUGEINT * {K} + {K - 1} AS fk FROM "
+                f"(SELECT series_id, value_time, unnest(range(lo + 1, hi + 1)) AS n FROM pr WHERE hi > lo) x "
+                f"JOIN fi USING (n)) ")
+        else:
+            pairs = (f"l AS (SELECT f.frontier, p.series_id, p.value_time, "
+                     f"f.frontier::HUGEINT * {K} + {K - 1} AS fk FROM p JOIN {fl} f ON {fwin}) ")
         return (
             f"WITH r AS (SELECT *, {key(clk)} AS k FROM v WHERE {base}), "
-            f"p AS (SELECT DISTINCT series_id, value_time FROM r), "
-            f"l AS (SELECT f.frontier, p.series_id, p.value_time, "
-            f"f.frontier::HUGEINT * {K} + {K - 1} AS fk FROM p JOIN {fl} f ON {fwin}) "
+            f"p AS (SELECT DISTINCT series_id, value_time FROM r), " + pairs +
             f"SELECT l.frontier, l.series_id, l.value_time, r.published_time, r.received_time, "
             f"r.system_time, r.seq{self._cols('r.')} FROM l ASOF JOIN r "
             f"ON l.series_id = r.series_id AND l.value_time = r.value_time AND l.fk >= r.k "

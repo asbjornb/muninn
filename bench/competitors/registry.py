@@ -36,6 +36,7 @@ SYSTEMS = {
     # alternative query strategies, kept so the tuning choice can be re-checked
     "duckdb-native-window": _duckdb("native", latest_strategy="window", grid_strategy="window"),
     "clickhouse": _clickhouse(),
+    "clickhouse-arrayjoin": _clickhouse(grid_strategy="arrayjoin"),
     "muninn": _muninn(),
 }
 

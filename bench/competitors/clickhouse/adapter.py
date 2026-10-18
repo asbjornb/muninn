@@ -95,9 +95,13 @@ CONFIG = """<clickhouse>
 
 class ClickHouseAdapter(Adapter):
     name = "clickhouse"
+    #: "asof" (default) or "arrayjoin"; see README.md
+    grid_strategy = "asof"
 
     def __init__(self, workdir, threads=6, memory_limit_mb=4096, **kw):
         super().__init__(workdir, threads, memory_limit_mb)
+        for k, v in kw.items():
+            setattr(self, k, v)
         self.bin = os.environ.get("CLICKHOUSE_BIN") or (str(TOOLS) if TOOLS.exists() else shutil.which("clickhouse"))
         if not self.bin:
             raise Unavailable("no ClickHouse binary: run bench/competitors/clickhouse/fetch.sh "
@@ -304,11 +308,34 @@ class ClickHouseAdapter(Adapter):
                                             f"p.value_time < {int(hi)}" if hi is not None else ""] if x) or "1"
         base = self._and(self._where(q, frontier=False, value_range=span))
         farr = f"[{_ints(fs)}]::Array(Int64)" if fs else "[]::Array(Int64)"
+        if self.grid_strategy == "arrayjoin":
+            # each version joins the frontiers that can see it (t_clock <= f, value_time in
+            # f's window); argMax per (frontier, point)
+            fields = ["published_time", "received_time", "system_time", "seq", "deleted"] + self.columns
+            tup = ", ".join(fields)
+            sel = ", ".join(f"w.{i + 1} AS {f}" for i, f in enumerate(fields) if f != "deleted")
+            cond = fwin.replace("p.value_time", "value_time")
+            return (f"SELECT f AS frontier, series_id, value_time, {sel} FROM (SELECT f, series_id, value_time, "
+                    f"argMax(tuple({tup}), ({tc(clk)}, seq)) AS w FROM v "
+                    f"ARRAY JOIN arrayFilter(f -> f >= {tc(clk)} AND {cond}, {farr}) AS f "
+                    f"WHERE {base} GROUP BY f, series_id, value_time) WHERE NOT w.5 "
+                    f"ORDER BY frontier, series_id, value_time")
         r = self._right(base, clk)
-        # left: (frontier, point) pairs; points from the filtered table, frontiers via arrayJoin
-        left = (f"(SELECT f AS frontier, p.series_id AS series_id, p.value_time AS value_time FROM "
-                f"(SELECT DISTINCT series_id, value_time FROM v WHERE {base}) AS p "
-                f"ARRAY JOIN arrayFilter(f -> {fwin.replace('p.value_time', 'value_time')}, {farr}) AS f)")
+        pts = f"(SELECT DISTINCT series_id, value_time, toUInt8(1) AS one FROM v WHERE {base})"
+        if q.get("window_start") is not None and fs:
+            # Frontiers are sorted, so those whose window holds a point form one index range
+            # (#f <= vt - we) .. (#f <= vt - ws) - 1; two ASOF joins against the small
+            # frontier list find it (ClickHouse ASOF needs an equality key: a constant).
+            fi = f"(SELECT toUInt8(1) AS one, n, {farr}[n] AS f FROM (SELECT arrayJoin(range(1, {len(fs) + 1})) AS n))"
+            left = (f"(SELECT {farr}[n] AS frontier, series_id, value_time FROM "
+                    f"(SELECT p.series_id AS series_id, p.value_time AS value_time, "
+                    f"arrayJoin(range(toUInt64(a.n + 1), toUInt64(b.n + 1))) AS n FROM {pts} AS p "
+                    f"ASOF LEFT JOIN {fi} AS a ON p.one = a.one AND p.value_time - {ws} - {we - ws} >= a.f "
+                    f"ASOF LEFT JOIN {fi} AS b ON p.one = b.one AND p.value_time - {ws} >= b.f))")
+        else:
+            left = (f"(SELECT f AS frontier, p.series_id AS series_id, p.value_time AS value_time FROM "
+                    f"{pts} AS p ARRAY JOIN arrayFilter(f -> {fwin.replace('p.value_time', 'value_time')}, "
+                    f"{farr}) AS f)")
         cols = ", ".join(f"r.{c}" for c in ["published_time", "received_time", "system_time", "seq"] + self.columns)
         return (f"SELECT l.frontier AS frontier, l.series_id AS series_id, l.value_time AS value_time, {cols} "
                 f"FROM {left} AS l ASOF INNER JOIN {r} AS r "
