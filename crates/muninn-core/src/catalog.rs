@@ -62,9 +62,14 @@ pub struct Catalog {
 pub enum BatchPlan {
     /// The batch id was committed before: the write is a no-op (SPEC §4.4).
     AlreadyCommitted,
-    /// Every row validated; the candidate versions in input order (`system_time` and
-    /// `seq` not yet assigned).
-    Candidates(Vec<Version>),
+    /// The writer clock and every row validated: the candidate versions in input order
+    /// (`system_time` and `seq` not yet assigned).
+    Candidates {
+        /// The resolved writer clock reading `c` (SPEC §4.2).
+        clock: Timestamp,
+        /// The candidate versions.
+        rows: Vec<Version>,
+    },
 }
 
 impl Catalog {
@@ -121,15 +126,14 @@ impl Catalog {
     // Catalog changes
     // -----------------------------------------------------------------------------------
     //
-    // Check order (the spec does not fix one; see crates/SPEC-QUESTIONS.md): (1) referenced
-    // table exists, (2) every name is valid, (3) uniqueness.
+    // Check order: SPEC §10.4. Structure (§10.3) is guaranteed by the typed API, or
+    // checked by `wire` for JSON input.
 
     /// Checks a `create_table` and returns the definition it would create.
     pub fn check_create_table(&self, req: &CreateTable) -> Result<TableDef> {
+        // §10.4: table name syntax, table uniqueness, then each column in order (name
+        // syntax / reserved name, uniqueness within the table).
         validate_table_name(&req.name)?;
-        for c in &req.columns {
-            validate_column_name(&c.name)?;
-        }
         if self.tables.iter().any(|t| t.name == req.name) {
             return Err(Error::new(
                 ErrorKind::AlreadyExists,
@@ -137,6 +141,7 @@ impl Catalog {
             ));
         }
         for (i, c) in req.columns.iter().enumerate() {
+            validate_column_name(&c.name)?;
             if req.columns[..i].iter().any(|p| p.name == c.name) {
                 return Err(Error::new(
                     ErrorKind::AlreadyExists,
@@ -171,8 +176,9 @@ impl Catalog {
     /// Checks a `create_series` and returns the definition it would create (with the next
     /// id).
     pub fn check_create_series(&self, req: &CreateSeries) -> Result<SeriesDef> {
-        self.table(&req.table)?;
+        // §10.4: empty name, unknown_table, uniqueness.
         validate_series_name(&req.name)?;
+        self.table(&req.table)?;
         if self.series.iter().any(|s| *s.name == *req.name) {
             return Err(Error::new(
                 ErrorKind::AlreadyExists,
@@ -263,13 +269,10 @@ impl Catalog {
         // 3. Every non-null value matches its column's type. Missing keys are null.
         let mut values: Vec<Option<_>> = vec![None; table.columns.len()];
         for (name, value) in &row.values {
-            if let Some(v) = value {
-                let i = table.column_index(name).expect("checked in step 2");
-                let coerced = v.coerce_to(table.columns[i].ty).map_err(|e| {
-                    Error::new(e.kind(), format!("column {name:?}: {}", e.message()))
-                })?;
-                values[i] = Some(coerced);
-            }
+            let i = table.column_index(name).expect("checked in step 2");
+            values[i] = value
+                .coerce_to(table.columns[i].ty)
+                .map_err(|e| Error::new(e.kind(), format!("column {name:?}: {}", e.message())))?;
         }
         // 4. Tombstone with any non-null value.
         if row.deleted && values.iter().any(Option::is_some) {
@@ -298,8 +301,9 @@ impl Catalog {
         })
     }
 
-    /// SPEC §4.4 + §4.1: the batch-id check, then every row validated in input order (any
-    /// failure rejects the whole batch). `is_committed` answers whether a batch id was
+    /// SPEC §10.4 order: an empty batch id (`invalid_argument`), the §4.4 no-op for a
+    /// known batch id (no further validation), the writer clock (`invalid_timestamp`),
+    /// then §4.1 steps 1–5 per row in input order (any failure rejects the whole batch). `is_committed` answers whether a batch id was
     /// committed before.
     pub fn validate_batch(
         &self,
@@ -309,7 +313,7 @@ impl Catalog {
         if let Some(id) = &batch.batch_id {
             if id.is_empty() {
                 return Err(Error::new(
-                    ErrorKind::InvalidName,
+                    ErrorKind::InvalidArgument,
                     "batch_id must be non-empty",
                 ));
             }
@@ -317,14 +321,18 @@ impl Catalog {
                 return Ok(BatchPlan::AlreadyCommitted);
             }
         }
-        let mut candidates = Vec::with_capacity(batch.rows.len());
+        let clock = batch
+            .clock
+            .resolve()
+            .map_err(|e| Error::new(e.kind(), format!("writer clock: {}", e.message())))?;
+        let mut rows = Vec::with_capacity(batch.rows.len());
         for (i, row) in batch.rows.iter().enumerate() {
             let v = self
                 .validate_row(row)
                 .map_err(|e| Error::new(e.kind(), format!("row {i}: {}", e.message())))?;
-            candidates.push(v);
+            rows.push(v);
         }
-        Ok(BatchPlan::Candidates(candidates))
+        Ok(BatchPlan::Candidates { clock, rows })
     }
 
     // -----------------------------------------------------------------------------------

@@ -14,7 +14,7 @@
 //! - Writes take the writer clock reading explicitly ([`WriteBatch::clock`]); the
 //!   implementation applies the `max(c, last)` rule of SPEC §4.2 itself.
 //! - Write inputs are *loose* (they carry what a client sent: [`TimeInput`] and
-//!   un-coerced [`Value`]s) so that the implementation — not the caller — performs the
+//!   un-coerced [`InputValue`]s) so that the implementation — not the caller — performs the
 //!   SPEC §4.1 validation in the normative order.
 //! - Results are plain rows with typed values; no Arrow here.
 
@@ -24,7 +24,7 @@ use std::sync::Arc;
 use crate::error::Result;
 use crate::time::{Duration, Timestamp};
 use crate::types::{
-    Clock, ColumnDef, Partitioning, SeriesDef, SeriesId, TableDef, TimeRange, Value,
+    Clock, ColumnDef, InputValue, Partitioning, SeriesDef, SeriesId, TableDef, TimeRange, Value,
 };
 
 // ---------------------------------------------------------------------------------------
@@ -114,6 +114,9 @@ pub enum TimeInput {
     Micros(i64),
     /// SPEC §1 text form (may be unparsable).
     Text(String),
+    /// Missing, null where a time is required, or not a string (SPEC §10.1): always
+    /// `invalid_timestamp`. The text describes the input for error messages.
+    Invalid(String),
 }
 
 impl TimeInput {
@@ -122,6 +125,12 @@ impl TimeInput {
         Ok(match self {
             TimeInput::Micros(us) => Timestamp::try_from_micros(*us)?,
             TimeInput::Text(s) => Timestamp::parse(s)?,
+            TimeInput::Invalid(what) => {
+                return Err(crate::Error::new(
+                    crate::ErrorKind::InvalidTimestamp,
+                    format!("not a timestamp: {what}"),
+                ));
+            }
         })
     }
 }
@@ -157,9 +166,9 @@ pub struct WriteRow {
     pub received_time: TimeInput,
     /// Tombstone flag.
     pub deleted: bool,
-    /// Column name → value; missing keys and `None` are null. Values are coerced to the
-    /// column type per SPEC §4.1 step 3 ([`Value::coerce_to`]).
-    pub values: BTreeMap<String, Option<Value>>,
+    /// Column name → value; missing keys and [`InputValue::Null`] are null. Values are
+    /// coerced to the column type per SPEC §4.1 step 3 ([`InputValue::coerce_to`]).
+    pub values: BTreeMap<String, InputValue>,
 }
 
 impl WriteRow {
@@ -185,8 +194,9 @@ impl WriteRow {
         self
     }
 
-    /// Builder: sets a column value (`None` = explicit null).
-    pub fn value(mut self, column: impl Into<String>, v: impl Into<Option<Value>>) -> WriteRow {
+    /// Builder: sets a column value (a [`Value`], an `Option<Value>` with `None` = explicit
+    /// null, or any [`InputValue`]).
+    pub fn value(mut self, column: impl Into<String>, v: impl Into<InputValue>) -> WriteRow {
         self.values.insert(column.into(), v.into());
         self
     }
@@ -203,19 +213,21 @@ impl WriteRow {
 pub struct WriteBatch {
     /// Rows, in input order (validation order and seq order follow it).
     pub rows: Vec<WriteRow>,
-    /// Optional whole-batch idempotency key (SPEC §4.4); must be non-empty if given.
+    /// Optional whole-batch idempotency key (SPEC §4.4); an empty string is
+    /// `invalid_argument`.
     pub batch_id: Option<String>,
-    /// The writer clock reading `c` at commit (SPEC §4.2).
-    pub clock: Timestamp,
+    /// The writer clock reading `c` at commit (SPEC §4.2). Validated (`invalid_timestamp`)
+    /// only after the batch-id check (SPEC §10.4), hence a [`TimeInput`].
+    pub clock: TimeInput,
 }
 
 impl WriteBatch {
     /// A batch without batch id.
-    pub fn new(clock: Timestamp, rows: Vec<WriteRow>) -> WriteBatch {
+    pub fn new(clock: impl Into<TimeInput>, rows: Vec<WriteRow>) -> WriteBatch {
         WriteBatch {
             rows,
             batch_id: None,
-            clock,
+            clock: clock.into(),
         }
     }
 }
@@ -280,7 +292,9 @@ pub struct ReplayRequest {
     pub clock: Option<Clock>,
     /// System bound `S`, inclusive.
     pub system: Option<Timestamp>,
-    /// Arrival range `[from, to)` on `t_clock`.
+    /// Arrival bounds on `t_clock`, read as the **open-closed** interval `(from, to]`
+    /// (SPEC §6.3; see [`TimeRange::contains_open_closed`]). `from > to` is
+    /// `invalid_range`.
     pub arrival: TimeRange,
 }
 
@@ -449,13 +463,15 @@ pub trait Database: Reader {
     /// Pins the current committed state (SPEC §5.1).
     fn snapshot(&self) -> Result<Self::Snapshot>;
 
-    /// SPEC §2.1. Errors: `invalid_name`, `already_exists`.
+    /// SPEC §2.1. Check order (§10.4): table name `invalid_name`, `already_exists`, then
+    /// per column `invalid_name`, `already_exists`.
     fn create_table(&self, req: &CreateTable) -> Result<TableDef>;
     /// SPEC §2.1. Errors: `unknown_table`, `invalid_name`, `already_exists`.
     fn add_column(&self, req: &AddColumn) -> Result<TableDef>;
-    /// SPEC §2.2. Errors: `unknown_table`, `invalid_name`, `already_exists`.
+    /// SPEC §2.2. Check order (§10.4): empty name `invalid_name`, `unknown_table`,
+    /// `already_exists`.
     fn create_series(&self, req: &CreateSeries) -> Result<SeriesDef>;
-    /// SPEC §4. Errors per §4.1 (whole batch rejected), plus `invalid_name` for an empty
-    /// batch id.
+    /// SPEC §4. Check order per §10.4: empty batch id (`invalid_argument`), known batch id
+    /// (no-op), writer clock (`invalid_timestamp`), then §4.1 steps 1–5 per row.
     fn write(&self, batch: &WriteBatch) -> Result<WriteResult>;
 }

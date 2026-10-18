@@ -1,0 +1,24 @@
+{
+  "name": "system-frontier-reproducibility",
+  "description": "§5 system frontier S: 'as the database looked at S'. A D+1 settlement value is later revised at D+5; the revision is loaded a day after it was received. The received frontier answers 'what could we have known', S answers 'what did the DB say then'. S before any commit sees nothing; S equal to a batch's system_time sees it (inclusive).",
+  "steps": [
+    {"op": "create_table", "name": "actuals", "columns": [{"name": "value", "type": "f64"}]},
+    {"op": "create_series", "name": "dk1_consumption", "table": "actuals", "resolution": "1h", "timezone": "Europe/Copenhagen", "tags": {"area": "DK1", "kind": "actual"}},
+    {"op": "write", "system_time": "2025-01-17T09:00:00Z",
+     "rows": [{"series": "dk1_consumption", "value_time": "2025-01-15T00:00:00Z", "received_time": "2025-01-16T08:00:00Z", "values": {"value": 1000.0}}]},
+    {"op": "write", "system_time": "2025-01-21T09:00:00Z",
+     "rows": [{"series": "dk1_consumption", "value_time": "2025-01-15T00:00:00Z", "received_time": "2025-01-20T08:00:00Z", "values": {"value": 1010.0}}]},
+    {"op": "latest", "table": "actuals", "expect": {"values": [["dk1_consumption", "2025-01-15T00:00:00Z", {"value": 1010.0}]]}},
+    {"op": "latest", "table": "actuals", "system": "2025-01-17T08:59:59.999999Z", "expect": {"rows": []}},
+    {"op": "latest", "table": "actuals", "system": "2025-01-20T00:00:00Z", "expect": {"values": [["dk1_consumption", "2025-01-15T00:00:00Z", {"value": 1000.0}]]}},
+    {"op": "latest", "table": "actuals", "frontier": "2025-01-18T00:00:00Z", "expect": {"values": [["dk1_consumption", "2025-01-15T00:00:00Z", {"value": 1000.0}]]}},
+    {"op": "latest", "table": "actuals", "frontier": "2025-01-20T08:00:00Z", "system": "2025-01-21T08:59:59Z",
+     "expect": {"values": [["dk1_consumption", "2025-01-15T00:00:00Z", {"value": 1000.0}]]}},
+    {"op": "latest", "table": "actuals", "frontier": "2025-01-20T08:00:00Z", "system": "2025-01-21T09:00:00Z",
+     "expect": {"rows": [
+       {"series": "dk1_consumption", "value_time": "2025-01-15T00:00:00Z", "published_time": null, "received_time": "2025-01-20T08:00:00Z", "system_time": "2025-01-21T09:00:00Z", "seq": 2, "values": {"value": 1010.0}}]}},
+    {"op": "history", "table": "actuals", "system": "2025-01-20T00:00:00Z",
+     "expect": {"rows": [
+       {"series": "dk1_consumption", "value_time": "2025-01-15T00:00:00Z", "published_time": null, "received_time": "2025-01-16T08:00:00Z", "system_time": "2025-01-17T09:00:00Z", "seq": 1, "deleted": false, "values": {"value": 1000.0}}]}}
+  ]
+}

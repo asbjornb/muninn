@@ -1,0 +1,27 @@
+{
+  "name": "dup-only-batch-does-not-advance-last",
+  "description": "§4.2/§4.5: `last` is the greatest system_time of any STORED version. A batch where every row is a duplicate (here at clock 12:00) stores nothing and does not move `last`, so a later batch with clock 11:00 gets system_time 11:00 (not 12:00). Same for a rejected batch at clock 15:00.",
+  "steps": [
+    {"op": "create_table", "name": "t", "columns": [{"name": "value", "type": "f64"}]},
+    {"op": "create_series", "name": "s", "table": "t"},
+    {"op": "write", "system_time": "2025-01-01T10:00:00Z",
+     "rows": [{"series": "s", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": 1.0}}]},
+    {"op": "write", "system_time": "2025-01-01T12:00:00Z",
+     "rows": [{"series": "s", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": 1.0}}],
+     "expect": {"stored": 0, "duplicates": 1, "batch_already_committed": false}},
+    {"op": "write", "system_time": "2025-01-01T11:00:00Z",
+     "rows": [{"series": "s", "value_time": "2025-01-02T01:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": 2.0}}],
+     "expect": {"stored": 1, "duplicates": 0, "batch_already_committed": false}},
+    {"op": "write", "system_time": "2025-01-01T15:00:00Z",
+     "rows": [{"series": "s", "value_time": "2025-01-02T02:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"nope": 2.0}}],
+     "expect": {"error": "unknown_column"}},
+    {"op": "write", "system_time": "2025-01-01T11:30:00Z",
+     "rows": [{"series": "s", "value_time": "2025-01-02T02:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": 3.0}}],
+     "expect": {"stored": 1, "duplicates": 0, "batch_already_committed": false}},
+    {"op": "history", "table": "t",
+     "expect": {"rows": [
+       {"series": "s", "value_time": "2025-01-02T00:00:00Z", "published_time": null, "received_time": "2025-01-01T09:00:00Z", "system_time": "2025-01-01T10:00:00Z", "seq": 1, "deleted": false, "values": {"value": 1.0}},
+       {"series": "s", "value_time": "2025-01-02T01:00:00Z", "published_time": null, "received_time": "2025-01-01T09:00:00Z", "system_time": "2025-01-01T11:00:00Z", "seq": 2, "deleted": false, "values": {"value": 2.0}},
+       {"series": "s", "value_time": "2025-01-02T02:00:00Z", "published_time": null, "received_time": "2025-01-01T09:00:00Z", "system_time": "2025-01-01T11:30:00Z", "seq": 3, "deleted": false, "values": {"value": 3.0}}]}}
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "name": "batch-id-not-recorded-on-failure",
+  "description": "§4/§8: a rejected batch has no effect, including on batch ids. Retrying with the same batch_id after fixing the bad row commits normally (seq starts at 1, nothing was consumed); a further retry is then a no-op.",
+  "steps": [
+    {"op": "create_table", "name": "prices", "columns": [{"name": "value", "type": "f64"}]},
+    {"op": "create_series", "name": "dk1", "table": "prices"},
+    {"op": "write", "system_time": "2025-01-15T12:00:00Z", "batch_id": "nordpool-da-2025-01-16",
+     "rows": [
+       {"series": "dk1", "value_time": "2025-01-16T00:00:00Z", "received_time": "2025-01-15T12:00:00Z", "values": {"value": 80.0}},
+       {"series": "dk1", "value_time": "2025-01-16T01:00:00Z", "received_time": "2025-01-15T12:00:00Z", "values": {"value": "n/a"}}],
+     "expect": {"error": "type_mismatch"}},
+    {"op": "latest", "table": "prices", "expect": {"rows": []}},
+    {"op": "write", "system_time": "2025-01-15T12:01:00Z", "batch_id": "nordpool-da-2025-01-16",
+     "rows": [
+       {"series": "dk1", "value_time": "2025-01-16T00:00:00Z", "received_time": "2025-01-15T12:00:00Z", "values": {"value": 80.0}},
+       {"series": "dk1", "value_time": "2025-01-16T01:00:00Z", "received_time": "2025-01-15T12:00:00Z", "values": {"value": null}}],
+     "expect": {"stored": 2, "duplicates": 0, "batch_already_committed": false}},
+    {"op": "write", "system_time": "2025-01-15T12:02:00Z", "batch_id": "nordpool-da-2025-01-16",
+     "rows": [
+       {"series": "dk1", "value_time": "2025-01-16T01:00:00Z", "received_time": "2025-01-15T12:00:00Z", "values": {"value": 79.0}}],
+     "expect": {"stored": 0, "duplicates": 0, "batch_already_committed": true}},
+    {"op": "latest", "table": "prices",
+     "expect": {"rows": [
+       {"series": "dk1", "value_time": "2025-01-16T00:00:00Z", "published_time": null, "received_time": "2025-01-15T12:00:00Z", "system_time": "2025-01-15T12:01:00Z", "seq": 1, "values": {"value": 80.0}},
+       {"series": "dk1", "value_time": "2025-01-16T01:00:00Z", "published_time": null, "received_time": "2025-01-15T12:00:00Z", "system_time": "2025-01-15T12:01:00Z", "seq": 2, "values": {"value": null}}]}}
+  ]
+}

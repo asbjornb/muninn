@@ -1,0 +1,34 @@
+{
+  "name": "dedup-within-batch",
+  "description": "§4.3: a row identical to an earlier kept row of the same batch is dropped. Only kept rows take seq (1..4 for rows 1, 3, 6, 8). A row that differs only in published_time (null vs set) is not a duplicate. Duplicate tombstones are deduplicated like any version.",
+  "steps": [
+    {"op": "create_table", "name": "t", "columns": [{"name": "value", "type": "f64"}]},
+    {"op": "create_series", "name": "s", "table": "t"},
+    {"op": "write", "system_time": "2025-01-01T10:00:00Z",
+     "rows": [
+       {"series": "s", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": 1.0}},
+       {"series": "s", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": 1.0}},
+       {"series": "s", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": 2.0}},
+       {"series": "s", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": 1.0}},
+       {"series": "s", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": 2.0}},
+       {"series": "s", "value_time": "2025-01-02T01:00:00Z", "received_time": "2025-01-01T09:00:00Z", "deleted": true},
+       {"series": "s", "value_time": "2025-01-02T01:00:00Z", "received_time": "2025-01-01T09:00:00Z", "deleted": true},
+       {"series": "s", "value_time": "2025-01-02T00:00:00Z", "published_time": "2025-01-01T08:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": 1.0}}],
+     "expect": {"stored": 4, "duplicates": 4, "batch_already_committed": false}},
+    {"op": "history", "table": "t",
+     "expect": {"values": [
+       ["s", "2025-01-02T00:00:00Z", {"value": 1.0}],
+       ["s", "2025-01-02T00:00:00Z", {"value": 2.0}],
+       ["s", "2025-01-02T00:00:00Z", {"value": 1.0}],
+       ["s", "2025-01-02T01:00:00Z", "deleted"]]}},
+    {"op": "latest", "table": "t",
+     "expect": {"rows": [
+       {"series": "s", "value_time": "2025-01-02T00:00:00Z", "published_time": "2025-01-01T08:00:00Z", "received_time": "2025-01-01T09:00:00Z", "system_time": "2025-01-01T10:00:00Z", "seq": 4, "values": {"value": 1.0}}]}},
+    {"op": "replay", "table": "t", "clock": "published",
+     "expect": {"values": [
+       ["s", "2025-01-02T00:00:00Z", {"value": 1.0}],
+       ["s", "2025-01-02T00:00:00Z", {"value": 1.0}],
+       ["s", "2025-01-02T00:00:00Z", {"value": 2.0}],
+       ["s", "2025-01-02T01:00:00Z", "deleted"]]}}
+  ]
+}

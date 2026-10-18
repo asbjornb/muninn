@@ -290,7 +290,7 @@ fn rejected_batch_changes_nothing() {
     assert_eq!(db.versions(), before);
     // Nothing was consumed: not the seq, not `last`, not the batch id.
     batch.rows[1] = row("b", h(1), h(9), f(3.0));
-    batch.clock = h(6);
+    batch.clock = h(6).into();
     let r = db.write(&batch).unwrap();
     assert_eq!(
         (r.stored, r.first_seq, r.system_time),
@@ -438,9 +438,9 @@ fn batch_ids() {
     empty.batch_id = Some("b3".into());
     assert!(!db.write(&empty).unwrap().batch_already_committed);
     assert!(db.write(&empty).unwrap().batch_already_committed);
-    // Empty batch ids are rejected.
+    // Empty batch ids are rejected (SPEC §10.3), even before the known-id no-op.
     empty.batch_id = Some(String::new());
-    assert_eq!(kind(db.write(&empty)), ErrorKind::InvalidName);
+    assert_eq!(kind(db.write(&empty)), ErrorKind::InvalidArgument);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -643,8 +643,11 @@ fn history_and_replay_include_tombstones() {
         .collect::<Vec<_>>()
     };
     assert_eq!(replay(None, None), vec![1, 2, 3]);
-    assert_eq!(replay(Some(2), None), vec![2, 3]);
-    assert_eq!(replay(Some(1), Some(3)), vec![1, 2]);
+    // (from, to]: `from` exclusive, `to` inclusive (SPEC §6.3).
+    assert_eq!(replay(Some(2), None), vec![3]);
+    assert_eq!(replay(Some(1), Some(3)), vec![2, 3]);
+    assert_eq!(replay(None, Some(1)), vec![1]);
+    assert_eq!(replay(Some(2), Some(2)), Vec::<u64>::new());
     // Replay respects the system bound but not a frontier.
     let r = db
         .replay(&ReplayRequest {
@@ -784,7 +787,7 @@ fn to_write_row(g: &GenRow) -> WriteRow {
         r.deleted = true;
     } else {
         r.values
-            .insert("value".into(), val.map(|v| Value::F64(f64::from(v))));
+            .insert("value".into(), val.map(|v| Value::F64(f64::from(v))).into());
     }
     r
 }
@@ -925,5 +928,159 @@ proptest! {
         }
         let expected: Vec<VersionRow> = last.into_values().filter(|r| !r.deleted).collect();
         prop_assert_eq!(db.latest(&req).unwrap().rows, expected);
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// SPEC §10.4 check order for the typed API
+// ---------------------------------------------------------------------------------------
+
+#[test]
+fn writer_clock_is_checked_after_the_batch_id() {
+    let db = setup();
+    let mut b = WriteBatch::new(h(1), vec![row("a", h(0), h(1), f(1.0))]);
+    b.batch_id = Some("b1".into());
+    db.write(&b).unwrap();
+    // Known batch id: a no-op even with an invalid clock and invalid rows.
+    let mut replay = WriteBatch::new("not a time", vec![row("zzz", h(0), h(1), f(1.0))]);
+    replay.batch_id = Some("b1".into());
+    assert!(db.write(&replay).unwrap().batch_already_committed);
+    // Unknown batch id: the clock is checked before the rows.
+    replay.batch_id = Some("b2".into());
+    assert_eq!(kind(db.write(&replay)), ErrorKind::InvalidTimestamp);
+    replay.clock = TimeInput::Invalid("missing".into());
+    assert_eq!(kind(db.write(&replay)), ErrorKind::InvalidTimestamp);
+    replay.clock = h(2).into();
+    assert_eq!(kind(db.write(&replay)), ErrorKind::UnknownSeries);
+    // Missing value_time / received_time are invalid_timestamp (step 5).
+    let mut r = row("a", h(0), h(1), f(1.0));
+    r.received_time = TimeInput::Invalid("missing".into());
+    assert_eq!(kind(write(&db, h(2), vec![r])), ErrorKind::InvalidTimestamp);
+}
+
+#[test]
+fn catalog_check_order() {
+    let db = setup();
+    // create_table: table uniqueness before column names.
+    let req = CreateTable::new("t", vec![ColumnDef::new("Bad", ColumnType::F64)]);
+    assert_eq!(kind(db.create_table(&req)), ErrorKind::AlreadyExists);
+    // ... and columns in order: a duplicate before a later bad name.
+    let req = CreateTable::new(
+        "v",
+        vec![
+            ColumnDef::new("x", ColumnType::F64),
+            ColumnDef::new("x", ColumnType::F64),
+            ColumnDef::new("Bad", ColumnType::F64),
+        ],
+    );
+    assert_eq!(kind(db.create_table(&req)), ErrorKind::AlreadyExists);
+    let req = CreateTable::new(
+        "v",
+        vec![
+            ColumnDef::new("Bad", ColumnType::F64),
+            ColumnDef::new("Bad", ColumnType::F64),
+        ],
+    );
+    assert_eq!(kind(db.create_table(&req)), ErrorKind::InvalidName);
+    // create_series: empty name before unknown table.
+    assert_eq!(
+        kind(db.create_series(&CreateSeries::new("", "nope"))),
+        ErrorKind::InvalidName
+    );
+    assert_eq!(
+        kind(db.create_series(&CreateSeries::new("a", "nope"))),
+        ErrorKind::UnknownTable
+    );
+}
+
+#[test]
+fn input_values_follow_the_json_encodings() {
+    use crate::types::InputValue as I;
+    let db = ModelDb::new();
+    db.create_table(&CreateTable::new(
+        "j",
+        vec![
+            ColumnDef::new("x", ColumnType::F64),
+            ColumnDef::new("n", ColumnType::I64),
+        ],
+    ))
+    .unwrap();
+    db.create_series(&CreateSeries::new("s", "j")).unwrap();
+    let w = |x: I, n: I, vt: i64| {
+        write(
+            &db,
+            h(1),
+            vec![WriteRow::new("s", h(vt), h(1)).value("x", x).value("n", n)],
+        )
+    };
+    let num = |t: &str| I::Number(t.into());
+    w(num("-0"), num("-0"), 0).unwrap();
+    let v = &db.versions()[0];
+    assert_eq!(v.values, vec![Some(Value::F64(-0.0)), Some(Value::I64(0))]);
+    w(num("18446744073709551616"), num("9223372036854775807"), 1).unwrap();
+    assert_eq!(
+        db.versions()[1].values[0],
+        Some(Value::F64(18446744073709551616.0))
+    );
+    w(num("1e400"), I::Null, 2).unwrap();
+    assert_eq!(db.versions()[2].values[0], Some(Value::F64(f64::INFINITY)));
+    for (x, n) in [
+        (I::Null, num("2.0")),
+        (I::Null, num("1e3")),
+        (I::Null, num("9223372036854775808")),
+        (num(&"9".repeat(400)), I::Null),
+        (I::Unsupported("[1]".into()), I::Null),
+        (I::Null, I::Unsupported("{}".into())),
+        (I::Value(Value::Bool(true)), I::Null),
+    ] {
+        assert_eq!(kind(w(x, n, 3)), ErrorKind::TypeMismatch);
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// SPEC §7 invariant 7: latest at F1 plus replay(F1, F2), applied in order, is latest
+    /// at F2.
+    #[test]
+    fn replay_is_the_frontier_delta(
+        batches in gen_batches(),
+        clock in 0u8..3, system in prop::option::of(0i64..30),
+        f1 in prop::option::of(0i64..14), len in prop::option::of(0i64..14),
+        filter in prop::sample::select(vec![vec![], vec!["a"], vec!["b"], vec!["a", "b"]]),
+        range in prop::option::of((0i64..4, 0i64..3)),
+    ) {
+        let db = setup();
+        apply(&db, &batches);
+        let clock = Some(clock_of(clock));
+        let f2 = match (f1, len) {
+            (_, None) => None,
+            (Some(a), Some(l)) => Some(a + l),
+            (None, Some(l)) => Some(l),
+        };
+        let series: Vec<String> = filter.iter().map(|s| s.to_string()).collect();
+        let range = range.map_or(TimeRange::ALL, |(a, l)| TimeRange::new(Some(h(a)), Some(h(a + l))));
+        let latest_at = |frontier: Option<i64>| db.latest(&LatestRequest {
+            table: "t".into(), series: series.clone(), range,
+            context: ReadContext { clock, frontier: frontier.map(h), system: system.map(h) },
+        }).unwrap().rows;
+        let mut state: BTreeMap<(SeriesId, Timestamp), VersionRow> = BTreeMap::new();
+        if f1.is_some() {
+            for r in latest_at(f1) {
+                state.insert((r.series_id, r.value_time), r);
+            }
+        }
+        let delta = db.replay(&ReplayRequest {
+            table: "t".into(), series: series.clone(), range, clock, system: system.map(h),
+            arrival: TimeRange::new(f1.map(h), f2.map(h)),
+        }).unwrap().rows;
+        for r in delta {
+            if r.deleted {
+                state.remove(&(r.series_id, r.value_time));
+            } else {
+                state.insert((r.series_id, r.value_time), r);
+            }
+        }
+        prop_assert_eq!(state.into_values().collect::<Vec<_>>(), latest_at(f2));
     }
 }

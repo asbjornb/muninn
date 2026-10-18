@@ -1,0 +1,51 @@
+{
+  "name": "asof-join",
+  "description": "§6.5 asof_join: one output row per left row, in left input order (duplicates kept), each looked up at its own frontier with an EXACT value_time match. found=false with all right-side fields null (values null) when nothing is visible yet, when the latest visible version is a tombstone, or when no version has that exact value_time. Left series must belong to the right table (unknown_series otherwise).",
+  "steps": [
+    {"op": "create_table", "name": "prices", "columns": [{"name": "value", "type": "f64"}]},
+    {"op": "create_table", "name": "signals", "columns": [{"name": "score", "type": "f64"}]},
+    {"op": "create_series", "name": "dk1", "table": "prices"},
+    {"op": "create_series", "name": "dk2", "table": "prices"},
+    {"op": "create_series", "name": "sig", "table": "signals"},
+    {"op": "write", "system_time": "2025-01-15T12:01:00Z",
+     "rows": [
+       {"series": "dk1", "value_time": "2025-01-16T00:00:00Z", "published_time": "2025-01-15T11:55:00Z", "received_time": "2025-01-15T12:00:00Z", "values": {"value": 80.0}},
+       {"series": "dk1", "value_time": "2025-01-16T01:00:00Z", "published_time": "2025-01-15T11:55:00Z", "received_time": "2025-01-15T12:00:00Z", "values": {"value": 82.0}},
+       {"series": "dk2", "value_time": "2025-01-16T00:00:00Z", "published_time": "2025-01-15T11:55:00Z", "received_time": "2025-01-15T12:00:00Z", "values": {"value": 70.0}}]},
+    {"op": "write", "system_time": "2025-01-15T13:01:00Z",
+     "rows": [{"series": "dk1", "value_time": "2025-01-16T00:00:00Z", "received_time": "2025-01-15T13:00:00Z", "values": {"value": 81.0}}]},
+    {"op": "write", "system_time": "2025-01-15T14:01:00Z",
+     "rows": [{"series": "dk2", "value_time": "2025-01-16T00:00:00Z", "received_time": "2025-01-15T14:00:00Z", "deleted": true}]},
+    {"op": "asof_join", "table": "prices",
+     "left": [
+       {"series": "dk1", "value_time": "2025-01-16T00:00:00Z", "frontier": "2025-01-15T11:00:00Z"},
+       {"series": "dk1", "value_time": "2025-01-16T00:00:00Z", "frontier": "2025-01-15T13:30:00Z"},
+       {"series": "dk1", "value_time": "2025-01-16T00:00:00Z", "frontier": "2025-01-15T12:00:00Z"},
+       {"series": "dk2", "value_time": "2025-01-16T00:00:00Z", "frontier": "2025-01-15T13:30:00Z"},
+       {"series": "dk2", "value_time": "2025-01-16T00:00:00Z", "frontier": "2025-01-15T14:00:00Z"},
+       {"series": "dk1", "value_time": "2025-01-16T01:00:00Z", "frontier": "2025-01-15T12:30:00Z"},
+       {"series": "dk1", "value_time": "2025-01-16T00:30:00Z", "frontier": "2025-12-31T00:00:00Z"},
+       {"series": "dk1", "value_time": "2025-01-16T00:00:00Z", "frontier": "2025-01-15T12:00:00Z"}],
+     "expect": {"rows": [
+       {"series": "dk1", "value_time": "2025-01-16T00:00:00Z", "frontier": "2025-01-15T11:00:00Z", "found": false, "published_time": null, "received_time": null, "system_time": null, "seq": null, "values": null},
+       {"series": "dk1", "value_time": "2025-01-16T00:00:00Z", "frontier": "2025-01-15T13:30:00Z", "found": true, "published_time": null, "received_time": "2025-01-15T13:00:00Z", "system_time": "2025-01-15T13:01:00Z", "seq": 4, "values": {"value": 81.0}},
+       {"series": "dk1", "value_time": "2025-01-16T00:00:00Z", "frontier": "2025-01-15T12:00:00Z", "found": true, "published_time": "2025-01-15T11:55:00Z", "received_time": "2025-01-15T12:00:00Z", "system_time": "2025-01-15T12:01:00Z", "seq": 1, "values": {"value": 80.0}},
+       {"series": "dk2", "value_time": "2025-01-16T00:00:00Z", "frontier": "2025-01-15T13:30:00Z", "found": true, "published_time": "2025-01-15T11:55:00Z", "received_time": "2025-01-15T12:00:00Z", "system_time": "2025-01-15T12:01:00Z", "seq": 3, "values": {"value": 70.0}},
+       {"series": "dk2", "value_time": "2025-01-16T00:00:00Z", "frontier": "2025-01-15T14:00:00Z", "found": false, "published_time": null, "received_time": null, "system_time": null, "seq": null, "values": null},
+       {"series": "dk1", "value_time": "2025-01-16T01:00:00Z", "frontier": "2025-01-15T12:30:00Z", "found": true, "published_time": "2025-01-15T11:55:00Z", "received_time": "2025-01-15T12:00:00Z", "system_time": "2025-01-15T12:01:00Z", "seq": 2, "values": {"value": 82.0}},
+       {"series": "dk1", "value_time": "2025-01-16T00:30:00Z", "frontier": "2025-12-31T00:00:00Z", "found": false, "published_time": null, "received_time": null, "system_time": null, "seq": null, "values": null},
+       {"series": "dk1", "value_time": "2025-01-16T00:00:00Z", "frontier": "2025-01-15T12:00:00Z", "found": true, "published_time": "2025-01-15T11:55:00Z", "received_time": "2025-01-15T12:00:00Z", "system_time": "2025-01-15T12:01:00Z", "seq": 1, "values": {"value": 80.0}}]}},
+    {"op": "asof_join", "table": "prices",
+     "left": [
+       {"series": "dk2", "value_time": "2025-01-16T00:00:00Z", "frontier": "2025-01-15T13:59:59Z"},
+       {"series": "dk1", "value_time": "2025-01-16T00:00:00+01:00", "frontier": "2025-01-15T13:00:00Z"}],
+     "expect": {"values": [
+       ["dk2", "2025-01-16T00:00:00Z", "2025-01-15T13:59:59Z", {"value": 70.0}],
+       ["dk1", "2025-01-15T23:00:00Z", "2025-01-15T13:00:00Z", null]]}},
+    {"op": "asof_join", "table": "prices", "left": [], "expect": {"rows": []}},
+    {"op": "asof_join", "table": "prices", "left": [{"series": "sig", "value_time": "2025-01-16T00:00:00Z", "frontier": "2025-01-15T13:00:00Z"}], "expect": {"error": "unknown_series"}},
+    {"op": "asof_join", "table": "prices", "left": [{"series": "dk1", "value_time": "2025-01-16T00:00:00Z", "frontier": "2025-01-15T13:00:00Z"}, {"series": "nope", "value_time": "2025-01-16T00:00:00Z", "frontier": "2025-01-15T13:00:00Z"}], "expect": {"error": "unknown_series"}},
+    {"op": "asof_join", "table": "signals", "left": [{"series": "sig", "value_time": "2025-01-16T00:00:00Z", "frontier": "2025-01-15T13:00:00Z"}],
+     "expect": {"values": [["sig", "2025-01-16T00:00:00Z", "2025-01-15T13:00:00Z", null]]}}
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "name": "history-under-clocks",
+  "description": "§6.2 history: all visible versions ordered by (series, value_time, k_clock) — the version order depends on the clock, not on seq. Under the published clock a late-received correction with an EARLIER published time sorts first and is visible at a published frontier before its received time (but not before its system_time when S is set).",
+  "steps": [
+    {"op": "create_table", "name": "prices", "columns": [{"name": "value", "type": "f64"}]},
+    {"op": "create_series", "name": "dk1", "table": "prices"},
+    {"op": "write", "system_time": "2025-01-15T10:00:00Z",
+     "rows": [{"series": "dk1", "value_time": "2025-01-16T00:00:00Z", "published_time": "2025-01-15T09:30:00Z", "received_time": "2025-01-15T09:40:00Z", "values": {"value": 1.0}}]},
+    {"op": "write", "system_time": "2025-01-15T11:00:00Z",
+     "rows": [{"series": "dk1", "value_time": "2025-01-16T00:00:00Z", "published_time": "2025-01-15T09:00:00Z", "received_time": "2025-01-15T10:50:00Z", "values": {"value": 2.0}}]},
+    {"op": "write", "system_time": "2025-01-15T12:00:00Z",
+     "rows": [{"series": "dk1", "value_time": "2025-01-16T00:00:00Z", "received_time": "2025-01-15T11:50:00Z", "values": {"value": 3.0}}]},
+    {"op": "history", "table": "prices", "clock": "published",
+     "expect": {"values": [["dk1", "2025-01-16T00:00:00Z", {"value": 2.0}], ["dk1", "2025-01-16T00:00:00Z", {"value": 1.0}], ["dk1", "2025-01-16T00:00:00Z", {"value": 3.0}]]}},
+    {"op": "history", "table": "prices",
+     "expect": {"values": [["dk1", "2025-01-16T00:00:00Z", {"value": 1.0}], ["dk1", "2025-01-16T00:00:00Z", {"value": 2.0}], ["dk1", "2025-01-16T00:00:00Z", {"value": 3.0}]]}},
+    {"op": "history", "table": "prices", "clock": "published", "frontier": "2025-01-15T09:45:00Z",
+     "expect": {"values": [["dk1", "2025-01-16T00:00:00Z", {"value": 2.0}], ["dk1", "2025-01-16T00:00:00Z", {"value": 1.0}]]}},
+    {"op": "history", "table": "prices", "clock": "published", "frontier": "2025-01-15T09:45:00Z", "system": "2025-01-15T10:30:00Z",
+     "expect": {"values": [["dk1", "2025-01-16T00:00:00Z", {"value": 1.0}]]}},
+    {"op": "history", "table": "prices", "clock": "system", "frontier": "2025-01-15T11:00:00Z",
+     "expect": {"values": [["dk1", "2025-01-16T00:00:00Z", {"value": 1.0}], ["dk1", "2025-01-16T00:00:00Z", {"value": 2.0}]]}},
+    {"op": "latest", "table": "prices", "clock": "published", "frontier": "2025-01-15T09:45:00Z",
+     "expect": {"values": [["dk1", "2025-01-16T00:00:00Z", {"value": 1.0}]]}},
+    {"op": "latest", "table": "prices", "clock": "published", "frontier": "2025-01-15T09:15:00Z",
+     "expect": {"values": [["dk1", "2025-01-16T00:00:00Z", {"value": 2.0}]]}}
+  ]
+}

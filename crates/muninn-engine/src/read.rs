@@ -414,9 +414,12 @@ impl<S: Store> Reader for EngineSnapshot<S> {
     fn replay(&self, req: &ReplayRequest) -> Result<ReadResult<VersionRow>> {
         let p = self.state.catalog.prepare_replay(req)?;
         let mut scanner = Scanner::new(&self.shared, &self.state);
-        // Arrival range [from, to) on t_clock as inclusive µs bounds.
-        let tc_lo = req.arrival.from.map_or(i64::MIN, Timestamp::as_micros);
-        let tc_hi = req.arrival.to.map_or(i64::MAX, |t| t.as_micros() - 1);
+        // Arrival range (from, to] on t_clock (SPEC §6.3) as inclusive µs bounds.
+        let tc_lo = req
+            .arrival
+            .from
+            .map_or(i64::MIN, |t| t.as_micros().saturating_add(1));
+        let tc_hi = req.arrival.to.map_or(i64::MAX, Timestamp::as_micros);
         let mut cands = scanner.scan(&ScanSpec {
             table: p.table,
             ids: &p.ids,

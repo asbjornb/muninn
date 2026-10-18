@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use muninn_core::api::*;
 use muninn_core::model::ModelSnapshot;
+use muninn_core::types::InputValue;
 use muninn_core::{
     Clock, ColumnDef, ColumnType, Database, Duration, Error, ErrorKind, ModelDb, Partitioning,
     Reader, TimeRange, Timestamp, Value,
@@ -81,7 +82,7 @@ pub struct GenRow {
     pub pt: Option<i64>,
     pub rt: GenTime,
     pub deleted: bool,
-    pub values: Vec<(usize, Option<Value>)>,
+    pub values: Vec<(usize, InputValue)>,
 }
 
 #[derive(Clone, Debug)]
@@ -180,16 +181,20 @@ fn usual_columns(series: usize) -> &'static [usize] {
 
 /// Values for a row of `series`: usually the right columns with the right types; rarely
 /// an unknown column, a wrong type or an explicit null.
-fn arb_values(series: usize) -> BoxedStrategy<Vec<(usize, Option<Value>)>> {
+fn arb_values(series: usize) -> BoxedStrategy<Vec<(usize, InputValue)>> {
     let cols = usual_columns(series).to_vec();
     let one = (prop::sample::select(cols), 0u8..40).prop_flat_map(|(c, roll)| {
-        let v: BoxedStrategy<Option<Value>> = match roll {
+        let v: BoxedStrategy<InputValue> = match roll {
             0 => prop::sample::select(TYPES.to_vec())
                 .prop_flat_map(arb_value)
-                .prop_map(Some)
+                .prop_map(InputValue::Value)
                 .boxed(),
-            1..=3 => Just(None).boxed(),
-            _ => arb_value(COLUMNS[c].1).prop_map(Some).boxed(),
+            1..=3 => Just(InputValue::Null).boxed(),
+            // JSON number tokens (SPEC §10.2): -0, integral floats, exponents, big ints.
+            4 => prop::sample::select(vec!["-0", "2.0", "1e3", "1", "18446744073709551616"])
+                .prop_map(|t| InputValue::Number(t.to_owned()))
+                .boxed(),
+            _ => arb_value(COLUMNS[c].1).prop_map(InputValue::Value).boxed(),
         };
         let c = if roll == 39 { 5 } else { c }; // "x": usually unknown
         (Just(c), v)
@@ -410,8 +415,8 @@ pub fn arb_mutation() -> impl Strategy<Value = Op> {
     let create_series = (0usize..SERIES.len(), 0usize..4)
         .prop_map(|(name, table)| Op::CreateSeries { name, table });
     let write = (
-        0i64..30,
-        prop::option::weighted(0.3, 0u8..4),
+        prop_oneof![200 => 0i64..30, 1 => Just(-1i64)],
+        prop::option::weighted(0.3, prop_oneof![100 => 0u8..4, 1 => Just(9u8)]),
         prop::collection::vec(arb_row(), 0..10),
     )
         .prop_map(|(clock, batch_id, rows)| Op::Write {
@@ -537,8 +542,18 @@ pub fn batch_of(op: &Op, history: &[Vec<GenRow>]) -> Option<(WriteBatch, Vec<Gen
     Some((
         WriteBatch {
             rows: write_rows,
-            batch_id: batch_id.map(|b| format!("batch-{b}")),
-            clock: h(clock),
+            batch_id: batch_id.map(|b| {
+                if b == 9 {
+                    String::new()
+                } else {
+                    format!("batch-{b}")
+                }
+            }),
+            clock: if clock < 0 {
+                TimeInput::Invalid("null".into())
+            } else {
+                h(clock).into()
+            },
         },
         rows,
     ))

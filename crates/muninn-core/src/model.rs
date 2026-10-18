@@ -137,7 +137,7 @@ impl State {
 
     fn write(&self, batch: &WriteBatch) -> Result<(Option<State>, WriteResult)> {
         // SPEC §4.4 then §4.1 (shared with the engine).
-        let candidates = match self
+        let (clock, candidates) = match self
             .catalog
             .validate_batch(batch, |id| self.batch_ids.contains(id))?
         {
@@ -150,11 +150,11 @@ impl State {
                     },
                 ));
             }
-            BatchPlan::Candidates(c) => c,
+            BatchPlan::Candidates { clock, rows } => (clock, rows),
         };
 
         // SPEC §4.2: batch.system_time = max(c, last); all rows share it.
-        let system_time = batch_system_time(batch.clock, self.last_system_time());
+        let system_time = batch_system_time(clock, self.last_system_time());
 
         // SPEC §4.3: drop rows content-identical to any stored version (a linear scan
         // here) or to an earlier kept row of this batch.
@@ -242,12 +242,16 @@ impl State {
     fn replay(&self, req: &ReplayRequest) -> Result<ReadResult<VersionRow>> {
         let p = self.catalog.prepare_replay(req)?;
         let clock = p.vis.clock;
-        // System bound applies; the frontier does not — `arrival` bounds t_clock instead.
+        // System bound applies; the frontier does not. `arrival` bounds t_clock as the
+        // open-closed interval (from, to] (SPEC §6.3): exactly the versions that become
+        // visible when the frontier moves from `from` to `to`.
         let mut hits: Vec<&Version> = self
             .versions
             .iter()
             .filter(|v| p.ids.contains(&v.series) && p.range.contains(v.value_time))
-            .filter(|v| p.vis.admits_version(v) && req.arrival.contains(v.t_clock(clock)))
+            .filter(|v| {
+                p.vis.admits_version(v) && req.arrival.contains_open_closed(v.t_clock(clock))
+            })
             .collect();
         hits.sort_by_key(|v| v.knowledge_key(clock));
         let rows = hits

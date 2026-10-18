@@ -13,6 +13,8 @@
 //! - [`api`]: request/response types and the [`Database`] / [`Reader`] traits that every
 //!   implementation provides.
 //! - [`model`]: [`ModelDb`], the naive, obviously-correct oracle.
+//! - [`wire`]: JSON requests (SPEC §9/§10) over any [`Database`], with the §10 structure
+//!   checks and check order; a dependency-free JSON value and parser.
 
 #![forbid(unsafe_code)]
 
@@ -22,9 +24,12 @@ pub mod error;
 pub mod model;
 pub mod time;
 pub mod types;
+pub mod wire;
 
 pub use api::{Database, Reader};
 pub use error::{Error, ErrorKind, Result};
 pub use model::ModelDb;
 pub use time::{Duration, Timestamp};
-pub use types::{Clock, ColumnDef, ColumnType, Partitioning, SeriesId, TimeRange, Value};
+pub use types::{
+    Clock, ColumnDef, ColumnType, InputValue, Partitioning, SeriesId, TimeRange, Value,
+};

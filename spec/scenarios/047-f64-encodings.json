@@ -1,0 +1,43 @@
+{
+  "name": "f64-encodings",
+  "description": "§4.1 f64: any JSON number is accepted and integers are converted to the nearest f64 (42 -> 42.0; 123456789012345678 -> 123456789012345680). Extremes (max, smallest subnormal) round-trip. Strings other than exactly NaN/inf/-inf and booleans are type_mismatch (AMBIGUITIES A2). Two spellings of the same double (0.1 and 0.10000000000000001) are duplicates.",
+  "steps": [
+    {"op": "create_table", "name": "t", "columns": [{"name": "value", "type": "f64"}]},
+    {"op": "create_series", "name": "s", "table": "t"},
+    {"op": "write", "system_time": "2025-01-01T10:00:00Z",
+     "rows": [
+       {"series": "s", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": 42}},
+       {"series": "s", "value_time": "2025-01-02T01:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": 1e-300}},
+       {"series": "s", "value_time": "2025-01-02T02:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": 0.1}},
+       {"series": "s", "value_time": "2025-01-02T03:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": -1.7976931348623157e308}},
+       {"series": "s", "value_time": "2025-01-02T04:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": 5e-324}},
+       {"series": "s", "value_time": "2025-01-02T05:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": 123456789012345678}},
+       {"series": "s", "value_time": "2025-01-02T06:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": -7.25E2}}]},
+    {"op": "latest", "table": "t",
+     "expect": {"values": [
+       ["s", "2025-01-02T00:00:00Z", {"value": 42.0}],
+       ["s", "2025-01-02T01:00:00Z", {"value": 1e-300}],
+       ["s", "2025-01-02T02:00:00Z", {"value": 0.1}],
+       ["s", "2025-01-02T03:00:00Z", {"value": -1.7976931348623157e308}],
+       ["s", "2025-01-02T04:00:00Z", {"value": 4.9406564584124654e-324}],
+       ["s", "2025-01-02T05:00:00Z", {"value": 123456789012345680.0}],
+       ["s", "2025-01-02T06:00:00Z", {"value": -725}]]}},
+    {"op": "write", "system_time": "2025-01-01T11:00:00Z",
+     "rows": [
+       {"series": "s", "value_time": "2025-01-02T02:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": 0.10000000000000001}},
+       {"series": "s", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": 42.0}},
+       {"series": "s", "value_time": "2025-01-02T05:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": 123456789012345680}},
+       {"series": "s", "value_time": "2025-01-02T02:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": 0.30000000000000004}}],
+     "expect": {"stored": 1, "duplicates": 3, "batch_already_committed": false}},
+    {"op": "write", "system_time": "2025-01-01T12:00:00Z", "rows": [{"series": "s", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": "1.5"}}], "expect": {"error": "type_mismatch"}},
+    {"op": "write", "system_time": "2025-01-01T12:00:00Z", "rows": [{"series": "s", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": "Infinity"}}], "expect": {"error": "type_mismatch"}},
+    {"op": "write", "system_time": "2025-01-01T12:00:00Z", "rows": [{"series": "s", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": "nan"}}], "expect": {"error": "type_mismatch"}},
+    {"op": "write", "system_time": "2025-01-01T12:00:00Z", "rows": [{"series": "s", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": "+inf"}}], "expect": {"error": "type_mismatch"}},
+    {"op": "write", "system_time": "2025-01-01T12:00:00Z", "rows": [{"series": "s", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": ""}}], "expect": {"error": "type_mismatch"}},
+    {"op": "write", "system_time": "2025-01-01T12:00:00Z", "rows": [{"series": "s", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": false}}], "expect": {"error": "type_mismatch"}},
+    {"op": "write", "system_time": "2025-01-01T12:00:00Z", "rows": [{"series": "s", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": {"v": 1}}}], "expect": {"error": "type_mismatch"}},
+    {"op": "latest", "table": "t", "value_from": "2025-01-02T02:00:00Z", "value_to": "2025-01-02T03:00:00Z",
+     "expect": {"rows": [
+       {"series": "s", "value_time": "2025-01-02T02:00:00Z", "published_time": null, "received_time": "2025-01-01T09:00:00Z", "system_time": "2025-01-01T11:00:00Z", "seq": 8, "values": {"value": 0.30000000000000004}}]}}
+  ]
+}

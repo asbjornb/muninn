@@ -1,0 +1,37 @@
+{
+  "name": "grid-absolute-window",
+  "description": "§6.4 grid with an absolute value window: frontiers are deduplicated (as instants: 12:00Z and 13:00+01:00 are the same) and sorted ascending; a frontier with nothing visible contributes no rows; each block equals latest at that frontier (tombstones hide). The system bound applies to every frontier. An empty frontier list gives no rows.",
+  "steps": [
+    {"op": "create_table", "name": "prices", "columns": [{"name": "value", "type": "f64"}]},
+    {"op": "create_series", "name": "dk1", "table": "prices"},
+    {"op": "write", "system_time": "2025-01-15T10:00:00Z",
+     "rows": [
+       {"series": "dk1", "value_time": "2025-01-16T00:00:00Z", "received_time": "2025-01-15T10:00:00Z", "values": {"value": 1.0}},
+       {"series": "dk1", "value_time": "2025-01-16T01:00:00Z", "received_time": "2025-01-15T10:00:00Z", "values": {"value": 2.0}}]},
+    {"op": "write", "system_time": "2025-01-15T12:00:00Z",
+     "rows": [{"series": "dk1", "value_time": "2025-01-16T00:00:00Z", "received_time": "2025-01-15T12:00:00Z", "values": {"value": 1.5}}]},
+    {"op": "grid", "table": "prices",
+     "frontiers": ["2025-01-15T12:00:00Z", "2025-01-15T09:00:00Z", "2025-01-15T10:00:00Z", "2025-01-15T12:00:00+00:00", "2025-01-15T13:00:00+01:00"],
+     "expect": {"values": [
+       ["2025-01-15T10:00:00Z", "dk1", "2025-01-16T00:00:00Z", {"value": 1.0}],
+       ["2025-01-15T10:00:00Z", "dk1", "2025-01-16T01:00:00Z", {"value": 2.0}],
+       ["2025-01-15T12:00:00Z", "dk1", "2025-01-16T00:00:00Z", {"value": 1.5}],
+       ["2025-01-15T12:00:00Z", "dk1", "2025-01-16T01:00:00Z", {"value": 2.0}]]}},
+    {"op": "grid", "table": "prices", "frontiers": ["2025-01-15T12:00:00Z", "2025-01-15T11:59:59.999999Z"], "value_from": "2025-01-16T00:00:00Z", "value_to": "2025-01-16T01:00:00Z",
+     "expect": {"rows": [
+       {"frontier": "2025-01-15T11:59:59.999999Z", "series": "dk1", "value_time": "2025-01-16T00:00:00Z", "published_time": null, "received_time": "2025-01-15T10:00:00Z", "system_time": "2025-01-15T10:00:00Z", "seq": 1, "values": {"value": 1.0}},
+       {"frontier": "2025-01-15T12:00:00Z", "series": "dk1", "value_time": "2025-01-16T00:00:00Z", "published_time": null, "received_time": "2025-01-15T12:00:00Z", "system_time": "2025-01-15T12:00:00Z", "seq": 3, "values": {"value": 1.5}}]}},
+    {"op": "grid", "table": "prices", "frontiers": ["2025-01-15T12:00:00Z"], "system": "2025-01-15T11:00:00Z",
+     "expect": {"values": [["2025-01-15T12:00:00Z", "dk1", "2025-01-16T00:00:00Z", {"value": 1.0}], ["2025-01-15T12:00:00Z", "dk1", "2025-01-16T01:00:00Z", {"value": 2.0}]]}},
+    {"op": "grid", "table": "prices", "frontiers": [], "expect": {"rows": []}},
+    {"op": "write", "system_time": "2025-01-15T13:00:00Z",
+     "rows": [{"series": "dk1", "value_time": "2025-01-16T01:00:00Z", "received_time": "2025-01-15T13:00:00Z", "deleted": true}]},
+    {"op": "grid", "table": "prices", "frontiers": ["2025-01-15T13:00:00Z", "2025-01-15T12:00:00Z"],
+     "expect": {"values": [
+       ["2025-01-15T12:00:00Z", "dk1", "2025-01-16T00:00:00Z", {"value": 1.5}],
+       ["2025-01-15T12:00:00Z", "dk1", "2025-01-16T01:00:00Z", {"value": 2.0}],
+       ["2025-01-15T13:00:00Z", "dk1", "2025-01-16T00:00:00Z", {"value": 1.5}]]}},
+    {"op": "grid", "table": "prices", "clock": "system", "frontiers": ["2025-01-15T11:00:00Z"],
+     "expect": {"values": [["2025-01-15T11:00:00Z", "dk1", "2025-01-16T00:00:00Z", {"value": 1.0}], ["2025-01-15T11:00:00Z", "dk1", "2025-01-16T01:00:00Z", {"value": 2.0}]]}}
+  ]
+}

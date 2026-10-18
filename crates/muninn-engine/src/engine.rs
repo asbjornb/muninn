@@ -695,7 +695,7 @@ impl<S: Store> Database for Engine<S> {
         let mut w = lock(&self.writer);
         let st = self.fresh(&mut w)?;
         // SPEC §4.4, §4.1 (shared with the model).
-        let candidates = match st
+        let (clock, candidates) = match st
             .catalog
             .validate_batch(batch, |id| st.batch_ids.contains(id))?
         {
@@ -705,7 +705,7 @@ impl<S: Store> Database for Engine<S> {
                     ..WriteResult::default()
                 });
             }
-            BatchPlan::Candidates(c) => c,
+            BatchPlan::Candidates { clock, rows } => (clock, rows),
         };
         // SPEC §4.3 against stored versions: read every stored version of the touched
         // points (pruned by partition, series and value time).
@@ -723,7 +723,7 @@ impl<S: Store> Database for Engine<S> {
                 .insert(v.value_time);
         }
         let stored = self.load_points(&st, &points)?;
-        let system_time = batch_system_time(batch.clock, st.last_system_time);
+        let system_time = batch_system_time(clock, st.last_system_time);
         let plan = plan_dedup(candidates, system_time, st.next_seq, |v| {
             Ok(stored
                 .get(&(v.series, v.value_time))

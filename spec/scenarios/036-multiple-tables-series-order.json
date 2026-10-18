@@ -1,0 +1,33 @@
+{
+  "name": "multiple-tables-series-order",
+  "description": "§2.2: series ids are 1, 2, 3, ... in creation order across the whole database, and 'by series' means by id — so with interleaved creation dk2 (id 2) sorts before dk1 (id 4). One batch may span tables; seq follows batch input order across tables. Each table's reads only see its own series and columns.",
+  "steps": [
+    {"op": "create_table", "name": "prices", "columns": [{"name": "value", "type": "f64"}]},
+    {"op": "create_table", "name": "wind", "columns": [{"name": "mw", "type": "f64"}, {"name": "model", "type": "string"}]},
+    {"op": "create_series", "name": "wind_dk2", "table": "wind"},
+    {"op": "create_series", "name": "dk2", "table": "prices"},
+    {"op": "create_series", "name": "wind_dk1", "table": "wind"},
+    {"op": "create_series", "name": "dk1", "table": "prices"},
+    {"op": "write", "system_time": "2025-01-15T10:00:00Z",
+     "rows": [
+       {"series": "dk1", "value_time": "2025-01-16T00:00:00Z", "received_time": "2025-01-15T09:03:00Z", "values": {"value": 41.0}},
+       {"series": "wind_dk1", "value_time": "2025-01-16T00:00:00Z", "received_time": "2025-01-15T09:01:00Z", "values": {"mw": 1500.0, "model": "ecmwf"}},
+       {"series": "dk2", "value_time": "2025-01-16T00:00:00Z", "received_time": "2025-01-15T09:02:00Z", "values": {"value": 42.0}},
+       {"series": "wind_dk2", "value_time": "2025-01-16T00:00:00Z", "received_time": "2025-01-15T09:00:00Z", "values": {"mw": 700.0}}],
+     "expect": {"stored": 4, "duplicates": 0, "batch_already_committed": false}},
+    {"op": "latest", "table": "prices",
+     "expect": {"rows": [
+       {"series": "dk2", "value_time": "2025-01-16T00:00:00Z", "published_time": null, "received_time": "2025-01-15T09:02:00Z", "system_time": "2025-01-15T10:00:00Z", "seq": 3, "values": {"value": 42.0}},
+       {"series": "dk1", "value_time": "2025-01-16T00:00:00Z", "published_time": null, "received_time": "2025-01-15T09:03:00Z", "system_time": "2025-01-15T10:00:00Z", "seq": 1, "values": {"value": 41.0}}]}},
+    {"op": "latest", "table": "wind",
+     "expect": {"rows": [
+       {"series": "wind_dk2", "value_time": "2025-01-16T00:00:00Z", "published_time": null, "received_time": "2025-01-15T09:00:00Z", "system_time": "2025-01-15T10:00:00Z", "seq": 4, "values": {"mw": 700.0, "model": null}},
+       {"series": "wind_dk1", "value_time": "2025-01-16T00:00:00Z", "published_time": null, "received_time": "2025-01-15T09:01:00Z", "system_time": "2025-01-15T10:00:00Z", "seq": 2, "values": {"mw": 1500.0, "model": "ecmwf"}}]}},
+    {"op": "replay", "table": "prices", "expect": {"values": [["dk2", "2025-01-16T00:00:00Z", {"value": 42.0}], ["dk1", "2025-01-16T00:00:00Z", {"value": 41.0}]]}},
+    {"op": "replay", "table": "wind", "expect": {"values": [["wind_dk2", "2025-01-16T00:00:00Z", {"mw": 700.0}], ["wind_dk1", "2025-01-16T00:00:00Z", {"mw": 1500.0}]]}},
+    {"op": "replay", "table": "wind", "clock": "system", "expect": {"values": [["wind_dk1", "2025-01-16T00:00:00Z", {"mw": 1500.0}], ["wind_dk2", "2025-01-16T00:00:00Z", {"mw": 700.0}]]}},
+    {"op": "write", "system_time": "2025-01-15T11:00:00Z",
+     "rows": [{"series": "dk1", "value_time": "2025-01-16T00:00:00Z", "received_time": "2025-01-15T09:03:00Z", "values": {"mw": 1.0}}],
+     "expect": {"error": "unknown_column"}}
+  ]
+}
