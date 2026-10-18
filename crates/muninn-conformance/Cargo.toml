@@ -1,0 +1,15 @@
+[package]
+name = "muninn-conformance"
+description = "Runs the Muninn JSON conformance scenarios (spec/scenarios) against any Database"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+muninn-core.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true
