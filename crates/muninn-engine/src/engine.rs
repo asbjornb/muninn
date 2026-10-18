@@ -539,10 +539,16 @@ impl<S: Store> Engine<S> {
     /// a segment that is about to be committed. Readers in other processes are protected
     /// by the grace period only.
     pub fn gc(&self) -> Result<GcReport> {
-        self.retry_missing(|| self.gc_once())
+        self.gc_with_grace(self.shared.opts.gc_grace)
     }
 
-    fn gc_once(&self) -> Result<GcReport> {
+    /// [`Engine::gc`] with an explicit grace period instead of
+    /// [`EngineOptions::gc_grace`].
+    pub fn gc_with_grace(&self, grace: std::time::Duration) -> Result<GcReport> {
+        self.retry_missing(|| self.gc_once(grace))
+    }
+
+    fn gc_once(&self, grace: std::time::Duration) -> Result<GcReport> {
         let mut w = lock(&self.writer);
         let st = self.head(&mut w)?;
         let referenced = |st: &State| -> BTreeSet<Key> {
@@ -558,7 +564,7 @@ impl<S: Store> Engine<S> {
         let current: BTreeSet<&Key> = st.segments().map(|s| &s.key).collect();
         let retired: BTreeSet<&Key> = st.retired.iter().map(|(k, _)| k).collect();
         let now = self.wall();
-        let grace = i64::try_from(self.shared.opts.gc_grace.as_micros()).unwrap_or(i64::MAX);
+        let grace = i64::try_from(grace.as_micros()).unwrap_or(i64::MAX);
         let listed = self
             .shared
             .store

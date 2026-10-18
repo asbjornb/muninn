@@ -1,0 +1,42 @@
+[build-system]
+requires = ["maturin>=1.8,<2"]
+build-backend = "maturin"
+
+[project]
+name = "muninn"
+version = "0.1.0"
+description = "Point-in-time-correct time series database: Python bindings"
+requires-python = ">=3.10"
+license = "MIT OR Apache-2.0"
+dependencies = ["pyarrow>=14"]
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: 3",
+]
+
+[project.optional-dependencies]
+pandas = ["pandas>=2"]
+polars = ["polars>=1"]
+
+[dependency-groups]
+dev = [
+    "maturin>=1.8,<2",
+    "pytest>=8",
+    "hypothesis>=6",
+    "pandas>=2",
+    "polars>=1",
+    "numpy>=1.26",
+]
+
+[tool.maturin]
+python-source = "python"
+module-name = "muninn._native"
+features = []
+profile = "release"
+
+[tool.uv]
+# `uv sync` must not try to build the package; build it with `uv run maturin develop`.
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

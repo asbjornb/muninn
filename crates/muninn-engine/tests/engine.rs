@@ -167,6 +167,38 @@ fn gc_respects_grace_and_live_snapshots() {
     assert!(store.head(&foreign).is_ok());
 }
 
+#[test]
+fn gc_with_grace_overrides_option_and_snapshot_reports_last_system_time() {
+    let store: Mem = Arc::new(MemoryStore::new());
+    let o = EngineOptions {
+        gc_grace: std::time::Duration::from_secs(3600),
+        ..opts()
+    };
+    let e = Engine::open(Arc::clone(&store), o).unwrap();
+    setup(&e);
+    assert_eq!(e.snapshot().unwrap().last_system_time(), None);
+    write(&e, 1, vec![row("a", 0, 0, 1.0)]);
+    write(&e, 2, vec![row("a", 1, 1, 2.0)]);
+    let snap = e.snapshot().unwrap();
+    assert_eq!(snap.last_system_time(), Some(h(2)));
+    // Equal clock reading: strictly increasing system_time (SPEC §4.2).
+    write(&e, 2, vec![row("a", 2, 2, 3.0)]);
+    assert_eq!(snap.last_system_time(), Some(h(2)));
+    let next = e.snapshot().unwrap().last_system_time().unwrap();
+    assert_eq!(next.as_micros(), h(2).as_micros() + 1);
+    drop(snap);
+    assert_eq!(e.compact_all().unwrap(), 1);
+    // The configured hour-long grace keeps the retired segments; a zero grace does not.
+    assert!(e.gc().unwrap().deleted.is_empty());
+    assert_eq!(
+        e.gc_with_grace(std::time::Duration::ZERO)
+            .unwrap()
+            .deleted
+            .len(),
+        3
+    );
+}
+
 /// A single-series read of one partition touches only that partition's segments and
 /// only the blocks of that series.
 #[test]

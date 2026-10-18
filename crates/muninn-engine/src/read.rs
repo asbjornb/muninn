@@ -55,6 +55,13 @@ impl<S> EngineSnapshot<S> {
     pub fn version(&self) -> u64 {
         self.state.version
     }
+
+    /// The greatest `system_time` of any version in this snapshot (`last` of SPEC §4.2),
+    /// or `None` if nothing is stored. This is the `S` of a reproducibility receipt for a
+    /// read without a system bound (SPEC §11).
+    pub fn last_system_time(&self) -> Option<muninn_core::Timestamp> {
+        self.state.last_system_time
+    }
 }
 
 /// A qualifying version found by a scan (engine columns only).
