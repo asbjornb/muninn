@@ -103,7 +103,9 @@ fn series_filter_with_comma_in_name() {
          \"a,b\",2025-01-01T00:00:00Z,2025-01-01T00:00:00Z,3\n",
     );
     let out = t.ok(
-        &["latest", "--table", "t", "--series", "a,b", "--format", "ndjson"],
+        &[
+            "latest", "--table", "t", "--series", "a,b", "--format", "ndjson",
+        ],
         "",
     );
     let lines: Vec<&str> = out.lines().collect();
@@ -122,7 +124,10 @@ fn empty_series_filter_is_not_all_series() {
         &["write", "-"],
         "series,value_time,received_time,x\na,2025-01-01T00:00:00Z,2025-01-01T00:00:00Z,1\n",
     );
-    let out = t.run(&["latest", "--table", "t", "--series", "", "--format", "csv"], b"");
+    let out = t.run(
+        &["latest", "--table", "t", "--series", "", "--format", "csv"],
+        b"",
+    );
     assert!(
         !out.status.success(),
         "an empty series name returned rows: {}",
