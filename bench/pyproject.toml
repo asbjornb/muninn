@@ -1,0 +1,22 @@
+[project]
+name = "muninn-bench"
+version = "0.1.0"
+description = "Muninn benchmark harness: synthetic energy datasets, query workload, competitor adapters"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=2.0",
+    "pyarrow>=17",
+    "duckdb>=1.1",
+    "clickhouse-connect>=0.8",
+    "psutil>=6",
+]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
