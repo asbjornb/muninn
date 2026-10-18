@@ -16,6 +16,12 @@ That would be a fine outcome.
 - Benchmark harness + competitor baselines (ClickHouse, DuckDB/Parquet, XTDB, ArcticDB,
   SQL Server/Postgres). See `09-benchmarks.md`. Sets the bar before writing the engine.
 
+Spikes that can run in parallel with step 0 (see `10-ambition.md`):
+
+- Format + spec as the product: would an open spec + conformance suite work, and give value?
+- Vintage-delta compression on real forecast data vs. ClickHouse/Parquet.
+- Single-pass frontier grid in the reference implementation.
+
 ## 1. On-disk format
 
 - Column files, segment footer, manifests, WAL, commit markers.
@@ -34,9 +40,10 @@ That would be a fine outcome.
 - `AS OF` frontier(s), latest-known, all-versions, replay ordering.
 - Run the step-0 benchmark suite; compare against the baselines.
 
-## 5. As-of join
+## 5. As-of join + frontier grid
 
 - Per-row frontier merge join on `(series, value_time)`.
+- Frontier grid (many frontiers resolved in one pass).
 
 ## 6. Python bindings + Arrow results
 
@@ -49,6 +56,9 @@ That would be a fine outcome.
 
 - Derived current-truth views, rollups, server mode (HTTP/Flight), frontier-advancing
   cursor for backtest loops, latency/QA stats.
+- Provably leak-free: noninterference fuzzing, formal spec of visibility, model-checked
+  commit protocol, reproducibility receipts, explain-the-diff. See `10-ambition.md`.
+- Massive parallel backtesting over the bucket; checkpoints + deltas.
 - Point-in-time catalog reads (which series/tags existed at T — avoids survivorship bias).
 - Derived series built at query time (frontier applied to all inputs), possibly
   materialized queries kept up to date as inputs get new versions. Until then users
