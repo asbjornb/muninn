@@ -124,23 +124,70 @@ fn dur_json(d: Duration) -> Json {
     Json::String(format!("{}us", d.as_micros()))
 }
 
-/// `(table, op, request, clock, F, S)`; `S` is filled from the snapshot when the read gave
-/// none (`system_source = "snapshot"`). The current columns are recorded too, so a replay
-/// can return exactly the same schema after later `add_column`s.
+/// How a read is shaped for a receipt replay: the value columns as of the receipt, and
+/// whether the receipt was taken on an empty snapshot (SPEC §11 `EMPTY`: no version is
+/// visible, whatever has been written since).
+#[derive(Clone, Debug, Default)]
+struct AsOf {
+    columns: Option<Vec<String>>,
+    empty: bool,
+}
+
+/// The marker for the system bound of a receipt taken on an empty snapshot.
+const EMPTY: &str = "EMPTY";
+
+impl AsOf {
+    /// The output columns: the table's current ones, or exactly the receipt's (in its
+    /// order; the catalog is additive, so they all still exist).
+    fn project(&self, table: &TableDef) -> Result<(Vec<ColumnDef>, Vec<usize>)> {
+        match &self.columns {
+            None => Ok((table.columns.clone(), (0..table.columns.len()).collect())),
+            Some(names) => {
+                let mut defs = Vec::with_capacity(names.len());
+                let mut idx = Vec::with_capacity(names.len());
+                for n in names {
+                    let i = table.column_index(n).ok_or_else(|| {
+                        invalid(format!(
+                            "receipt column {n:?} is not in table {:?}",
+                            table.name
+                        ))
+                    })?;
+                    defs.push(table.columns[i].clone());
+                    idx.push(i);
+                }
+                Ok((defs, idx))
+            }
+        }
+    }
+}
+
+fn pick(values: &mut Vec<Option<muninn_core::Value>>, idx: &[usize]) {
+    *values = idx
+        .iter()
+        .map(|&i| values.get(i).cloned().flatten())
+        .collect();
+}
+
+/// `(table, op, request, clock, F, S)` with `S` the effective system bound of SPEC §11:
+/// `min(S_given, L)`, `L` if none was given, `EMPTY` if the snapshot is empty (`L` its
+/// greatest system_time). The output columns are recorded too, so that a replay returns
+/// the same schema after later `add_column`s.
 #[allow(clippy::too_many_arguments)]
 fn receipt(
     snap: &Snap,
     table: &TableDef,
+    columns: &[ColumnDef],
+    as_of: &AsOf,
     op: &str,
     clock: Option<Clock>,
     frontier: Option<Timestamp>,
     system: Option<Timestamp>,
     request: Json,
 ) -> String {
-    let (s, source) = match (system, snap.last_system_time()) {
-        (Some(s), _) => (Some(s), "request"),
-        (None, Some(s)) => (Some(s), "snapshot"),
-        (None, None) => (None, "empty_snapshot"),
+    let s = match (as_of.empty, system, snap.last_system_time()) {
+        (true, _, _) | (false, _, None) => Json::String(EMPTY.into()),
+        (false, Some(s), Some(l)) => ts_json(Some(s.min(l))),
+        (false, None, Some(l)) => ts_json(Some(l)),
     };
     let r = json!({
         "muninn_receipt": 1,
@@ -149,11 +196,26 @@ fn receipt(
         "request": request,
         "clock": clock.unwrap_or(table.default_clock).name(),
         "frontier": ts_json(frontier),
-        "system": ts_json(s),
-        "system_source": source,
-        "columns": table.columns.iter().map(|c| c.name.clone()).collect::<Vec<_>>(),
+        "system": s,
+        "columns": columns.iter().map(|c| c.name.clone()).collect::<Vec<_>>(),
     });
     r.to_string()
+}
+
+/// Projects a `latest` / `history` / `replay` result to the output columns (and empties
+/// it for an `EMPTY` receipt).
+fn shape_versions(
+    res: &mut muninn_core::api::ReadResult<muninn_core::api::VersionRow>,
+    as_of: &AsOf,
+    cols: (Vec<ColumnDef>, Vec<usize>),
+) {
+    if as_of.empty {
+        res.rows.clear();
+    }
+    for r in &mut res.rows {
+        pick(&mut r.values, &cols.1);
+    }
+    res.columns = cols.0;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -240,8 +302,10 @@ fn latest_or_history(
     c: &Common,
     frontier: &Option<TimeInput>,
     history: bool,
+    as_of: &AsOf,
 ) -> Result<RecordBatch> {
     let t = c.resolve(snap)?;
+    let cols = as_of.project(&t)?;
     let range = c.range()?;
     let frontier = input::resolve_time(frontier, "frontier")?;
     let system = input::resolve_time(&c.system, "system")?;
@@ -255,15 +319,18 @@ fn latest_or_history(
             system,
         },
     };
-    let res = if history {
+    let mut res = if history {
         snap.history(&req)?
     } else {
         snap.latest(&req)?
     };
+    shape_versions(&mut res, as_of, cols);
     let op = if history { "history" } else { "latest" };
     let r = receipt(
         snap,
         &t,
+        &res.columns,
+        as_of,
         op,
         c.clock,
         frontier,
@@ -278,8 +345,10 @@ fn replay(
     c: &Common,
     from: &Option<TimeInput>,
     to: &Option<TimeInput>,
+    as_of: &AsOf,
 ) -> Result<RecordBatch> {
     let t = c.resolve(snap)?;
+    let cols = as_of.project(&t)?;
     let range = c.range()?;
     let system = input::resolve_time(&c.system, "system")?;
     let arrival = TimeRange::new(
@@ -294,11 +363,22 @@ fn replay(
         system,
         arrival,
     };
-    let res = snap.replay(&req)?;
+    let mut res = snap.replay(&req)?;
+    shape_versions(&mut res, as_of, cols);
     let mut m = c.base_request(&range);
     m.insert("from".into(), ts_json(arrival.from));
     m.insert("to".into(), ts_json(arrival.to));
-    let r = receipt(snap, &t, "replay", c.clock, None, system, Json::Object(m));
+    let r = receipt(
+        snap,
+        &t,
+        &res.columns,
+        as_of,
+        "replay",
+        c.clock,
+        None,
+        system,
+        Json::Object(m),
+    );
     output::versions_batch(&res, true, r)
 }
 
@@ -307,8 +387,10 @@ fn grid(
     c: &Common,
     frontiers: &[TimeInput],
     window: (Option<DurInput>, Option<DurInput>),
+    as_of: &AsOf,
 ) -> Result<RecordBatch> {
     let t = c.resolve(snap)?;
+    let cols = as_of.project(&t)?;
     let range = c.range()?;
     let system = input::resolve_time(&c.system, "system")?;
     let fs = frontiers
@@ -347,7 +429,14 @@ fn grid(
         clock: c.clock,
         system,
     };
-    let res = snap.grid(&req)?;
+    let mut res = snap.grid(&req)?;
+    if as_of.empty {
+        res.rows.clear();
+    }
+    for r in &mut res.rows {
+        pick(&mut r.row.values, &cols.1);
+    }
+    res.columns = cols.0;
     let mut m = c.base_request(&range);
     m.insert(
         "frontiers".into(),
@@ -358,7 +447,17 @@ fn grid(
     } else {
         m.insert("window".into(), Json::Null);
     }
-    let r = receipt(snap, &t, "grid", c.clock, None, system, Json::Object(m));
+    let r = receipt(
+        snap,
+        &t,
+        &res.columns,
+        as_of,
+        "grid",
+        c.clock,
+        None,
+        system,
+        Json::Object(m),
+    );
     output::grid_batch(&res, r)
 }
 
@@ -368,8 +467,10 @@ fn asof_join(
     clock: Option<Clock>,
     system: &Option<TimeInput>,
     left: &[LeftRow],
+    as_of: &AsOf,
 ) -> Result<RecordBatch> {
     let t = snap.table(table.as_ref().map_err(Clone::clone)?)?;
+    let cols = as_of.project(&t)?;
     for l in left {
         check_series(snap, &t, &l.series)?;
     }
@@ -394,7 +495,16 @@ fn asof_join(
         system,
         left: rows,
     };
-    let res = snap.asof_join(&req)?;
+    let mut res = snap.asof_join(&req)?;
+    for r in &mut res.rows {
+        if as_of.empty {
+            r.right = None;
+        }
+        if let Some(v) = &mut r.right {
+            pick(&mut v.values, &cols.1);
+        }
+    }
+    res.columns = cols.0;
     let left_json: Vec<Json> = req
         .left
         .iter()
@@ -403,6 +513,8 @@ fn asof_join(
     let r = receipt(
         snap,
         &t,
+        &res.columns,
+        as_of,
         "asof_join",
         clock,
         None,
@@ -475,7 +587,7 @@ impl Snapshot {
         all.iter().map(|s| series_dict(py, s)).collect()
     }
 
-    #[pyo3(signature = (table, series, value_from, value_to, clock, frontier, system))]
+    #[pyo3(signature = (table, series, value_from, value_to, clock, frontier, system, *, as_of_columns=None, empty=false))]
     #[allow(clippy::too_many_arguments)]
     fn latest(
         &self,
@@ -487,16 +599,22 @@ impl Snapshot {
         clock: Option<&Bound<'_, PyAny>>,
         frontier: Option<&Bound<'_, PyAny>>,
         system: Option<&Bound<'_, PyAny>>,
+        as_of_columns: Option<Vec<String>>,
+        empty: bool,
     ) -> PyResult<Py<PyAny>> {
+        let as_of = AsOf {
+            columns: as_of_columns,
+            empty,
+        };
         let c = Common::extract(table, series, clock, value_from, value_to, system).or_py(py)?;
         let f = input::opt_time(frontier);
         let b = py
-            .detach(|| latest_or_history(&self.snap, &c, &f, false))
+            .detach(|| latest_or_history(&self.snap, &c, &f, false, &as_of))
             .or_py(py)?;
         to_table(py, b)
     }
 
-    #[pyo3(signature = (table, series, value_from, value_to, clock, frontier, system))]
+    #[pyo3(signature = (table, series, value_from, value_to, clock, frontier, system, *, as_of_columns=None, empty=false))]
     #[allow(clippy::too_many_arguments)]
     fn history(
         &self,
@@ -508,16 +626,22 @@ impl Snapshot {
         clock: Option<&Bound<'_, PyAny>>,
         frontier: Option<&Bound<'_, PyAny>>,
         system: Option<&Bound<'_, PyAny>>,
+        as_of_columns: Option<Vec<String>>,
+        empty: bool,
     ) -> PyResult<Py<PyAny>> {
+        let as_of = AsOf {
+            columns: as_of_columns,
+            empty,
+        };
         let c = Common::extract(table, series, clock, value_from, value_to, system).or_py(py)?;
         let f = input::opt_time(frontier);
         let b = py
-            .detach(|| latest_or_history(&self.snap, &c, &f, true))
+            .detach(|| latest_or_history(&self.snap, &c, &f, true, &as_of))
             .or_py(py)?;
         to_table(py, b)
     }
 
-    #[pyo3(signature = (table, series, value_from, value_to, clock, system, from_, to))]
+    #[pyo3(signature = (table, series, value_from, value_to, clock, system, from_, to, *, as_of_columns=None, empty=false))]
     #[allow(clippy::too_many_arguments)]
     fn replay(
         &self,
@@ -530,14 +654,22 @@ impl Snapshot {
         system: Option<&Bound<'_, PyAny>>,
         from_: Option<&Bound<'_, PyAny>>,
         to: Option<&Bound<'_, PyAny>>,
+        as_of_columns: Option<Vec<String>>,
+        empty: bool,
     ) -> PyResult<Py<PyAny>> {
+        let as_of = AsOf {
+            columns: as_of_columns,
+            empty,
+        };
         let c = Common::extract(table, series, clock, value_from, value_to, system).or_py(py)?;
         let (from, to) = (input::opt_time(from_), input::opt_time(to));
-        let b = py.detach(|| replay(&self.snap, &c, &from, &to)).or_py(py)?;
+        let b = py
+            .detach(|| replay(&self.snap, &c, &from, &to, &as_of))
+            .or_py(py)?;
         to_table(py, b)
     }
 
-    #[pyo3(signature = (table, frontiers, series, value_from, value_to, window_start, window_end, clock, system))]
+    #[pyo3(signature = (table, frontiers, series, value_from, value_to, window_start, window_end, clock, system, *, as_of_columns=None, empty=false))]
     #[allow(clippy::too_many_arguments)]
     fn grid(
         &self,
@@ -551,7 +683,13 @@ impl Snapshot {
         window_end: Option<&Bound<'_, PyAny>>,
         clock: Option<&Bound<'_, PyAny>>,
         system: Option<&Bound<'_, PyAny>>,
+        as_of_columns: Option<Vec<String>>,
+        empty: bool,
     ) -> PyResult<Py<PyAny>> {
+        let as_of = AsOf {
+            columns: as_of_columns,
+            empty,
+        };
         let c = Common::extract(table, series, clock, value_from, value_to, system).or_py(py)?;
         let fs: Vec<TimeInput> = match frontiers.map(|f| f.cast::<PyList>()) {
             Some(Ok(l)) => l.iter().map(|f| input::time_input(&f)).collect(),
@@ -566,11 +704,14 @@ impl Snapshot {
             window_start.filter(|o| !o.is_none()).map(DurInput::from_py),
             window_end.filter(|o| !o.is_none()).map(DurInput::from_py),
         );
-        let b = py.detach(|| grid(&self.snap, &c, &fs, w)).or_py(py)?;
+        let b = py
+            .detach(|| grid(&self.snap, &c, &fs, w, &as_of))
+            .or_py(py)?;
         to_table(py, b)
     }
 
-    #[pyo3(signature = (table, left, clock, system, assume_utc))]
+    #[pyo3(signature = (table, left, clock, system, assume_utc, *, as_of_columns=None, empty=false))]
+    #[allow(clippy::too_many_arguments)]
     fn asof_join(
         &self,
         py: Python<'_>,
@@ -579,7 +720,13 @@ impl Snapshot {
         clock: Option<&Bound<'_, PyAny>>,
         system: Option<&Bound<'_, PyAny>>,
         assume_utc: bool,
+        as_of_columns: Option<Vec<String>>,
+        empty: bool,
     ) -> PyResult<Py<PyAny>> {
+        let as_of = AsOf {
+            columns: as_of_columns,
+            empty,
+        };
         let clock = input::opt_clock(clock).or_py(py)?;
         let rows = if let Ok(list) = left.cast::<PyList>() {
             let h = Helpers::new(py, assume_utc)?;
@@ -597,7 +744,7 @@ impl Snapshot {
         let table = input::table_name(table);
         let system = input::opt_time(system);
         let b = py
-            .detach(|| asof_join(&self.snap, &table, clock, &system, &rows))
+            .detach(|| asof_join(&self.snap, &table, clock, &system, &rows, &as_of))
             .or_py(py)?;
         to_table(py, b)
     }

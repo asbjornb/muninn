@@ -88,7 +88,6 @@ def _series_info(d: dict) -> SeriesInfo:
     )
 
 
-_FIXED_ASOF = ("series", "series_id", "value_time", "frontier")
 
 
 class _Reads:
@@ -125,6 +124,7 @@ class _Reads:
         clock: str | None = None,
         frontier: TimeLike | None = None,
         system: TimeLike | None = None,
+        _as_of: dict | None = None,
     ) -> pa.Table:
         """What was known at ``frontier`` (SPEC §6.1): for each point ``(series,
         value_time)`` with ``value_time`` in ``[value_from, value_to)``, its latest version
@@ -143,6 +143,7 @@ class _Reads:
             clock,
             cv.read_time(frontier),
             cv.read_time(system),
+            **(_as_of or {}),
         )
 
     def history(
@@ -154,6 +155,7 @@ class _Reads:
         clock: str | None = None,
         frontier: TimeLike | None = None,
         system: TimeLike | None = None,
+        _as_of: dict | None = None,
     ) -> pa.Table:
         """Every version visible at ``(clock, frontier, system)`` (SPEC §6.2), tombstones
         included (``deleted`` column), ordered by ``(series, value_time, knowledge order)``."""
@@ -165,6 +167,7 @@ class _Reads:
             clock,
             cv.read_time(frontier),
             cv.read_time(system),
+            **(_as_of or {}),
         )
 
     def replay(
@@ -178,6 +181,7 @@ class _Reads:
         value_to: TimeLike | None = None,
         clock: str | None = None,
         system: TimeLike | None = None,
+        _as_of: dict | None = None,
     ) -> pa.Table:
         """Versions in arrival order (SPEC §6.3): those whose ``t_clock`` is in ``(from_,
         to]`` — exactly what becomes visible when the frontier moves from ``from_`` to
@@ -191,6 +195,7 @@ class _Reads:
             cv.read_time(system),
             cv.read_time(from_),
             cv.read_time(to),
+            **(_as_of or {}),
         )
 
     def grid(
@@ -204,6 +209,7 @@ class _Reads:
         value_to: TimeLike | None = None,
         clock: str | None = None,
         system: TimeLike | None = None,
+        _as_of: dict | None = None,
     ) -> pa.Table:
         """``latest`` at many frontiers in one pass (SPEC §6.4): for each frontier ``F``
         (deduplicated, ascending), the rows of ``latest(frontier=F)`` prefixed with a
@@ -221,6 +227,7 @@ class _Reads:
             we,
             clock,
             cv.read_time(system),
+            **(_as_of or {}),
         )
 
     def asof_join(
@@ -232,6 +239,7 @@ class _Reads:
         *,
         assume_utc: bool = False,
         suffix: str = "_right",
+        _as_of: dict | None = None,
     ) -> pa.Table:
         """Per-row point-in-time lookup (SPEC §6.5). ``left`` (pyarrow / pandas / polars
         table or a list of dicts) has columns ``series``, ``value_time`` and ``frontier``;
@@ -242,18 +250,20 @@ class _Reads:
         left column get ``suffix``."""
         snap = self._snap()
         if isinstance(left, list):
-            return snap.asof_join(table, left, clock, cv.read_time(system), assume_utc)
+            return snap.asof_join(table, left, clock, cv.read_time(system), assume_utc,
+                                  **(_as_of or {}))
         lt = cv.as_pa_table(left)
         if lt is None:
             raise InvalidArgumentError(
                 f"left must be a table (pyarrow/pandas/polars) or a list of dicts, "
                 f"not {type(left).__name__}"
             )
-        res = snap.asof_join(table, lt, clock, cv.read_time(system), assume_utc)
+        res = snap.asof_join(table, lt, clock, cv.read_time(system), assume_utc,
+                             **(_as_of or {}))
         out = lt
-        for name in res.column_names:
-            if name in _FIXED_ASOF:
-                continue
+        # Everything from `found` on is the right side (positionally: a value column may be
+        # called `series_id`, like the spec-form id column).
+        for name in res.column_names[res.column_names.index("found"):]:
             new = name if name not in out.column_names else name + suffix
             if new in out.column_names:
                 raise InvalidArgumentError(
@@ -389,10 +399,13 @@ class Database(_Reads):
         ``batch_id`` makes the whole batch idempotent (a resend is a no-op); identical rows
         are always deduplicated. ``clock`` is the writer clock reading (default: now); the
         engine commits at ``max(clock, last + 1µs)``."""
+        if not isinstance(data, list):
+            a = cv.to_arrow(data, records_fallback=True)
+            if isinstance(a, list):
+                data = a
         if isinstance(data, list):
             r = self._native.write(data, None, batch_id, cv.time_arg(clock, assume_utc), assume_utc)
         else:
-            a = cv.to_arrow(data)
             if a is None:
                 raise InvalidArgumentError(
                     "data must be a pyarrow/pandas/polars table or a list of dicts, "
@@ -477,8 +490,9 @@ def memory() -> Database:
 def receipt(result: Any) -> dict:
     """The reproducibility receipt of a read result (a ``pyarrow.Table`` returned by
     Muninn, its schema, a JSON string or a dict): ``table``, ``op``, ``request``,
-    ``clock``, ``frontier`` and ``system`` — the system bound ``S``, filled from the
-    snapshot when the read gave none (``system_source = "snapshot"``)."""
+    ``clock``, ``frontier``, ``system`` and ``columns``. ``system`` is the effective system
+    bound of SPEC §11: ``min(S_given, L)`` with ``L`` the snapshot's greatest system_time
+    (``L`` when the read gave none), or ``"EMPTY"`` for an empty snapshot."""
     if isinstance(result, dict):
         return result
     if isinstance(result, (str, bytes)):
@@ -490,24 +504,25 @@ def receipt(result: Any) -> dict:
     return json.loads(meta[RECEIPT_KEY])
 
 
-# A read at S = MIN of an empty snapshot: nothing can be visible except a version committed
-# at exactly 0001-01-01T00:00:00Z.
-_MIN_TS = "0001-01-01T00:00:00Z"
 
 
 def replay_receipt(db: Database | Snapshot, rcpt: Any, *, left: Any = None) -> pa.Table:
     """Re-runs the read a receipt describes, against ``db`` (the same snapshot or any later
-    one). By SPEC §7.3 the rows are identical, bit for bit, and the result is projected to
-    the receipt's columns (columns added since then are left out). For ``asof_join`` pass
-    the original ``left`` table to get its other columns back too; without it the result has
-    the spec columns ``series, series_id, value_time, frontier`` on the left."""
+    one). By SPEC §7.3 / §11 the rows are identical, bit for bit, and so is the schema: the
+    value columns are those recorded in the receipt (columns added since are left out). A
+    receipt whose ``system`` is ``"EMPTY"`` (taken on an empty snapshot) replays with no
+    visible versions. For ``asof_join`` pass the original ``left`` table to get its other
+    columns back too; without it the result has the spec columns ``series``, the id column,
+    ``value_time`` and ``frontier`` on the left."""
     r = receipt(rcpt)
     if r.get("muninn_receipt") != 1:
         raise InvalidArgumentError("not a Muninn receipt (or an unsupported version)")
     op, table, q = r["op"], r["table"], r["request"]
-    system = r["system"] if r["system"] is not None else _MIN_TS
+    empty = r["system"] == EMPTY
+    system = None if empty else r["system"]
     clock = r["clock"]
-    common = dict(series=q.get("series") or None, clock=clock, system=system)
+    as_of = {"as_of_columns": list(r["columns"]), "empty": empty}
+    common = dict(series=q.get("series") or None, clock=clock, system=system, _as_of=as_of)
     rng = dict(value_from=q.get("value_from"), value_to=q.get("value_to"))
     if op in ("latest", "history"):
         res = getattr(db, op)(table, **common, **rng, frontier=r["frontier"])
@@ -518,27 +533,18 @@ def replay_receipt(db: Database | Snapshot, rcpt: Any, *, left: Any = None) -> p
         res = db.grid(table, q["frontiers"], window=tuple(w) if w else None, **common, **rng)
     elif op == "asof_join":
         rows = [{"series": s, "value_time": vt, "frontier": f} for s, vt, f in q["left"]]
-        if left is None:
-            res = db.asof_join(table, rows, clock=clock, system=system)
-        else:
-            res = db.asof_join(table, left, clock=clock, system=system)
-            if receipt(res)["request"]["left"] != q["left"]:
-                raise InvalidArgumentError("left does not match the receipt's left rows")
+        del common["series"]
+        res = db.asof_join(table, rows if left is None else left, **common)
+        if receipt(res)["request"]["left"] != q["left"]:
+            raise InvalidArgumentError("left does not match the receipt's left rows")
     else:
         raise InvalidArgumentError(f"unknown op {op!r} in receipt")
-    cols = r.get("columns")
-    if cols is not None:
-        added = [c for c in db.table(table).columns if c not in cols]
-        extra = [c for c in added if c in res.column_names]
-        if extra:
-            res = res.drop_columns(extra).replace_schema_metadata(res.schema.metadata)
-    # The replay reads the same data as the original read: it carries the original receipt
-    # (same S and source, same columns), not one describing the replay call.
-    meta = dict(res.schema.metadata or {})
-    new = json.loads(meta[RECEIPT_KEY])
-    keys = ("table", "op", "request", "clock", "frontier")
-    if any(new[k] != r[k] for k in keys) or (r["system"] is not None and new["system"] != system):
+    new = receipt(res)
+    if any(new[k] != r[k] for k in ("table", "op", "request", "clock", "frontier", "system",
+                                    "columns")):
         raise InternalError(f"replayed read does not match its receipt: {new} vs {r}")
-    meta[RECEIPT_KEY] = json.dumps(r, separators=(",", ":"), sort_keys=True).encode()
-    res = res.replace_schema_metadata(meta)
     return res
+
+
+#: The ``system`` of a receipt taken on an empty snapshot (SPEC §11): not a timestamp.
+EMPTY = "EMPTY"
