@@ -55,6 +55,11 @@ pub enum ErrorKind {
 }
 
 impl Error {
+    /// A [`ErrorKind::Corrupt`] error (for readers built on this crate).
+    pub fn corrupt_message(message: impl Into<String>) -> Error {
+        Error::corrupt(message)
+    }
+
     pub(crate) fn corrupt(message: impl Into<String>) -> Error {
         Error {
             kind: ErrorKind::Corrupt,
