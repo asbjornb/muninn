@@ -445,11 +445,6 @@ fn arrow_time(arr: &dyn Array, i: usize, assume_utc: bool) -> Option<TimeInput> 
         DataType::Utf8 => TimeInput::Text(arr.as_string::<i32>().value(i).to_owned()),
         DataType::LargeUtf8 => TimeInput::Text(arr.as_string::<i64>().value(i).to_owned()),
         DataType::Utf8View => TimeInput::Text(arr.as_string_view().value(i).to_owned()),
-        DataType::Dictionary(_, _) => {
-            let d = arr.as_any_dictionary();
-            let k = d.normalized_keys()[i];
-            return arrow_time(d.values().as_ref(), k, assume_utc);
-        }
         other => TimeInput::Invalid(format!("a {other} value is not a timestamp")),
     })
 }
@@ -489,15 +484,51 @@ fn arrow_value(arr: &dyn Array, i: usize, assume_utc: bool) -> InputValue {
             Some(TimeInput::Invalid(why)) => return InputValue::Unsupported(why),
             _ => return InputValue::Null,
         },
-        DataType::Dictionary(_, _) => {
-            let d = arr.as_any_dictionary();
-            let k = d.normalized_keys()[i];
-            return arrow_value(d.values().as_ref(), k, assume_utc);
-        }
         DataType::Null => return InputValue::Null,
         other => return InputValue::Unsupported(format!("a {other} value")),
     };
     InputValue::Value(v)
+}
+
+/// An input column with dictionary encoding resolved once (keys normalised up front, so
+/// each cell is a constant-time lookup into the dictionary values).
+struct Col<'a> {
+    arr: &'a dyn Array,
+    dict: Option<(Vec<usize>, &'a dyn Array)>,
+}
+
+impl<'a> Col<'a> {
+    fn new(arr: &'a dyn Array) -> Col<'a> {
+        let dict = arr.as_any_dictionary_opt().map(|d| {
+            let keys = if d.values().is_empty() {
+                Vec::new()
+            } else {
+                d.normalized_keys()
+            };
+            (keys, d.values().as_ref())
+        });
+        Col { arr, dict }
+    }
+
+    /// The array and index holding row `i`, or `None` if the cell is null.
+    fn at(&self, i: usize) -> Option<(&'a dyn Array, usize)> {
+        if self.arr.is_null(i) {
+            return None;
+        }
+        Some(match &self.dict {
+            Some((keys, values)) => (*values, keys[i]),
+            None => (self.arr, i),
+        })
+    }
+
+    fn time(&self, i: usize, assume_utc: bool) -> Option<TimeInput> {
+        self.at(i).and_then(|(a, j)| arrow_time(a, j, assume_utc))
+    }
+
+    fn value(&self, i: usize, assume_utc: bool) -> InputValue {
+        self.at(i)
+            .map_or(InputValue::Null, |(a, j)| arrow_value(a, j, assume_utc))
+    }
 }
 
 /// The `series` column of a batch as names (non-null strings).
@@ -505,8 +536,9 @@ fn series_column(b: &RecordBatch, what: &str) -> Result<Vec<String>> {
     let col = b
         .column_by_name("series")
         .ok_or_else(|| invalid(format!("{what} needs a `series` column")))?;
+    let c = Col::new(col.as_ref());
     (0..b.num_rows())
-        .map(|i| match arrow_string(col.as_ref(), i) {
+        .map(|i| match c.at(i).and_then(|(a, j)| arrow_string(a, j)) {
             Some(s) => Ok(s),
             None if col.is_null(i) => Err(invalid(format!("{what} row {i}: series is null"))),
             None => Err(invalid(format!(
@@ -525,11 +557,6 @@ fn arrow_string(arr: &dyn Array, i: usize) -> Option<String> {
         DataType::Utf8 => Some(arr.as_string::<i32>().value(i).to_owned()),
         DataType::LargeUtf8 => Some(arr.as_string::<i64>().value(i).to_owned()),
         DataType::Utf8View => Some(arr.as_string_view().value(i).to_owned()),
-        DataType::Dictionary(_, _) => {
-            let d = arr.as_any_dictionary();
-            let k = d.normalized_keys()[i];
-            arrow_string(d.values().as_ref(), k)
-        }
         _ => None,
     }
 }
@@ -543,11 +570,11 @@ pub(crate) fn rows_from_arrow(batches: &[RecordBatch], assume_utc: bool) -> Resu
     for b in batches {
         let series = series_column(b, "write data")?;
         let schema = b.schema();
-        let get = |name: &str| b.column_by_name(name);
+        let get = |name: &str| b.column_by_name(name).map(|c| Col::new(c.as_ref()));
         let vt = get("value_time");
         let rt = get("received_time");
         let pt = get("published_time");
-        let del = get("deleted");
+        let del = b.column_by_name("deleted");
         if let Some(d) = del
             && d.data_type() != &DataType::Boolean
         {
@@ -556,12 +583,12 @@ pub(crate) fn rows_from_arrow(batches: &[RecordBatch], assume_utc: bool) -> Resu
                 d.data_type()
             )));
         }
-        let value_cols: Vec<(String, &dyn Array)> = schema
+        let value_cols: Vec<(String, Col<'_>)> = schema
             .fields()
             .iter()
             .zip(b.columns())
             .filter(|(f, _)| !FIXED_ROW_KEYS.contains(&f.name().as_str()))
-            .map(|(f, c)| (f.name().clone(), c.as_ref()))
+            .map(|(f, c)| (f.name().clone(), Col::new(c.as_ref())))
             .collect();
         for (i, series) in series.into_iter().enumerate() {
             let missing = || TimeInput::Invalid("missing".into());
@@ -576,7 +603,7 @@ pub(crate) fn rows_from_arrow(batches: &[RecordBatch], assume_utc: bool) -> Resu
             };
             let mut values = BTreeMap::new();
             for (name, col) in &value_cols {
-                let v = arrow_value(*col, i, assume_utc);
+                let v = col.value(i, assume_utc);
                 if v != InputValue::Null {
                     values.insert(name.clone(), v);
                 }
@@ -584,11 +611,13 @@ pub(crate) fn rows_from_arrow(batches: &[RecordBatch], assume_utc: bool) -> Resu
             out.push(WriteRow {
                 series,
                 value_time: vt
-                    .and_then(|c| arrow_time(c.as_ref(), i, assume_utc))
+                    .as_ref()
+                    .and_then(|c| c.time(i, assume_utc))
                     .unwrap_or_else(missing),
-                published_time: pt.and_then(|c| arrow_time(c.as_ref(), i, assume_utc)),
+                published_time: pt.as_ref().and_then(|c| c.time(i, assume_utc)),
                 received_time: rt
-                    .and_then(|c| arrow_time(c.as_ref(), i, assume_utc))
+                    .as_ref()
+                    .and_then(|c| c.time(i, assume_utc))
                     .unwrap_or_else(missing),
                 deleted,
                 values,
@@ -611,17 +640,19 @@ pub(crate) fn left_from_arrow(batches: &[RecordBatch], assume_utc: bool) -> Resu
     let mut out = Vec::new();
     for b in batches {
         let series = series_column(b, "left")?;
-        let vt = b.column_by_name("value_time");
-        let f = b.column_by_name("frontier");
+        let vt = b.column_by_name("value_time").map(|c| Col::new(c.as_ref()));
+        let f = b.column_by_name("frontier").map(|c| Col::new(c.as_ref()));
         for (i, series) in series.into_iter().enumerate() {
             let missing = || TimeInput::Invalid("missing".into());
             out.push(LeftRow {
                 series,
                 value_time: vt
-                    .and_then(|c| arrow_time(c.as_ref(), i, assume_utc))
+                    .as_ref()
+                    .and_then(|c| c.time(i, assume_utc))
                     .unwrap_or_else(missing),
                 frontier: f
-                    .and_then(|c| arrow_time(c.as_ref(), i, assume_utc))
+                    .as_ref()
+                    .and_then(|c| c.time(i, assume_utc))
                     .unwrap_or_else(missing),
             });
         }

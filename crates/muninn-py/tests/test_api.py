@@ -270,6 +270,16 @@ def test_categorical_and_dictionary_series(db):
     tbl = as_arrow()
     tbl = tbl.set_column(0, "series", tbl.column("series").dictionary_encode())
     assert db.write(tbl, clock=T0).stored == 2
+    # Dictionary keys are resolved once per column, not per cell (this was quadratic).
+    import time
+    n = 200_000
+    big = pa.table({"series": pa.array(["DK1", "DK2"] * (n // 2)).dictionary_encode(),
+                    "value_time": pa.array(range(n), pa.int64()),
+                    "received_time": pa.array([0] * n, pa.int64()),
+                    "value": pa.array([1.0] * n)})
+    start = time.perf_counter()
+    assert db.write(big, clock=T0).stored == n
+    assert time.perf_counter() - start < 10
 
 
 def test_multi_table_columnar_batch():
