@@ -137,6 +137,8 @@ batch.system_time = max(c, last + 1us)  -- strictly increasing; all rows in a ba
 increasing across stored batches, so no later write can ever land at or below a system
 bound `S` taken from an existing snapshot — this is what makes §7.3 hold. A batch that
 stores nothing (all duplicates, empty, a batch-id no-op, rejected) does not change `last`.
+If `last` is the maximum timestamp (§1), `last + 1us` does not exist and every further
+write that reaches this step fails with `invalid_timestamp`.
 
 `seq` is a single counter for the whole database starting at **1**. Each *stored* row
 (after deduplication, §4.3) takes the next value, in batch input order. Deduplicated rows

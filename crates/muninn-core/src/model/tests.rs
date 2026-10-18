@@ -313,9 +313,10 @@ fn system_time_max_rule_and_seq() {
     )
     .unwrap();
     assert_eq!((r.system_time, r.first_seq), (Some(h(10)), Some(1)));
-    // Clock went backwards: system_time stays at `last`.
+    // Clock went backwards: system_time becomes `last + 1us` (strictly increasing).
+    let after_10 = Timestamp::from_micros(h(10).as_micros() + 1).unwrap();
     let r = write(&db, h(3), vec![row("a", h(1), h(2), f(1.0))]).unwrap();
-    assert_eq!((r.system_time, r.first_seq), (Some(h(10)), Some(3)));
+    assert_eq!((r.system_time, r.first_seq), (Some(after_10), Some(3)));
     let r = write(&db, h(11), vec![row("a", h(2), h(2), f(1.0))]).unwrap();
     assert_eq!((r.system_time, r.first_seq), (Some(h(11)), Some(4)));
     let v = db.versions();
@@ -325,7 +326,7 @@ fn system_time_max_rule_and_seq() {
     );
     assert_eq!(
         v.iter().map(|v| v.system_time).collect::<Vec<_>>(),
-        vec![h(10), h(10), h(10), h(11)]
+        vec![h(10), h(10), after_10, h(11)]
     );
 }
 

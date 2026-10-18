@@ -727,7 +727,7 @@ impl<S: Store> Database for Engine<S> {
                 .insert(v.value_time);
         }
         let stored = self.load_points(&st, &points)?;
-        let system_time = batch_system_time(clock, st.last_system_time);
+        let system_time = batch_system_time(clock, st.last_system_time)?;
         let plan = plan_dedup(candidates, system_time, st.next_seq, |v| {
             Ok(stored
                 .get(&(v.series, v.value_time))
