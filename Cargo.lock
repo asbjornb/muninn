@@ -139,6 +139,7 @@ dependencies = [
 name = "muninn-engine"
 version = "0.1.0"
 dependencies = [
+ "crc32c",
  "muninn-conformance",
  "muninn-core",
  "muninn-format",

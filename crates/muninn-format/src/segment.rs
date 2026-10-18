@@ -22,8 +22,9 @@ pub const HEADER_LEN: u64 = 16;
 pub const TAIL_LEN: u64 = 16;
 /// Upper bound on rows per block (readers reject larger blocks).
 pub const MAX_BLOCK_ROWS: usize = 1 << 20;
-/// Upper bound on a chunk's decoded size (readers reject larger chunks).
-const MAX_CHUNK_RAW: u64 = 1 << 31;
+/// Upper bound on the decoded size of a string chunk (readers reject larger chunks). Other
+/// chunk types have exact per-row bounds, see [`max_raw_length`].
+pub const MAX_STRING_CHUNK_RAW: u64 = 1 << 28;
 /// Number of engine columns; value column `j` is chunk `ENGINE_COLUMNS + j` of a block.
 pub const ENGINE_COLUMNS: usize = 7;
 
@@ -94,6 +95,25 @@ fn encoding_allowed(pos: usize, ty: Option<ColumnType>, enc: Encoding) -> bool {
         (_, Some(ColumnType::I64 | ColumnType::Timestamp)) => enc.is_integer(),
         (_, Some(ColumnType::Bool)) => enc == Encoding::Bitmap,
         (_, Some(ColumnType::String)) => enc == Encoding::LengthPrefixed,
+    }
+}
+
+/// The largest raw (decoded) size a valid chunk at position `pos` (value type `ty`) of
+/// an `n`-row block can have (FORMAT.md §5.5). Bounds decompression output, so a corrupt or
+/// hostile directory cannot make a reader inflate more than the encoding allows.
+pub fn max_raw_length(pos: usize, ty: Option<ColumnType>, n: u64) -> u64 {
+    let bitmap = n.div_ceil(8);
+    // Integer encodings need at most 10 bytes per value (run-length: 20 per run).
+    let ints = 20 * n;
+    let nullable = |values: u64| 1 + bitmap + values;
+    match (pos, ty) {
+        (C_DELETED, None) => bitmap,
+        (C_PUBLISHED, None) => nullable(ints),
+        (_, None) => ints,
+        (_, Some(ColumnType::F64)) => nullable(8 * n),
+        (_, Some(ColumnType::I64 | ColumnType::Timestamp)) => nullable(ints),
+        (_, Some(ColumnType::Bool)) => nullable(bitmap),
+        (_, Some(ColumnType::String)) => MAX_STRING_CHUNK_RAW,
     }
 }
 
@@ -891,7 +911,7 @@ fn decode_footer(bytes: &[u8], footer_offset: u64, file_size: u64) -> Result<Foo
             if offset < HEADER_LEN || end.is_none_or(|e| e > footer_offset) {
                 return Err(r.err("chunk outside the data region"));
             }
-            if raw_length > MAX_CHUNK_RAW
+            if raw_length > max_raw_length(pos, ty, n as u64)
                 || (compression == Compression::None && raw_length != length)
             {
                 return Err(r.err("bad chunk raw length"));
@@ -1368,9 +1388,22 @@ impl<'a> SegmentFile<'a> {
     }
 
     /// Every row as a [`Version`], in file order. `values` is indexed by column id (with
-    /// nulls for ids the segment does not store), trimmed of trailing nulls.
+    /// nulls for ids the segment does not store), trimmed of trailing nulls: each row's
+    /// vector is only as long as its last non-null value requires.
     pub fn versions(&self) -> Result<Vec<Version>> {
-        let width = self.footer.columns.last().map_or(0, |c| c.id as usize + 1);
+        self.versions_within(usize::MAX)
+    }
+
+    /// [`SegmentFile::versions`], but a column id `>= width` (a column the table does not
+    /// have) is reported as corruption. Engines pass the table's column count, which also
+    /// bounds every row's value vector.
+    pub fn versions_within(&self, width: usize) -> Result<Vec<Version>> {
+        if let Some(c) = self.footer.columns.iter().find(|c| c.id as usize >= width) {
+            return Err(Error::corrupt(format!(
+                "column id {} beyond the table's {width} columns",
+                c.id
+            )));
+        }
         let mut out = Vec::with_capacity(self.footer.row_count as usize);
         for b in 0..self.footer.blocks.len() {
             let e = self.engine_block(b)?;
@@ -1379,12 +1412,13 @@ impl<'a> SegmentFile<'a> {
                 .collect::<Result<_>>()?;
             #[allow(clippy::needless_range_loop)]
             for i in 0..e.len() {
-                let mut values = vec![None; width];
-                for (p, c) in self.footer.columns.iter().enumerate() {
-                    values[c.id as usize] = cols[p][i].clone();
-                }
-                while values.last().is_some_and(Option::is_none) {
-                    values.pop();
+                let last = (0..cols.len()).rev().find(|&p| cols[p][i].is_some());
+                let mut values = Vec::new();
+                if let Some(last) = last {
+                    values.resize(self.footer.columns[last].id as usize + 1, None);
+                    for (p, c) in self.footer.columns.iter().enumerate().take(last + 1) {
+                        values[c.id as usize] = cols[p][i].clone();
+                    }
                 }
                 if e.deleted[i] && !values.is_empty() {
                     return Err(Error::corrupt("tombstone row with values"));

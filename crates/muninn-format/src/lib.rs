@@ -29,8 +29,9 @@ pub use codec::Encoding;
 pub use partition::Partition;
 pub use segment::{
     BlockMeta, ChunkMeta, ColumnStats, Compression, ENGINE_COLUMNS, EngineBlock, FORMAT_VERSION,
-    Footer, HEADER_LEN, MAGIC, MAX_BLOCK_ROWS, SegmentFile, SegmentStats, SeriesEntry, TAIL_LEN,
-    Tail, TimeBounds, ValueColumn, WriteOptions, parse_tail, write_segment,
+    Footer, HEADER_LEN, MAGIC, MAX_BLOCK_ROWS, MAX_STRING_CHUNK_RAW, SegmentFile, SegmentStats,
+    SeriesEntry, TAIL_LEN, Tail, TimeBounds, ValueColumn, WriteOptions, max_raw_length, parse_tail,
+    write_segment,
 };
 
 /// A format error: the input is not a valid segment (or a write was given bad input).

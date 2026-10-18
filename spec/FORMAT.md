@@ -85,9 +85,18 @@ Applying an entry to state `S` (which MUST have version `v - 1`): apply the cata
 changes; record the batch id (it MUST not be recorded already); set the high-water marks
 (they MUST NOT decrease); for each key in `remove`, drop that live segment (it MUST be
 live) and remember it as *retired* with `wall_time`; add each segment of `add` (its key
-MUST be new); forget retired keys listed in `purged`. For `kind = "write"` every added
-segment's seq range MUST lie in `[S.next_seq, next_seq)`. A reader that finds an entry
-violating these rules MUST treat the database as corrupt.
+MUST be new); forget retired keys listed in `purged`. The `kind` constrains `add` and
+`remove`:
+
+- `write`: nothing removed; every added segment's seq range lies in
+  `[S.next_seq, next_seq)` and the added row counts sum to `next_seq - S.next_seq` (each
+  new seq is stored exactly once, so no two segments of the entry share a seq);
+- `compact`: exactly one segment added, at least two removed, all of the added segment's
+  table and partition; the row counts are equal, the seq range of the added segment is the
+  hull of the removed ones, and the high-water marks are unchanged;
+- `catalog`, `gc`: nothing added or removed.
+
+A reader that finds an entry violating these rules MUST treat the database as corrupt.
 
 The **live segments** of a state are the data. The versions of the database are exactly
 the rows of its live segments; a version is never in two live segments (compaction
@@ -136,14 +145,49 @@ a reader SHOULD verify that when it opens the footer.
  "catalog": [<catalog change>, ...],   // the whole catalog change log, in order
  "batch_ids": ["..."], "segments": [<segment record>, ...],
  "retired": [["<key>", <removal wall time>], ...],
- "next_seq": n, "last_system_time": t}
+ "next_seq": n, "last_system_time": t,
+ "entry_crc32c": c,                    // CRC-32C of the bytes of log/<v>.json (0 for v = 0)
+ "checksum": k}                        // CRC-32C of this JSON serialised with "checksum": 0
 ```
 
+The checksum is computed over the compact JSON serialisation with fields in the order
+above and no whitespace (what the reference writer emits); readers recompute it the same
+way.
+
 Loading checkpoint `v` and then applying entries `v+1, …` MUST give the same state as
-applying `1, …` from scratch. `log/_last_checkpoint` (`{"version": v}`) names a recent
-checkpoint. It is only a hint: readers MUST tolerate it being absent, stale, unparsable or
-naming a missing checkpoint (fall back to listing `log/` for `*.checkpoint.json`, or to
-version 0).
+applying `1, …` from scratch. **The log is authoritative; a checkpoint is a cache.** A
+reader MUST skip a checkpoint that is unparsable, fails its checksum, whose `version`
+differs from its key, whose `entry_crc32c` does not match `log/<v>.json` (or that entry is
+missing), or after which the later entries do not apply — and then try the next older
+checkpoint, finally replaying from version 0. (A checkpoint that is internally
+consistent, sealed and bound to the right entry but still wrong is not detectable without
+a full replay; writers never produce one.) `log/_last_checkpoint` (`{"version": v}`)
+names a recent checkpoint. It is only a hint: readers MUST tolerate it being absent,
+stale, unparsable or naming a missing or invalid checkpoint.
+
+### 3.5 Garbage collection and the commit window
+
+Segment files not referenced by the current state are deleted by GC. The rules that make
+this safe with several writers and lagging readers:
+
+1. GC decides against the **log head**: it first reads every entry after its own state,
+   and re-reads the head immediately before deleting, sparing anything an entry committed
+   meanwhile references.
+2. GC deletes a file only after it has itself observed the file unreferenced for at
+   least the grace period `G`, measured on its own clock. No writer clock — neither the
+   creation time in segment names nor `wall_time` in entries — is trusted for ageing.
+3. A writer MUST NOT commit an entry referencing segments it wrote more than `G / 2`
+   ago (by its own elapsed-time clock); it abandons the write instead (the files become
+   orphans).
+
+Hence a segment is committed within `G / 2` of being written, while GC can delete it at
+the earliest `G` after first seeing it — which is after it was written. Assumptions: the
+store call that commits the entry completes within `G / 2`, and the writer's and GC's
+clocks advance at comparable rates (no synchronisation is needed). A reader in another
+process that holds a state no longer at the head can read its segments for at least `G`
+after GC first sees them retired; after that it gets a "missing segment" error, on
+which an engine reloads the head and retries once. `G = 0` disables rules 2–3 (single
+process tests only).
 
 ## 4. Segment file
 
@@ -300,7 +344,11 @@ block_count × {
 
 Blocks tile the rows in order (row counts sum to `row_count`). Block bounds MUST lie
 within the segment bounds and MUST contain every row of the block. Chunks MUST lie in
-`[16, footer_offset)`; `raw_length` MUST be ≤ 2^31.
+`[16, footer_offset)`. `raw_length` MUST NOT exceed what the encoding can need for the
+block's `n` rows, so a reader never inflates more than that: `ceil(n/8)` for `deleted`;
+`20n` for the other non-nullable engine chunks; for nullable chunks `1 + ceil(n/8)` plus
+`20n` (integer types), `8n` (`f64`) or `ceil(n/8)` (`bool`); and 2^28 for `string`
+chunks.
 
 ## 6. Reader obligations
 
