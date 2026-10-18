@@ -1,0 +1,25 @@
+{
+  "name": "corrected-published-time",
+  "description": "notes/01-time-model.md example: on Mar 5 we believe a value was published at 10:00; on Mar 10 we learn it was 08:37. Reproducing Mar 5 knowledge (system frontier) sees 10:00; today's knowledge makes it visible from 08:37. Under the published clock, versions are also ORDERED by published time (decision 0003), so at a frontier after 10:00 the 10:00 version is the latest by that clock - same value, older metadata. This pins that trade-off down.",
+  "steps": [
+    {"op": "create_table", "name": "prices", "columns": [{"name": "value", "type": "f64"}], "default_clock": "published"},
+    {"op": "create_series", "name": "dk1_spot", "table": "prices"},
+    {"op": "write", "system_time": "2025-03-05T10:06:00Z",
+     "rows": [{"series": "dk1_spot", "value_time": "2025-03-06T00:00:00Z", "published_time": "2025-03-05T10:00:00Z", "received_time": "2025-03-05T10:05:00Z", "values": {"value": 50.0}}]},
+    {"op": "write", "system_time": "2025-03-10T09:01:00Z",
+     "rows": [{"series": "dk1_spot", "value_time": "2025-03-06T00:00:00Z", "published_time": "2025-03-05T08:37:00Z", "received_time": "2025-03-10T09:00:00Z", "values": {"value": 50.0}}],
+     "expect": {"stored": 1, "duplicates": 0, "batch_already_committed": false}},
+    {"op": "latest", "table": "prices", "frontier": "2025-03-05T09:00:00Z", "system": "2025-03-06T00:00:00Z",
+     "expect": {"rows": []}},
+    {"op": "latest", "table": "prices", "frontier": "2025-03-05T09:00:00Z",
+     "expect": {"rows": [
+       {"series": "dk1_spot", "value_time": "2025-03-06T00:00:00Z", "published_time": "2025-03-05T08:37:00Z", "received_time": "2025-03-10T09:00:00Z", "system_time": "2025-03-10T09:01:00Z", "seq": 2, "values": {"value": 50.0}}]}},
+    {"op": "latest", "table": "prices", "frontier": "2025-03-05T11:00:00Z",
+     "expect": {"rows": [
+       {"series": "dk1_spot", "value_time": "2025-03-06T00:00:00Z", "published_time": "2025-03-05T10:00:00Z", "received_time": "2025-03-05T10:05:00Z", "system_time": "2025-03-05T10:06:00Z", "seq": 1, "values": {"value": 50.0}}]}},
+    {"op": "latest", "table": "prices", "clock": "received", "frontier": "2025-03-06T00:00:00Z",
+     "expect": {"values": [["dk1_spot", "2025-03-06T00:00:00Z", {"value": 50.0}]]}},
+    {"op": "latest", "table": "prices", "clock": "received", "frontier": "2025-03-05T10:04:59Z",
+     "expect": {"rows": []}}
+  ]
+}

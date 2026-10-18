@@ -1,0 +1,37 @@
+{
+  "name": "forecast-runs-supersede",
+  "description": "Two forecast runs for the same hours. Latest-known as of a frontier picks the newest run received by then; history shows both.",
+  "steps": [
+    {"op": "create_table", "name": "wind", "columns": [{"name": "value", "type": "f64"}]},
+    {"op": "create_series", "name": "wind_dk1", "table": "wind", "resolution": "1h"},
+    {"op": "write", "system_time": "2025-01-15T06:31:00Z",
+     "rows": [
+       {"series": "wind_dk1", "value_time": "2025-01-16T00:00:00Z", "published_time": "2025-01-15T06:00:00Z", "received_time": "2025-01-15T06:30:00Z", "values": {"value": 100.0}},
+       {"series": "wind_dk1", "value_time": "2025-01-16T01:00:00Z", "published_time": "2025-01-15T06:00:00Z", "received_time": "2025-01-15T06:30:00Z", "values": {"value": 110.0}}
+     ],
+     "expect": {"stored": 2, "duplicates": 0, "batch_already_committed": false}},
+    {"op": "write", "system_time": "2025-01-15T12:11:00Z",
+     "rows": [
+       {"series": "wind_dk1", "value_time": "2025-01-16T00:00:00Z", "published_time": "2025-01-15T12:00:00Z", "received_time": "2025-01-15T12:10:00Z", "values": {"value": 90.0}}
+     ],
+     "expect": {"stored": 1, "duplicates": 0, "batch_already_committed": false}},
+    {"op": "latest", "table": "wind", "frontier": "2025-01-15T06:29:59Z",
+     "expect": {"rows": []}},
+    {"op": "latest", "table": "wind", "frontier": "2025-01-15T06:30:00Z",
+     "expect": {"values": [
+       ["wind_dk1", "2025-01-16T00:00:00Z", {"value": 100.0}],
+       ["wind_dk1", "2025-01-16T01:00:00Z", {"value": 110.0}]]}},
+    {"op": "latest", "table": "wind", "frontier": "2025-01-15T12:10:00Z",
+     "expect": {"rows": [
+       {"series": "wind_dk1", "value_time": "2025-01-16T00:00:00Z", "published_time": "2025-01-15T12:00:00Z", "received_time": "2025-01-15T12:10:00Z", "system_time": "2025-01-15T12:11:00Z", "seq": 3, "values": {"value": 90.0}},
+       {"series": "wind_dk1", "value_time": "2025-01-16T01:00:00Z", "published_time": "2025-01-15T06:00:00Z", "received_time": "2025-01-15T06:30:00Z", "system_time": "2025-01-15T06:31:00Z", "seq": 2, "values": {"value": 110.0}}]}},
+    {"op": "latest", "table": "wind", "frontier": "2025-01-15T12:10:00Z", "system": "2025-01-15T12:00:00Z",
+     "expect": {"values": [
+       ["wind_dk1", "2025-01-16T00:00:00Z", {"value": 100.0}],
+       ["wind_dk1", "2025-01-16T01:00:00Z", {"value": 110.0}]]}},
+    {"op": "history", "table": "wind", "value_from": "2025-01-16T00:00:00Z", "value_to": "2025-01-16T01:00:00Z",
+     "expect": {"rows": [
+       {"series": "wind_dk1", "value_time": "2025-01-16T00:00:00Z", "published_time": "2025-01-15T06:00:00Z", "received_time": "2025-01-15T06:30:00Z", "system_time": "2025-01-15T06:31:00Z", "seq": 1, "deleted": false, "values": {"value": 100.0}},
+       {"series": "wind_dk1", "value_time": "2025-01-16T00:00:00Z", "published_time": "2025-01-15T12:00:00Z", "received_time": "2025-01-15T12:10:00Z", "system_time": "2025-01-15T12:11:00Z", "seq": 3, "deleted": false, "values": {"value": 90.0}}]}}
+  ]
+}

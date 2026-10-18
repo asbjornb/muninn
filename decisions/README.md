@@ -13,4 +13,10 @@ Lightweight decision records. One file per decision: `NNNN-short-title.md`.
 ## Consequences
 ```
 
-None yet — see `notes/open-questions.md`.
+| # | Decision |
+| --- | --- |
+| [0001](0001-rust-core-python-reference.md) | Rust engine, Python reference spec, one repo |
+| [0002](0002-microsecond-timestamps.md) | Timestamps are i64 microseconds UTC |
+| [0003](0003-visibility-order-and-dedup.md) | Frontier clock orders versions; dedup on full content |
+| [0004](0004-commit-log-no-separate-wal.md) | Commit log on the store; no separate WAL in v1 |
+| [0005](0005-sync-engine-own-store-trait.md) | Synchronous engine over a small own Store trait |
