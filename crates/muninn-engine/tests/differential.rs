@@ -12,11 +12,11 @@ use muninn_store::{LocalFsStore, MemoryStore};
 use proptest::prelude::*;
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: cases(160), max_shrink_iters: 2000, ..ProptestConfig::default() })]
+    #![proptest_config(ProptestConfig { cases: cases(400), max_shrink_iters: 2000, ..ProptestConfig::default() })]
 
     #[test]
     fn engine_matches_model(
-        ops in arb_ops(40),
+        ops in arb_ops(ops_len(40)),
         block_rows in 1usize..5,
         checkpoint in 1u64..6,
         compress in any::<bool>(),
@@ -26,11 +26,11 @@ proptest! {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: cases(160) / 8 + 1, ..ProptestConfig::default() })]
+    #![proptest_config(ProptestConfig { cases: cases(400) / 8 + 1, ..ProptestConfig::default() })]
 
     /// The same on a real filesystem.
     #[test]
-    fn engine_matches_model_on_local_fs(ops in arb_ops(30), block_rows in 1usize..4) {
+    fn engine_matches_model_on_local_fs(ops in arb_ops(ops_len(30)), block_rows in 1usize..4) {
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(LocalFsStore::open(dir.path()).unwrap());
         run_differential(store, test_options(block_rows, 3, true), &ops)?;

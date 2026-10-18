@@ -489,8 +489,12 @@ impl<S: Store> Engine<S> {
             .list(log::SEGMENTS_PREFIX)
             .map_err(|e| store_err("listing segments", e))?;
         let listed_set: BTreeSet<&Key> = listed.iter().collect();
+        let current: BTreeSet<&Key> = st.segments().map(|s| &s.key).collect();
         for key in &listed {
             if referenced.contains(key) {
+                if !current.contains(key) {
+                    report.kept += 1; // retired, but a live snapshot still reads it
+                }
                 continue;
             }
             let since = match retired.get(key) {

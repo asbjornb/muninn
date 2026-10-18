@@ -16,3 +16,11 @@ tasks:
     desc: Format all Rust code
     cmds:
       - cargo fmt --all
+
+  fuzz:
+    desc: Long differential and crash/fault fuzzing of the engine (release build)
+    env:
+      MUNINN_FUZZ_CASES: '{{.CASES | default "5000"}}'
+    cmds:
+      - cargo test --release -p muninn-format
+      - cargo test --release -p muninn-engine --test differential --test crash

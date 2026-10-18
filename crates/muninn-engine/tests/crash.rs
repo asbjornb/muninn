@@ -244,12 +244,12 @@ fn workload_with_setup(ops: Vec<Op>) -> Vec<Op> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: cases(48), ..ProptestConfig::default() })]
+    #![proptest_config(ProptestConfig { cases: cases(96), ..ProptestConfig::default() })]
 
     /// Crash at a sample of store-op indices (with and without the op taking effect).
     #[test]
     fn crash_anywhere_recovers_before_or_after(
-        ops in arb_workload(14),
+        ops in arb_workload(ops_len(14)),
         block_rows in 1usize..4,
         checkpoint in 1u64..4,
         picks in prop::collection::vec((any::<prop::sample::Index>(), any::<bool>()), 12),
@@ -266,7 +266,7 @@ proptest! {
     /// after each failure it must reload and show the state before or after the op.
     #[test]
     fn ambiguous_failures_never_serve_stale_state(
-        ops in arb_workload(20),
+        ops in arb_workload(ops_len(20)),
         seed in any::<u64>(),
         p_before in 0.0f64..0.15,
         p_after in 0.0f64..0.15,

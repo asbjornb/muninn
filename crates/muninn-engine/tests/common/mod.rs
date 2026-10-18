@@ -36,6 +36,14 @@ pub fn cases(default: u32) -> u32 {
         .unwrap_or(default)
 }
 
+/// Maximum workload length: `MUNINN_FUZZ_LEN` or `default`.
+pub fn ops_len(default: usize) -> usize {
+    std::env::var("MUNINN_FUZZ_LEN")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(default)
+}
+
 pub const TABLES: [&str; 4] = ["t", "u", "w", "Bad"];
 /// Column names with the type they usually get.
 pub const COLUMNS: [(&str, ColumnType); 7] = [

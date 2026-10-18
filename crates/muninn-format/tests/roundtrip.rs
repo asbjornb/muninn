@@ -8,6 +8,14 @@ use muninn_format::{
 };
 use proptest::prelude::*;
 
+/// `MUNINN_FUZZ_CASES` or `default`.
+fn cases(default: u32) -> u32 {
+    std::env::var("MUNINN_FUZZ_CASES")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(default)
+}
+
 const DAY: i64 = 86_400_000_000;
 const BASE: i64 = 1_735_689_600_000_000; // 2025-01-01T00:00:00Z
 
@@ -133,7 +141,7 @@ fn bit_identical(a: &[Version], b: &[Version]) -> bool {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(128))]
+    #![proptest_config(ProptestConfig::with_cases(cases(128)))]
 
     #[test]
     fn round_trip(versions in arb_versions(), block_rows in 1usize..20, compress in any::<bool>()) {
