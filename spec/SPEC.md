@@ -254,7 +254,9 @@ window that is either
 
 - **absolute**: `value_from`/`value_to` as in every read, or
 - **relative**: `window_start`, `window_end` durations — for frontier `F_i` the value range
-  is `[F_i + window_start, F_i + window_end)`.
+  is `[F_i + window_start, F_i + window_end)`. The sums are exact (no overflow, no
+  clamping error); a bound outside the valid timestamp range simply admits or excludes
+  everything on that side.
 
 Result: for each `F_i`, exactly the rows of `latest` with `frontier = F_i` and that
 window, each prefixed with `frontier = F_i`.
@@ -277,9 +279,11 @@ series, value_time, frontier, found,
 published_time, received_time, system_time, seq, values
 ```
 
-where the right side is `latest(right_table, [series], [value_time, value_time],
-frontier = row.frontier)` — exact `value_time` match. If there is no such version (or it is
-a tombstone), `found = false` and all right-side fields are null.
+where the right side is what `latest(right_table, [series], frontier = row.frontier)`
+returns for the point `(series, value_time)` — exact `value_time` match (as a §6 half-open
+value range: `[value_time, value_time + 1us)`). If there is no such version (or it is
+a tombstone), `found = false` and all right-side fields are null (`values` itself is
+`null`, not an object of nulls).
 
 Order: left input order; one output row per left row.
 
@@ -394,6 +398,10 @@ Expected rows are objects with exactly the fields listed for the op in §6 (`val
 nested object containing every current column of the table, nulls included). Runners MUST
 compare the complete row list exactly, in order (timestamps compared as integers, `f64`
 bitwise except that a JSON number in the expectation is parsed to the nearest f64).
+Values use the same JSON encodings as writes (§4.1): non-finite `f64` as `"NaN"`, `"inf"`,
+`"-inf"`; `i64` as a JSON integer or a decimal string (compared as integers; generated
+scenarios use strings beyond ±2^53); `timestamp` columns in the §1 text form (compared as
+integers). A write's `expect` (other than `error`) is the complete §4.5 result object.
 
 Optional `"expect"` sugar to keep hand-written scenarios readable: `"rows"` may be replaced
 by `"values"` when the scenario only cares about which value won. Runners then compare just
