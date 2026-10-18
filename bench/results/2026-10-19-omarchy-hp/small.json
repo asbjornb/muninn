@@ -34,7 +34,7 @@
     "received_min": 1704109642000000,
     "received_max": 1735569124000000,
     "system_max": 1735569125000000,
-    "parquet_bytes": 1910075,
+    "parquet_bytes": 1910048,
     "content_duplicates": 0,
     "resends": 1968
    },
@@ -294,10 +294,10 @@
      "queries": {
       "da_asof_published": {
        "instances": 50,
-       "cold_ms": 32.178,
+       "cold_ms": 33.674,
        "warm_samples": 150,
-       "p50_ms": 1.569,
-       "p99_ms": 2.881,
+       "p50_ms": 1.887,
+       "p99_ms": 3.484,
        "mean_rows": 57.1,
        "result_hashes": {
         "0": "a5ae734c88c26abb9bbcd9de",
@@ -313,10 +313,10 @@
         "10": "8478c2b13ecd96168711e81d",
         "11": "76f4e615aabc06f6483f79d0",
         "12": "f499b460fd5a528d6b461941",
-        "13": "803c294229d2467300f39be3",
+        "13": "0e228f06de1280a19eecf383",
         "14": "f61fa3239ca4bdf3e94798cf",
         "15": "45fb86841be954463813c72b",
-        "16": "c1c9c3be93c1ebb3b6492cd8",
+        "16": "cc2fef3c52b10ca8a7acd70d",
         "17": "8d95198b48df644280da5bc5",
         "18": "b0f0487faee464cb621443a3",
         "19": "4fbed4ab4798ababdb3d2df6",
@@ -343,7 +343,7 @@
         "40": "5f85ed9b001704a9d82fdb42",
         "41": "323f81012757fcd51fb133de",
         "42": "6efe32e0e2f4efb04c4441f7",
-        "43": "0c08e3d6157df827d576ea05",
+        "43": "9a044f7061919222b2a870b4",
         "44": "db3ab8b01328f63312777427",
         "45": "6c876f06c9a8ffd80ebfa544",
         "46": "b17e5f68b5aae535e645260c",
@@ -354,43 +354,43 @@
       },
       "da_grid_365": {
        "instances": 1,
-       "cold_ms": 312.79,
+       "cold_ms": 303.103,
        "warm_samples": 3,
-       "p50_ms": 275.312,
-       "p99_ms": 282.707,
+       "p50_ms": 270.996,
+       "p99_ms": 281.764,
        "mean_rows": 658080,
        "result_hashes": {
-        "0": "cdbd827e0ad7bdb132f328df"
+        "0": "8ed2968639daea2bc0c92a86"
        }
       },
       "da_asof_join_signals": {
        "instances": 5,
-       "cold_ms": 64.355,
+       "cold_ms": 62.283,
        "warm_samples": 15,
-       "p50_ms": 53.138,
-       "p99_ms": 57.011,
+       "p50_ms": 52.169,
+       "p99_ms": 59.784,
        "mean_rows": 10000,
        "result_hashes": {
-        "0": "b17dc98f2b6e01089afab7aa",
-        "1": "7923e9f65ce07cceec521d9b",
-        "2": "b8e6e9b4894a9d216929ac18",
-        "3": "d6c4699657ac554591ecd8ac",
-        "4": "175e01015066fd58d07b9963"
+        "0": "5249f0fb50d70835e53b2f68",
+        "1": "eb3ebba2d00eb2531e59617a",
+        "2": "d13570ece0aeba2245a2157a",
+        "3": "acc6f738891fd227097cb9c0",
+        "4": "f3c83e2ca655ef8f24c02da5"
        }
       }
      }
     },
     "forecasts": {
-     "ingest_seconds": 0.577,
+     "ingest_seconds": 0.559,
      "bytes_on_disk": 70791168,
      "bytes_per_version": 25.82,
      "queries": {
       "fc_asof_single": {
        "instances": 50,
-       "cold_ms": 7.116,
+       "cold_ms": 8.937,
        "warm_samples": 150,
-       "p50_ms": 3.659,
-       "p99_ms": 5.523,
+       "p50_ms": 4.818,
+       "p99_ms": 7.153,
        "mean_rows": 96,
        "result_hashes": {
         "0": "90b12a75b54c8582107cc520",
@@ -447,10 +447,10 @@
       },
       "fc_grid_365": {
        "instances": 3,
-       "cold_ms": 219.675,
+       "cold_ms": 225.322,
        "warm_samples": 9,
-       "p50_ms": 186.048,
-       "p99_ms": 207.671,
+       "p50_ms": 180.882,
+       "p99_ms": 186.367,
        "mean_rows": 8496,
        "result_hashes": {
         "0": "89514378e960b234c2eef1d7",
@@ -460,10 +460,10 @@
       },
       "fc_grid_365_all": {
        "instances": 1,
-       "cold_ms": 470.469,
+       "cold_ms": 446.076,
        "warm_samples": 3,
-       "p50_ms": 410.557,
-       "p99_ms": 415.116,
+       "p50_ms": 409.719,
+       "p99_ms": 421.413,
        "mean_rows": 16992,
        "result_hashes": {
         "0": "44e8d2797911edaa020f187e"
@@ -471,10 +471,10 @@
       },
       "fc_history_day": {
        "instances": 20,
-       "cold_ms": 9.115,
+       "cold_ms": 8.955,
        "warm_samples": 60,
-       "p50_ms": 3.99,
-       "p99_ms": 7.335,
+       "p50_ms": 3.821,
+       "p99_ms": 6.542,
        "mean_rows": 21360,
        "result_hashes": {
         "0": "169673ef606d011f2f71bdd4",
@@ -501,10 +501,10 @@
       },
       "fc_replay_6h": {
        "instances": 20,
-       "cold_ms": 9.586,
+       "cold_ms": 10.229,
        "warm_samples": 60,
-       "p50_ms": 4.084,
-       "p99_ms": 7.8,
+       "p50_ms": 4.327,
+       "p99_ms": 8.519,
        "mean_rows": 11376,
        "result_hashes": {
         "0": "c87eef33f64febb94f2e8072",
@@ -531,10 +531,10 @@
       },
       "fc_lead_24h": {
        "instances": 5,
-       "cold_ms": 18.238,
+       "cold_ms": 17.37,
        "warm_samples": 15,
-       "p50_ms": 6.594,
-       "p99_ms": 9.694,
+       "p50_ms": 6.618,
+       "p99_ms": 9.472,
        "mean_rows": 5668,
        "result_hashes": {
         "0": "a5f43d98a3d02135a5f1eb2a",
@@ -546,10 +546,10 @@
       },
       "fc_latest_now": {
        "instances": 5,
-       "cold_ms": 13.504,
+       "cold_ms": 17.791,
        "warm_samples": 15,
-       "p50_ms": 8.419,
-       "p99_ms": 10.198,
+       "p50_ms": 14.041,
+       "p99_ms": 15.236,
        "mean_rows": 1912,
        "result_hashes": {
         "0": "534116c1717a38d236252888",
@@ -561,10 +561,10 @@
       },
       "fc_asof_join_lead24": {
        "instances": 5,
-       "cold_ms": 87.52,
+       "cold_ms": 87.862,
        "warm_samples": 15,
-       "p50_ms": 73.217,
-       "p99_ms": 90.049,
+       "p50_ms": 71.133,
+       "p99_ms": 79.028,
        "mean_rows": 2880,
        "result_hashes": {
         "0": "d4a3d56b67769f539fe38f15",
@@ -577,16 +577,16 @@
      }
     },
     "settlement": {
-     "ingest_seconds": 0.358,
+     "ingest_seconds": 0.344,
      "bytes_on_disk": 26750976,
      "bytes_per_version": 27.87,
      "queries": {
       "st_asof_system": {
        "instances": 50,
-       "cold_ms": 6.099,
+       "cold_ms": 5.677,
        "warm_samples": 150,
-       "p50_ms": 2.097,
-       "p99_ms": 4.43,
+       "p50_ms": 2.307,
+       "p99_ms": 4.623,
        "mean_rows": 96,
        "result_hashes": {
         "0": "4e1114f20f308686b6149d37",
@@ -643,10 +643,10 @@
       },
       "st_grid_365": {
        "instances": 3,
-       "cold_ms": 53.116,
+       "cold_ms": 52.895,
        "warm_samples": 9,
-       "p50_ms": 37.156,
-       "p99_ms": 39.358,
+       "p50_ms": 37.661,
+       "p99_ms": 41.321,
        "mean_rows": 37794.7,
        "result_hashes": {
         "0": "74a3e70ea6240464f9425a89",
@@ -656,10 +656,10 @@
       },
       "st_history_month": {
        "instances": 10,
-       "cold_ms": 7.047,
+       "cold_ms": 6.648,
        "warm_samples": 30,
-       "p50_ms": 2.603,
-       "p99_ms": 5.115,
+       "p50_ms": 2.475,
+       "p99_ms": 5.48,
        "mean_rows": 8198.4,
        "result_hashes": {
         "0": "979fced6796b5b9da236e91e",
@@ -676,10 +676,10 @@
       },
       "st_latest_now": {
        "instances": 5,
-       "cold_ms": 10.706,
+       "cold_ms": 11.897,
        "warm_samples": 15,
-       "p50_ms": 4.335,
-       "p99_ms": 5.234,
+       "p50_ms": 4.593,
+       "p99_ms": 5.193,
        "mean_rows": 6716,
        "result_hashes": {
         "0": "68bc66454a0110df2cc07764",
@@ -692,16 +692,16 @@
      }
     },
     "sparse": {
-     "ingest_seconds": 0.231,
+     "ingest_seconds": 0.22,
      "bytes_on_disk": 16003072,
      "bytes_per_version": 36.86,
      "queries": {
       "sp_asof_single": {
        "instances": 50,
-       "cold_ms": 5.287,
+       "cold_ms": 5.409,
        "warm_samples": 150,
-       "p50_ms": 1.546,
-       "p99_ms": 3.607,
+       "p50_ms": 1.822,
+       "p99_ms": 5.078,
        "mean_rows": 6.5,
        "result_hashes": {
         "0": "e4e76c16f219f27c0962f394",
@@ -758,10 +758,10 @@
       },
       "sp_replay_day": {
        "instances": 20,
-       "cold_ms": 10.183,
+       "cold_ms": 12.098,
        "warm_samples": 60,
-       "p50_ms": 4.109,
-       "p99_ms": 5.363,
+       "p50_ms": 4.004,
+       "p99_ms": 5.27,
        "mean_rows": 1196.5,
        "result_hashes": {
         "0": "d8b0d4e3c3394d9bf85b13f1",
@@ -788,10 +788,10 @@
       },
       "sp_latest_now": {
        "instances": 5,
-       "cold_ms": 18.43,
+       "cold_ms": 18.853,
        "warm_samples": 15,
-       "p50_ms": 10.504,
-       "p99_ms": 11.792,
+       "p50_ms": 10.542,
+       "p99_ms": 11.54,
        "mean_rows": 20754,
        "result_hashes": {
         "0": "93a340496d1d8bfdbaf0d638",
@@ -804,16 +804,16 @@
      }
     },
     "backfill": {
-     "ingest_seconds": 0.152,
+     "ingest_seconds": 0.154,
      "bytes_on_disk": 8663040,
      "bytes_per_version": 18.83,
      "queries": {
       "bf_asof_single": {
        "instances": 50,
-       "cold_ms": 4.909,
+       "cold_ms": 5.301,
        "warm_samples": 150,
-       "p50_ms": 1.68,
-       "p99_ms": 3.031,
+       "p50_ms": 1.845,
+       "p99_ms": 3.165,
        "mean_rows": 24,
        "result_hashes": {
         "0": "1acf5e01b64bedef85a3d186",
@@ -870,10 +870,10 @@
       },
       "bf_grid_365": {
        "instances": 3,
-       "cold_ms": 18.311,
+       "cold_ms": 19.335,
        "warm_samples": 9,
-       "p50_ms": 12.227,
-       "p99_ms": 14.787,
+       "p50_ms": 13.089,
+       "p99_ms": 14.977,
        "mean_rows": 17156,
        "result_hashes": {
         "0": "69c9f25ba8c1ee3ed6e89c85",
@@ -890,16 +890,16 @@
    "version": "1.5.6",
    "datasets": {
     "da_prices": {
-     "ingest_seconds": 0.129,
-     "bytes_on_disk": 2909921,
-     "bytes_per_version": 6.42,
+     "ingest_seconds": 0.116,
+     "bytes_on_disk": 2356835,
+     "bytes_per_version": 5.2,
      "queries": {
       "da_asof_published": {
        "instances": 50,
-       "cold_ms": 7.311,
+       "cold_ms": 10.002,
        "warm_samples": 150,
-       "p50_ms": 4.645,
-       "p99_ms": 6.023,
+       "p50_ms": 6.088,
+       "p99_ms": 7.868,
        "mean_rows": 57.1,
        "result_hashes": {
         "0": "a5ae734c88c26abb9bbcd9de",
@@ -915,10 +915,10 @@
         "10": "8478c2b13ecd96168711e81d",
         "11": "76f4e615aabc06f6483f79d0",
         "12": "f499b460fd5a528d6b461941",
-        "13": "803c294229d2467300f39be3",
+        "13": "0e228f06de1280a19eecf383",
         "14": "f61fa3239ca4bdf3e94798cf",
         "15": "45fb86841be954463813c72b",
-        "16": "c1c9c3be93c1ebb3b6492cd8",
+        "16": "cc2fef3c52b10ca8a7acd70d",
         "17": "8d95198b48df644280da5bc5",
         "18": "b0f0487faee464cb621443a3",
         "19": "4fbed4ab4798ababdb3d2df6",
@@ -945,7 +945,7 @@
         "40": "5f85ed9b001704a9d82fdb42",
         "41": "323f81012757fcd51fb133de",
         "42": "6efe32e0e2f4efb04c4441f7",
-        "43": "0c08e3d6157df827d576ea05",
+        "43": "9a044f7061919222b2a870b4",
         "44": "db3ab8b01328f63312777427",
         "45": "6c876f06c9a8ffd80ebfa544",
         "46": "b17e5f68b5aae535e645260c",
@@ -956,43 +956,43 @@
       },
       "da_grid_365": {
        "instances": 1,
-       "cold_ms": 313.019,
+       "cold_ms": 307.348,
        "warm_samples": 3,
-       "p50_ms": 279.558,
-       "p99_ms": 281.311,
+       "p50_ms": 282.225,
+       "p99_ms": 282.622,
        "mean_rows": 658080,
        "result_hashes": {
-        "0": "cdbd827e0ad7bdb132f328df"
+        "0": "8ed2968639daea2bc0c92a86"
        }
       },
       "da_asof_join_signals": {
        "instances": 5,
-       "cold_ms": 67.387,
+       "cold_ms": 70.193,
        "warm_samples": 15,
-       "p50_ms": 57.469,
-       "p99_ms": 60.997,
+       "p50_ms": 59.41,
+       "p99_ms": 64.84,
        "mean_rows": 10000,
        "result_hashes": {
-        "0": "b17dc98f2b6e01089afab7aa",
-        "1": "7923e9f65ce07cceec521d9b",
-        "2": "b8e6e9b4894a9d216929ac18",
-        "3": "d6c4699657ac554591ecd8ac",
-        "4": "175e01015066fd58d07b9963"
+        "0": "5249f0fb50d70835e53b2f68",
+        "1": "eb3ebba2d00eb2531e59617a",
+        "2": "d13570ece0aeba2245a2157a",
+        "3": "acc6f738891fd227097cb9c0",
+        "4": "f3c83e2ca655ef8f24c02da5"
        }
       }
      }
     },
     "forecasts": {
-     "ingest_seconds": 0.525,
-     "bytes_on_disk": 9932734,
-     "bytes_per_version": 3.62,
+     "ingest_seconds": 0.505,
+     "bytes_on_disk": 9965694,
+     "bytes_per_version": 3.63,
      "queries": {
       "fc_asof_single": {
        "instances": 50,
-       "cold_ms": 9.3,
+       "cold_ms": 11.748,
        "warm_samples": 150,
-       "p50_ms": 6.432,
-       "p99_ms": 7.941,
+       "p50_ms": 8.488,
+       "p99_ms": 11.695,
        "mean_rows": 96,
        "result_hashes": {
         "0": "90b12a75b54c8582107cc520",
@@ -1049,10 +1049,10 @@
       },
       "fc_grid_365": {
        "instances": 3,
-       "cold_ms": 216.568,
+       "cold_ms": 231.553,
        "warm_samples": 9,
-       "p50_ms": 189.094,
-       "p99_ms": 195.25,
+       "p50_ms": 201.866,
+       "p99_ms": 205.967,
        "mean_rows": 8496,
        "result_hashes": {
         "0": "89514378e960b234c2eef1d7",
@@ -1062,10 +1062,10 @@
       },
       "fc_grid_365_all": {
        "instances": 1,
-       "cold_ms": 452.736,
+       "cold_ms": 462.276,
        "warm_samples": 3,
-       "p50_ms": 413.022,
-       "p99_ms": 416.87,
+       "p50_ms": 431.461,
+       "p99_ms": 449.111,
        "mean_rows": 16992,
        "result_hashes": {
         "0": "44e8d2797911edaa020f187e"
@@ -1073,10 +1073,10 @@
       },
       "fc_history_day": {
        "instances": 20,
-       "cold_ms": 10.711,
+       "cold_ms": 13.614,
        "warm_samples": 60,
-       "p50_ms": 6.833,
-       "p99_ms": 9.561,
+       "p50_ms": 8.39,
+       "p99_ms": 12.863,
        "mean_rows": 21360,
        "result_hashes": {
         "0": "169673ef606d011f2f71bdd4",
@@ -1103,10 +1103,10 @@
       },
       "fc_replay_6h": {
        "instances": 20,
-       "cold_ms": 8.76,
+       "cold_ms": 17.602,
        "warm_samples": 60,
-       "p50_ms": 6.926,
-       "p99_ms": 8.279,
+       "p50_ms": 13.799,
+       "p99_ms": 15.406,
        "mean_rows": 11376,
        "result_hashes": {
         "0": "c87eef33f64febb94f2e8072",
@@ -1133,10 +1133,10 @@
       },
       "fc_lead_24h": {
        "instances": 5,
-       "cold_ms": 15.387,
+       "cold_ms": 29.061,
        "warm_samples": 15,
-       "p50_ms": 12.345,
-       "p99_ms": 15.092,
+       "p50_ms": 24.447,
+       "p99_ms": 28.624,
        "mean_rows": 5668,
        "result_hashes": {
         "0": "a5f43d98a3d02135a5f1eb2a",
@@ -1148,10 +1148,10 @@
       },
       "fc_latest_now": {
        "instances": 5,
-       "cold_ms": 14.323,
+       "cold_ms": 23.345,
        "warm_samples": 15,
-       "p50_ms": 12.523,
-       "p99_ms": 13.397,
+       "p50_ms": 20.218,
+       "p99_ms": 22.362,
        "mean_rows": 1912,
        "result_hashes": {
         "0": "534116c1717a38d236252888",
@@ -1163,10 +1163,10 @@
       },
       "fc_asof_join_lead24": {
        "instances": 5,
-       "cold_ms": 89.074,
+       "cold_ms": 88.044,
        "warm_samples": 15,
-       "p50_ms": 77.554,
-       "p99_ms": 86.701,
+       "p50_ms": 81.8,
+       "p99_ms": 85.157,
        "mean_rows": 2880,
        "result_hashes": {
         "0": "d4a3d56b67769f539fe38f15",
@@ -1179,16 +1179,16 @@
      }
     },
     "settlement": {
-     "ingest_seconds": 0.281,
-     "bytes_on_disk": 5334097,
-     "bytes_per_version": 5.56,
+     "ingest_seconds": 0.263,
+     "bytes_on_disk": 5047062,
+     "bytes_per_version": 5.26,
      "queries": {
       "st_asof_system": {
        "instances": 50,
-       "cold_ms": 10.07,
+       "cold_ms": 9.994,
        "warm_samples": 150,
-       "p50_ms": 6.41,
-       "p99_ms": 8.835,
+       "p50_ms": 7.686,
+       "p99_ms": 10.691,
        "mean_rows": 96,
        "result_hashes": {
         "0": "4e1114f20f308686b6149d37",
@@ -1245,10 +1245,10 @@
       },
       "st_grid_365": {
        "instances": 3,
-       "cold_ms": 54.438,
+       "cold_ms": 54.126,
        "warm_samples": 9,
-       "p50_ms": 42.022,
-       "p99_ms": 46.811,
+       "p50_ms": 43.705,
+       "p99_ms": 46.58,
        "mean_rows": 37794.7,
        "result_hashes": {
         "0": "74a3e70ea6240464f9425a89",
@@ -1258,10 +1258,10 @@
       },
       "st_history_month": {
        "instances": 10,
-       "cold_ms": 10.469,
+       "cold_ms": 13.388,
        "warm_samples": 30,
-       "p50_ms": 6.882,
-       "p99_ms": 9.617,
+       "p50_ms": 7.897,
+       "p99_ms": 10.945,
        "mean_rows": 8198.4,
        "result_hashes": {
         "0": "979fced6796b5b9da236e91e",
@@ -1278,10 +1278,10 @@
       },
       "st_latest_now": {
        "instances": 5,
-       "cold_ms": 14.947,
+       "cold_ms": 21.97,
        "warm_samples": 15,
-       "p50_ms": 13.551,
-       "p99_ms": 14.645,
+       "p50_ms": 18.824,
+       "p99_ms": 20.688,
        "mean_rows": 6716,
        "result_hashes": {
         "0": "68bc66454a0110df2cc07764",
@@ -1294,16 +1294,16 @@
      }
     },
     "sparse": {
-     "ingest_seconds": 0.241,
-     "bytes_on_disk": 13860594,
-     "bytes_per_version": 31.92,
+     "ingest_seconds": 0.214,
+     "bytes_on_disk": 13941984,
+     "bytes_per_version": 32.11,
      "queries": {
       "sp_asof_single": {
        "instances": 50,
-       "cold_ms": 14.28,
+       "cold_ms": 13.382,
        "warm_samples": 150,
-       "p50_ms": 11.347,
-       "p99_ms": 13.598,
+       "p50_ms": 12.532,
+       "p99_ms": 16.083,
        "mean_rows": 6.5,
        "result_hashes": {
         "0": "e4e76c16f219f27c0962f394",
@@ -1360,10 +1360,10 @@
       },
       "sp_replay_day": {
        "instances": 20,
-       "cold_ms": 17.772,
+       "cold_ms": 21.147,
        "warm_samples": 60,
-       "p50_ms": 15.545,
-       "p99_ms": 17.574,
+       "p50_ms": 16.421,
+       "p99_ms": 20.286,
        "mean_rows": 1196.5,
        "result_hashes": {
         "0": "d8b0d4e3c3394d9bf85b13f1",
@@ -1390,10 +1390,10 @@
       },
       "sp_latest_now": {
        "instances": 5,
-       "cold_ms": 27.542,
+       "cold_ms": 28.018,
        "warm_samples": 15,
-       "p50_ms": 22.143,
-       "p99_ms": 24.647,
+       "p50_ms": 22.903,
+       "p99_ms": 25.375,
        "mean_rows": 20754,
        "result_hashes": {
         "0": "93a340496d1d8bfdbaf0d638",
@@ -1406,16 +1406,16 @@
      }
     },
     "backfill": {
-     "ingest_seconds": 0.156,
-     "bytes_on_disk": 5968631,
-     "bytes_per_version": 12.97,
+     "ingest_seconds": 0.138,
+     "bytes_on_disk": 6013805,
+     "bytes_per_version": 13.07,
      "queries": {
       "bf_asof_single": {
        "instances": 50,
-       "cold_ms": 8.234,
+       "cold_ms": 8.326,
        "warm_samples": 150,
-       "p50_ms": 6.82,
-       "p99_ms": 9.453,
+       "p50_ms": 7.956,
+       "p99_ms": 16.665,
        "mean_rows": 24,
        "result_hashes": {
         "0": "1acf5e01b64bedef85a3d186",
@@ -1472,10 +1472,10 @@
       },
       "bf_grid_365": {
        "instances": 3,
-       "cold_ms": 22.314,
+       "cold_ms": 23.735,
        "warm_samples": 9,
-       "p50_ms": 17.548,
-       "p99_ms": 19.257,
+       "p50_ms": 18.284,
+       "p99_ms": 21.181,
        "mean_rows": 17156,
        "result_hashes": {
         "0": "69c9f25ba8c1ee3ed6e89c85",
@@ -1492,16 +1492,16 @@
    "version": "26.7.34.3",
    "datasets": {
     "da_prices": {
-     "ingest_seconds": 0.159,
-     "bytes_on_disk": 1607888,
+     "ingest_seconds": 0.15,
+     "bytes_on_disk": 1608249,
      "bytes_per_version": 3.55,
      "queries": {
       "da_asof_published": {
        "instances": 50,
-       "cold_ms": 6.649,
+       "cold_ms": 7.05,
        "warm_samples": 150,
-       "p50_ms": 4.197,
-       "p99_ms": 6.661,
+       "p50_ms": 4.154,
+       "p99_ms": 5.485,
        "mean_rows": 57.1,
        "result_hashes": {
         "0": "a5ae734c88c26abb9bbcd9de",
@@ -1517,10 +1517,10 @@
         "10": "8478c2b13ecd96168711e81d",
         "11": "76f4e615aabc06f6483f79d0",
         "12": "f499b460fd5a528d6b461941",
-        "13": "803c294229d2467300f39be3",
+        "13": "0e228f06de1280a19eecf383",
         "14": "f61fa3239ca4bdf3e94798cf",
         "15": "45fb86841be954463813c72b",
-        "16": "c1c9c3be93c1ebb3b6492cd8",
+        "16": "cc2fef3c52b10ca8a7acd70d",
         "17": "8d95198b48df644280da5bc5",
         "18": "b0f0487faee464cb621443a3",
         "19": "4fbed4ab4798ababdb3d2df6",
@@ -1547,7 +1547,7 @@
         "40": "5f85ed9b001704a9d82fdb42",
         "41": "323f81012757fcd51fb133de",
         "42": "6efe32e0e2f4efb04c4441f7",
-        "43": "0c08e3d6157df827d576ea05",
+        "43": "9a044f7061919222b2a870b4",
         "44": "db3ab8b01328f63312777427",
         "45": "6c876f06c9a8ffd80ebfa544",
         "46": "b17e5f68b5aae535e645260c",
@@ -1558,43 +1558,43 @@
       },
       "da_grid_365": {
        "instances": 1,
-       "cold_ms": 528.554,
+       "cold_ms": 628.422,
        "warm_samples": 3,
-       "p50_ms": 560.154,
-       "p99_ms": 589.08,
+       "p50_ms": 623.789,
+       "p99_ms": 631.225,
        "mean_rows": 658080,
        "result_hashes": {
-        "0": "cdbd827e0ad7bdb132f328df"
+        "0": "8ed2968639daea2bc0c92a86"
        }
       },
       "da_asof_join_signals": {
        "instances": 5,
-       "cold_ms": 273.084,
+       "cold_ms": 246.911,
        "warm_samples": 15,
-       "p50_ms": 261.685,
-       "p99_ms": 292.278,
+       "p50_ms": 253.36,
+       "p99_ms": 284.965,
        "mean_rows": 10000,
        "result_hashes": {
-        "0": "b17dc98f2b6e01089afab7aa",
-        "1": "7923e9f65ce07cceec521d9b",
-        "2": "b8e6e9b4894a9d216929ac18",
-        "3": "d6c4699657ac554591ecd8ac",
-        "4": "175e01015066fd58d07b9963"
+        "0": "5249f0fb50d70835e53b2f68",
+        "1": "eb3ebba2d00eb2531e59617a",
+        "2": "d13570ece0aeba2245a2157a",
+        "3": "acc6f738891fd227097cb9c0",
+        "4": "f3c83e2ca655ef8f24c02da5"
        }
       }
      }
     },
     "forecasts": {
-     "ingest_seconds": 0.991,
+     "ingest_seconds": 1.097,
      "bytes_on_disk": 8399718,
      "bytes_per_version": 3.06,
      "queries": {
       "fc_asof_single": {
        "instances": 50,
-       "cold_ms": 10.105,
+       "cold_ms": 10.284,
        "warm_samples": 150,
-       "p50_ms": 8.429,
-       "p99_ms": 9.371,
+       "p50_ms": 8.499,
+       "p99_ms": 9.318,
        "mean_rows": 96,
        "result_hashes": {
         "0": "90b12a75b54c8582107cc520",
@@ -1651,10 +1651,10 @@
       },
       "fc_grid_365": {
        "instances": 3,
-       "cold_ms": 672.842,
+       "cold_ms": 649.447,
        "warm_samples": 9,
-       "p50_ms": 646.129,
-       "p99_ms": 732.944,
+       "p50_ms": 631.419,
+       "p99_ms": 663.411,
        "mean_rows": 8496,
        "result_hashes": {
         "0": "89514378e960b234c2eef1d7",
@@ -1664,10 +1664,10 @@
       },
       "fc_grid_365_all": {
        "instances": 1,
-       "cold_ms": 1679.915,
+       "cold_ms": 1736.701,
        "warm_samples": 3,
-       "p50_ms": 1571.648,
-       "p99_ms": 1665.955,
+       "p50_ms": 1457.486,
+       "p99_ms": 2005.778,
        "mean_rows": 16992,
        "result_hashes": {
         "0": "44e8d2797911edaa020f187e"
@@ -1675,10 +1675,10 @@
       },
       "fc_history_day": {
        "instances": 20,
-       "cold_ms": 9.274,
+       "cold_ms": 17.514,
        "warm_samples": 60,
-       "p50_ms": 7.332,
-       "p99_ms": 10.108,
+       "p50_ms": 12.946,
+       "p99_ms": 16.982,
        "mean_rows": 21360,
        "result_hashes": {
         "0": "169673ef606d011f2f71bdd4",
@@ -1705,10 +1705,10 @@
       },
       "fc_replay_6h": {
        "instances": 20,
-       "cold_ms": 17.273,
+       "cold_ms": 26.156,
        "warm_samples": 60,
-       "p50_ms": 14.635,
-       "p99_ms": 19.124,
+       "p50_ms": 22.206,
+       "p99_ms": 29.787,
        "mean_rows": 11376,
        "result_hashes": {
         "0": "c87eef33f64febb94f2e8072",
@@ -1735,10 +1735,10 @@
       },
       "fc_lead_24h": {
        "instances": 5,
-       "cold_ms": 33.582,
+       "cold_ms": 45.266,
        "warm_samples": 15,
-       "p50_ms": 33.299,
-       "p99_ms": 36.255,
+       "p50_ms": 45.288,
+       "p99_ms": 53.665,
        "mean_rows": 5668,
        "result_hashes": {
         "0": "a5f43d98a3d02135a5f1eb2a",
@@ -1750,10 +1750,10 @@
       },
       "fc_latest_now": {
        "instances": 5,
-       "cold_ms": 52.821,
+       "cold_ms": 35.088,
        "warm_samples": 15,
-       "p50_ms": 51.813,
-       "p99_ms": 54.357,
+       "p50_ms": 36.724,
+       "p99_ms": 42.843,
        "mean_rows": 1912,
        "result_hashes": {
         "0": "534116c1717a38d236252888",
@@ -1765,10 +1765,10 @@
       },
       "fc_asof_join_lead24": {
        "instances": 5,
-       "cold_ms": 381.959,
+       "cold_ms": 538.626,
        "warm_samples": 15,
-       "p50_ms": 340.54,
-       "p99_ms": 407.216,
+       "p50_ms": 479.106,
+       "p99_ms": 555.545,
        "mean_rows": 2880,
        "result_hashes": {
         "0": "d4a3d56b67769f539fe38f15",
@@ -1781,16 +1781,16 @@
      }
     },
     "settlement": {
-     "ingest_seconds": 0.299,
+     "ingest_seconds": 0.457,
      "bytes_on_disk": 3345208,
      "bytes_per_version": 3.48,
      "queries": {
       "st_asof_system": {
        "instances": 50,
-       "cold_ms": 6.58,
+       "cold_ms": 8.256,
        "warm_samples": 150,
-       "p50_ms": 4.377,
-       "p99_ms": 5.283,
+       "p50_ms": 7.979,
+       "p99_ms": 16.829,
        "mean_rows": 96,
        "result_hashes": {
         "0": "4e1114f20f308686b6149d37",
@@ -1847,10 +1847,10 @@
       },
       "st_grid_365": {
        "instances": 3,
-       "cold_ms": 126.2,
+       "cold_ms": 244.692,
        "warm_samples": 9,
-       "p50_ms": 124.745,
-       "p99_ms": 130.354,
+       "p50_ms": 221.138,
+       "p99_ms": 288.322,
        "mean_rows": 37794.7,
        "result_hashes": {
         "0": "74a3e70ea6240464f9425a89",
@@ -1860,10 +1860,10 @@
       },
       "st_history_month": {
        "instances": 10,
-       "cold_ms": 7.117,
+       "cold_ms": 13.994,
        "warm_samples": 30,
-       "p50_ms": 5.135,
-       "p99_ms": 6.835,
+       "p50_ms": 9.406,
+       "p99_ms": 13.558,
        "mean_rows": 8198.4,
        "result_hashes": {
         "0": "979fced6796b5b9da236e91e",
@@ -1880,10 +1880,10 @@
       },
       "st_latest_now": {
        "instances": 5,
-       "cold_ms": 12.456,
+       "cold_ms": 38.725,
        "warm_samples": 15,
-       "p50_ms": 12.786,
-       "p99_ms": 14.461,
+       "p50_ms": 20.919,
+       "p99_ms": 37.735,
        "mean_rows": 6716,
        "result_hashes": {
         "0": "68bc66454a0110df2cc07764",
@@ -1896,16 +1896,16 @@
      }
     },
     "sparse": {
-     "ingest_seconds": 0.522,
+     "ingest_seconds": 0.612,
      "bytes_on_disk": 13450725,
      "bytes_per_version": 30.98,
      "queries": {
       "sp_asof_single": {
        "instances": 50,
-       "cold_ms": 8.742,
+       "cold_ms": 9.555,
        "warm_samples": 150,
-       "p50_ms": 6.93,
-       "p99_ms": 12.836,
+       "p50_ms": 8.405,
+       "p99_ms": 20.128,
        "mean_rows": 6.5,
        "result_hashes": {
         "0": "e4e76c16f219f27c0962f394",
@@ -1962,10 +1962,10 @@
       },
       "sp_replay_day": {
        "instances": 20,
-       "cold_ms": 41.43,
+       "cold_ms": 104.869,
        "warm_samples": 60,
-       "p50_ms": 39.092,
-       "p99_ms": 50.969,
+       "p50_ms": 34.122,
+       "p99_ms": 48.724,
        "mean_rows": 1196.5,
        "result_hashes": {
         "0": "d8b0d4e3c3394d9bf85b13f1",
@@ -1992,10 +1992,10 @@
       },
       "sp_latest_now": {
        "instances": 5,
-       "cold_ms": 57.494,
+       "cold_ms": 56.627,
        "warm_samples": 15,
-       "p50_ms": 54.677,
-       "p99_ms": 64.883,
+       "p50_ms": 51.167,
+       "p99_ms": 53.88,
        "mean_rows": 20754,
        "result_hashes": {
         "0": "93a340496d1d8bfdbaf0d638",
@@ -2008,16 +2008,16 @@
      }
     },
     "backfill": {
-     "ingest_seconds": 0.207,
+     "ingest_seconds": 0.216,
      "bytes_on_disk": 3572386,
      "bytes_per_version": 7.76,
      "queries": {
       "bf_asof_single": {
        "instances": 50,
-       "cold_ms": 9.418,
+       "cold_ms": 7.957,
        "warm_samples": 150,
-       "p50_ms": 4.176,
-       "p99_ms": 6.543,
+       "p50_ms": 5.31,
+       "p99_ms": 7.455,
        "mean_rows": 24,
        "result_hashes": {
         "0": "1acf5e01b64bedef85a3d186",
@@ -2074,10 +2074,10 @@
       },
       "bf_grid_365": {
        "instances": 3,
-       "cold_ms": 21.864,
+       "cold_ms": 24.858,
        "warm_samples": 9,
-       "p50_ms": 20.637,
-       "p99_ms": 31.567,
+       "p50_ms": 22.036,
+       "p99_ms": 39.77,
        "mean_rows": 17156,
        "result_hashes": {
         "0": "69c9f25ba8c1ee3ed6e89c85",

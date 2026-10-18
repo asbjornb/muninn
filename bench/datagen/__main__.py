@@ -67,8 +67,9 @@ def generate_dataset(name: str, scale: str, seed: int, out: Path) -> dict:
 def dataset_stats(d: Path) -> dict:
     import duckdb
 
-    con = duckdb.connect(config={"threads": 2, "memory_limit": "600MB",
+    con = duckdb.connect(config={"threads": 2, "memory_limit": "350MB",
                                  "temp_directory": str(d / ".tmp"), "preserve_insertion_order": False})
+    con.execute("SET enable_progress_bar = false")
     p = str(d / "versions.parquet")
     q = f"""
     WITH v AS (SELECT * FROM read_parquet('{p}')),

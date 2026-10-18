@@ -68,8 +68,10 @@ mean something.
 
 Scales (`datagen/datasets.py`): `tiny` (~35k versions in total; rare quirks fire 20x more
 often so the oracle check sees all of them), `small` (~5M), `medium` (~36M, forecasts 25M
-at 231 versions/point, sparse 150k series), `large` (~300M; streamed, never held in memory).
-Medium generates in about a minute with a peak RSS under 2 GB.
+at 231 versions/point, sparse 150k series), `large` (314M: forecasts 200M, sparse 1M
+series; streamed one commit-day at a time, never held in memory). Medium generates in about
+a minute, large in about five; generation itself stays under ~1 GB RSS, the DuckDB stats
+pass at the end peaks the process at ~1.9 GB (large backfill).
 
 Output per dataset: `versions.parquet` (canonical columns `series`, `series_id`,
 `value_time`, `published_time`, `received_time`, `system_time`, `seq`, `deleted`, then the
