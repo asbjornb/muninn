@@ -16,7 +16,6 @@ use muninn_format::{Partition, SegmentFile, ValueColumn, WriteOptions, write_seg
 /// 65 537-entry allocation (with id ~2^32: ~100 GB per row → abort). Compaction calls
 /// `versions()` on stored files.
 #[test]
-#[ignore = "review finding 4"]
 fn versions_allocation_is_bounded_by_input_not_by_column_id() {
     let t = Timestamp::from_micros(0).unwrap();
     let versions: Vec<Version> = (0..4u64)
