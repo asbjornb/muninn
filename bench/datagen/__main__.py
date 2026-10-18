@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import resource
+import shutil
 import time
 from pathlib import Path
 
@@ -66,7 +67,8 @@ def generate_dataset(name: str, scale: str, seed: int, out: Path) -> dict:
 def dataset_stats(d: Path) -> dict:
     import duckdb
 
-    con = duckdb.connect(config={"threads": 4, "memory_limit": "1500MB"})
+    con = duckdb.connect(config={"threads": 2, "memory_limit": "600MB",
+                                 "temp_directory": str(d / ".tmp"), "preserve_insertion_order": False})
     p = str(d / "versions.parquet")
     q = f"""
     WITH v AS (SELECT * FROM read_parquet('{p}')),
@@ -107,6 +109,7 @@ def dataset_stats(d: Path) -> dict:
     stats["resends"] = con.execute(
         f"SELECT count(*) FROM read_parquet('{d / 'resends.parquet'}')").fetchone()[0]
     con.close()
+    shutil.rmtree(d / ".tmp", ignore_errors=True)
     return stats
 
 
