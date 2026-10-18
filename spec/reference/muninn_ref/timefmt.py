@@ -106,11 +106,8 @@ def parse_timestamp(text) -> int:
 
 
 def to_timestamp(x) -> int:
-    """Accept either the §1 text form or an already-converted int (library callers)."""
-    if isinstance(x, bool):
-        raise MuninnError("invalid_timestamp", f"not a timestamp: {x!r}")
-    if isinstance(x, int):
-        return check_range(x)
+    """Inputs (§9 JSON) carry timestamps only in the §1 text form; a JSON number (or a
+    missing value) is not a valid timestamp."""
     return parse_timestamp(x)
 
 

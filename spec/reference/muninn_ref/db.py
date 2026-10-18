@@ -5,9 +5,9 @@ Deliberately naive. All versions live in one Python list in commit order; every 
 a full scan. Each method is a direct translation of its spec section — if this file and
 SPEC.md disagree, one of them has a bug.
 
-Inputs use the JSON shapes of §9 (timestamps as §1 text; library callers may also pass
-ints). Outputs are lists of dicts with *native* values (timestamps as int µs, f64 as
-float, ...); see `encode_row` for the JSON form.
+Inputs use the JSON shapes of §9 (timestamps as §1 text). Outputs are lists of dicts
+with *native* values (timestamps as int µs, f64 as float, ...); see `encode_row` for the
+JSON form.
 """
 
 import re
