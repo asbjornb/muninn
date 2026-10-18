@@ -105,8 +105,11 @@ increasing `seq` order:
   survives the round trip.
 
 Within a table, `seq` is strictly increasing and `system_time` is non-decreasing. Seqs
-are unique across all tables; merging the table files by `seq` gives the database's
-global commit order.
+are unique across all tables and, merged, contiguous from 1 to `next_seq - 1` (a
+database never skips a seq); merging the table files by `seq` gives the database's
+global commit order. Since batch system_times are strictly increasing (SPEC §4.2),
+versions with equal `system_time` are exactly the versions of one original batch, and
+in seq order `system_time` only stays equal within a batch or increases.
 
 ## Restoring
 
@@ -114,10 +117,13 @@ global commit order.
 2. Create the new, empty database and replay `catalog.json`.
 3. Merge the table files by `seq` and import the versions, in that order, with their
    original `system_time` and `seq` (engine API `Engine::restore`, which bypasses
-   assignment and deduplication but checks that `seq` strictly increases, that
-   `system_time` never decreases or goes below `last`, and that every version is
-   well-typed). The reference tool imports in chunks (`--chunk-rows`, default 100 000)
-   and records the batch ids along with the chunks.
+   assignment and deduplication but checks that the seqs continue the counter without
+   gaps, that `system_time` never decreases and that each call's first version is
+   strictly after the stored `last` — i.e. a call holds whole original batches — and
+   that every version is well-typed). Each call commits one log entry of kind `restore`
+   (`FORMAT.md` §3.1). The reference tool imports in chunks of about `--chunk-rows`
+   versions (default 100 000), cut only where `system_time` changes so that no batch is
+   split, and records the batch ids along with the chunks.
 4. Check that the restored version counts, `next_seq` and `last_system_time` equal the
    manifest's.
 

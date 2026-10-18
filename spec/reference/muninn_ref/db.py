@@ -14,7 +14,7 @@ import re
 from dataclasses import dataclass, field
 
 from .errors import MuninnError
-from .timefmt import parse_duration, to_timestamp
+from .timefmt import MAX_TS, parse_duration, to_timestamp
 from .values import COLUMN_TYPES, check_type, encode_value, same_value
 
 # ---------------------------------------------------------------------------------------
@@ -355,9 +355,13 @@ class Database:
             else:
                 kept.append(p)
 
-        # §4.2: batch.system_time = max(c, last), last = greatest stored system_time.
+        # §4.2: batch.system_time = max(c, last + 1us), last = greatest stored
+        # system_time — strictly increasing across stored batches, so a system bound S
+        # taken from a snapshot can never be reached by a later write (§7.3).
         last = max((v.system_time for v in self.versions), default=None)
-        batch_system_time = c if last is None else max(c, last)
+        if last is not None and last + 1 > MAX_TS:
+            raise MuninnError("invalid_timestamp", "system_time exhausted at the maximum timestamp")
+        batch_system_time = c if last is None else max(c, last + 1)
 
         # §4.2: seq — one database-wide counter starting at 1; each stored row takes the
         # next value in batch input order. Versions are never removed, so the next seq is

@@ -77,7 +77,7 @@ fn batch_ids_of<D: Database>(db: &D) -> Vec<bool> {
 }
 
 /// A copy of a memory store's objects.
-fn copy_store(s: &MemoryStore) -> Arc<MemoryStore> {
+fn copy_store(s: &impl Store) -> Arc<MemoryStore> {
     let out = Arc::new(MemoryStore::new());
     for k in s.list("").unwrap() {
         out.put(&k, &s.get(&k).unwrap()).unwrap();
@@ -151,8 +151,18 @@ fn crash_run(
     crash_at: u64,
     effect: bool,
 ) -> Result<(), TestCaseError> {
-    let inner = Arc::new(MemoryStore::new());
-    let store: Faulty = Arc::new(FaultyStore::new(Arc::clone(&inner), crash_at));
+    crash_run_on(Arc::new(MemoryStore::new()), ops, opts, crash_at, effect)
+}
+
+/// [`crash_run`] over any (empty) durable store.
+fn crash_run_on<S: Store>(
+    inner: Arc<S>,
+    ops: &[Op],
+    opts: &EngineOptions,
+    crash_at: u64,
+    effect: bool,
+) -> Result<(), TestCaseError> {
+    let store = Arc::new(FaultyStore::new(Arc::clone(&inner), crash_at));
     store.set_crash_at(crash_at, effect);
     let mut engine = Engine::open(Arc::clone(&store), opts.clone()).ok();
     let mut applied: Vec<Op> = Vec::new();
@@ -173,7 +183,7 @@ fn crash_run(
                 drop(engine.take());
                 let e2 = Engine::open(Arc::clone(&store), opts.clone()).unwrap();
                 let seen = format!("{}{:?}", fingerprint(&e2), {
-                    let probe = Engine::open(copy_store(&inner), opts.clone()).unwrap();
+                    let probe = Engine::open(copy_store(&*inner), opts.clone()).unwrap();
                     batch_ids_of(&probe)
                 });
                 let after = resolve(&seen, &applied, op)?;
@@ -325,6 +335,31 @@ proptest! {
         let reopened = Engine::open(Arc::clone(&inner), opts).unwrap();
         prop_assert_eq!(fingerprint(&reopened), fingerprint(&model));
         assert_no_orphans_after_gc(&reopened)?;
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: cases(96) / 8 + 1, ..ProptestConfig::default() })]
+
+    /// The same crash testing on a real filesystem (`LocalFsStore`: temp file, fsync,
+    /// rename/link, directory fsync). A crash "before" an op models the op's data never
+    /// reaching disk; "after" models it being durable although the call failed. Loss of
+    /// data from a call that *returned success* would violate the `Store` contract, which
+    /// `LocalFsStore` meets by fsyncing file and directory before returning (decision
+    /// 0006).
+    #[test]
+    fn crash_anywhere_on_local_fs(
+        ops in arb_workload(ops_len(10)),
+        picks in prop::collection::vec((any::<prop::sample::Index>(), any::<bool>()), 6),
+    ) {
+        let ops = workload_with_setup(ops);
+        let opts = test_options(2, 2, true);
+        let total = dry_run(&ops, &opts);
+        for (ix, effect) in picks {
+            let dir = tempfile::tempdir().unwrap();
+            let inner = Arc::new(muninn_store::LocalFsStore::open(dir.path()).unwrap());
+            crash_run_on(inner, &ops, &opts, ix.index(total as usize + 1) as u64, effect)?;
+        }
     }
 }
 

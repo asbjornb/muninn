@@ -3,17 +3,27 @@
 
 use std::collections::HashMap;
 use std::ops::Range;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
+use muninn_core::types::TableDef;
 use muninn_core::{Error, ErrorKind, Result, Value};
 use muninn_format::{ENGINE_COLUMNS, EngineBlock, Footer, Tail, parse_tail};
-use muninn_store::{Key, Store, StoreError};
+use muninn_store::{Key, Store, StoreError, StoreErrorKind};
 
 use crate::EngineOptions;
 use crate::state::SegmentRef;
 
 pub(crate) fn store_err(what: &str, e: StoreError) -> Error {
     Error::new(ErrorKind::Io, format!("{what}: {e}"))
+}
+
+/// Message prefix of the error for a live segment that is not in the store.
+pub(crate) const MISSING_SEGMENT: &str = "live segment missing from the store";
+
+/// Is `e` the error of a missing live segment (the state may be stale)?
+pub(crate) fn is_missing_segment(e: &Error) -> bool {
+    e.kind() == ErrorKind::Io && e.message().starts_with(MISSING_SEGMENT)
 }
 
 fn format_err(key: &Key, e: muninn_format::Error) -> Error {
@@ -24,7 +34,31 @@ fn format_err(key: &Key, e: muninn_format::Error) -> Error {
 pub(crate) struct Shared<S> {
     pub store: S,
     pub opts: EngineOptions,
+    /// Set when the engine's state may be behind the log: a commit failed ambiguously or
+    /// lost a race, or a live segment was missing (another writer compacted and collected
+    /// it). The next operation reloads from the log first.
+    pub stale: AtomicBool,
     footers: Mutex<HashMap<Key, Arc<Footer>>>,
+}
+
+/// Every value column of a segment must be a column of its table, with the same type
+/// (columns are only appended, so ids are positions).
+pub(crate) fn check_columns(key: &Key, f: &Footer, table: &TableDef) -> Result<()> {
+    for c in &f.columns {
+        match table.columns.get(c.id as usize) {
+            Some(def) if def.ty == c.ty => {}
+            _ => {
+                return Err(Error::new(
+                    ErrorKind::Io,
+                    format!(
+                        "corrupt segment {key}: column {} ({}) is not a column of table {:?}",
+                        c.id, c.ty, table.name
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 impl<S: Store> Shared<S> {
@@ -32,14 +66,20 @@ impl<S: Store> Shared<S> {
         Shared {
             store,
             opts,
+            stale: AtomicBool::new(false),
             footers: Mutex::new(HashMap::new()),
         }
     }
 
     fn get_range(&self, key: &Key, r: Range<u64>) -> Result<Vec<u8>> {
-        self.store
-            .get_range(key, r)
-            .map_err(|e| store_err(&format!("reading {key}"), e))
+        self.store.get_range(key, r).map_err(|e| {
+            if e.kind() == StoreErrorKind::NotFound {
+                self.stale.store(true, Ordering::SeqCst);
+                Error::new(ErrorKind::Io, format!("{MISSING_SEGMENT}: {key}"))
+            } else {
+                store_err(&format!("reading {key}"), e)
+            }
+        })
     }
 
     /// Caches a footer we already have (e.g. of a segment we just wrote).
@@ -53,15 +93,22 @@ impl<S: Store> Shared<S> {
 
     /// The footer of `seg`: from the cache, or by reading the file's tail (one ranged
     /// read, a second one if the footer is larger than the first read).
-    pub fn footer(&self, seg: &SegmentRef) -> Result<Arc<Footer>> {
-        if let Some(f) = self
+    pub fn footer(&self, seg: &SegmentRef, table: &TableDef) -> Result<Arc<Footer>> {
+        let cached = self
             .footers
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .get(&seg.key)
-        {
-            return Ok(Arc::clone(f));
-        }
+            .cloned();
+        let footer = match cached {
+            Some(f) => f,
+            None => self.read_footer(seg)?,
+        };
+        check_columns(&seg.key, &footer, table)?;
+        Ok(footer)
+    }
+
+    fn read_footer(&self, seg: &SegmentRef) -> Result<Arc<Footer>> {
         let size = seg.size;
         let first = self.opts.tail_read.min(size);
         let tail = self.get_range(&seg.key, size - first..size)?;

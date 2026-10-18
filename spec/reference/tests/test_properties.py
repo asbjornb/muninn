@@ -142,7 +142,7 @@ def invisible_batch(draw_rows, ctx: dict, rng: random.Random):
     c = BASE + rng.randrange(0, 12) * 15 * MIN
     rs = copy.deepcopy(draw_rows)
     if how == "system":
-        c = max(c, system + 1)  # system_time = max(c, last) >= c > S
+        c = max(c, system + 1)  # system_time = max(c, last + 1us) >= c > S
     elif clock == "system":
         c = max(c, frontier + 1)  # t_system = system_time >= c > F
     else:
@@ -318,7 +318,7 @@ def test_failed_batch_has_no_effect(base, pre, post, corruption, c, nxt, with_id
     else:
         raise AssertionError("corrupted batch was accepted")
     assert (list(db.versions), set(db.batch_ids)) == state
-    # Nothing was consumed: the next batch continues seq and uses max(c, last) as if the
+    # Nothing was consumed: the next batch continues seq and uses max(c, last + 1us) as if the
     # failed batch never happened.
     last = max((v.system_time for v in db.versions), default=None)
     n = len(db.versions)
@@ -326,7 +326,7 @@ def test_failed_batch_has_no_effect(base, pre, post, corruption, c, nxt, with_id
     assert not res.batch_already_committed
     new = db.versions[n:]
     assert [v.seq for v in new] == list(range(n + 1, n + 1 + res.stored))
-    expected_st = nxt[0] if last is None else max(nxt[0], last)
+    expected_st = nxt[0] if last is None else max(nxt[0], last + 1)
     assert all(v.system_time == expected_st for v in new)
 
 
@@ -345,13 +345,19 @@ def test_seq_and_system_time(bs):
         res = db.write(rs, ts(c))
         new = db.versions[n:]
         assert len(new) == res.stored and res.stored + res.duplicates == len(rs)
-        expected = c if last is None else max(c, last)
+        expected = c if last is None else max(c, last + 1)
         assert all(v.system_time == expected for v in new)
         if new:
             last = expected
     assert [v.seq for v in db.versions] == list(range(1, len(db.versions) + 1))
     sts = [v.system_time for v in db.versions]
     assert sts == sorted(sts)
+    # Strictly increasing across batches: distinct batches never share a system_time.
+    batch_times = []
+    for t in sts:
+        if not batch_times or batch_times[-1] != t:
+            batch_times.append(t)
+    assert len(batch_times) == len(set(batch_times))
 
 
 # ---------------------------------------------------------------------------------------
@@ -388,3 +394,32 @@ def test_replay_is_frontier_delta(base, clock, f1, f2, system, series, vrange):
                     key=lambda r: (db.series_by_name(r["series"]).id, r["value_time"]))
     expected = db.latest("t", frontier=opt(f2), **common)
     assert dump(db, "t", folded) == dump(db, "t", expected)
+
+
+# ---------------------------------------------------------------------------------------
+# §7.3 Reproducibility: results with system bound S never change
+# ---------------------------------------------------------------------------------------
+
+
+@settings(max_examples=300, deadline=None)
+@given(st.lists(batch, min_size=1, max_size=8), batches, st.sampled_from(CLOCKS),
+       st.one_of(st.none(), nudged_time), st.integers(0, 40), st.integers(0, 2**32))
+def test_results_with_system_bound_never_change(base, later, clock, frontier, back, seed):
+    """For any S <= the greatest stored system_time, every read with system bound S is
+    unchanged by any further writes — including writes whose clock is behind S."""
+    db = new_db()
+    apply(db, base)
+    assume(db.versions)
+    top = max(v.system_time for v in db.versions)
+    system = top - back * 7 * MIN  # S <= top; may fall before, on or between batches
+    ctx = {"clock": clock, "frontier": frontier, "system": system}
+
+    def all_reads():
+        out = reads(db, ctx, seed)
+        for table in ("t", "u"):
+            out[table, "replay"] = dump(db, table, db.replay(table, clock=clock, system=ts(system)))
+        return out
+
+    before = all_reads()
+    apply(db, later)
+    assert all_reads() == before

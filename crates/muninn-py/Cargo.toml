@@ -1,0 +1,28 @@
+[package]
+name = "muninn-py"
+description = "Python bindings for Muninn (PyO3 + maturin, abi3 for Python >= 3.10)"
+version.workspace = true
+edition.workspace = true
+rust-version = "1.88" # arrow-pyarrow; let chains
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "_native"
+crate-type = ["cdylib"]
+test = false
+doctest = false
+
+[dependencies]
+muninn-core.workspace = true
+muninn-store.workspace = true
+muninn-engine.workspace = true
+serde_json.workspace = true
+pyo3 = { version = "0.29", default-features = false, features = ["macros", "abi3-py310"] }
+arrow-pyarrow = "60"
+arrow-array = { version = "60", default-features = false }
+arrow-schema = { version = "60", default-features = false }
+arrow-buffer = { version = "60", default-features = false }
+
+[lints]
+workspace = true

@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 8a550969d30a8d22c1308558206edbe4a44364b51d170b33a5fa11dc3bb99feb # shrinks to ops = [Write { clock: 0, rows: [(1, 26, None, 0, false, 0)] }, Grid { table: 1, frontiers: [23, 0], window: Some((2678400000001, 9223372036854775807)), range: (None, None), clock: None }], block_rows = 1, checkpoint = 0
+cc 2184d9e6f7d05d95060521e6592b774d7c1db4b6869e50f60483db1908b04d94 # shrinks to ops = [Write(true, [(0, 9, 0, 0)], None), Write(false, [(0, 0, 0, 0)], None), Compact(false), GcAfterRefresh(false), Write(true, [(0, 9, 0, 0)], None)], block_rows = 1, checkpoint = 0

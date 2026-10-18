@@ -71,7 +71,7 @@ pub fn segment_created(key: &str) -> Option<i64> {
 }
 
 pub(crate) fn corrupt(what: impl std::fmt::Display) -> Error {
-    Error::new(ErrorKind::Io, format!("corrupt database: {what}"))
+    Error::new(ErrorKind::Io, format!("{CORRUPT}: {what}"))
 }
 
 // ---------------------------------------------------------------------------------------
@@ -329,7 +329,48 @@ pub struct Checkpoint {
     pub next_seq: u64,
     /// `last` of SPEC §4.2 (µs).
     pub last_system_time: Option<i64>,
+    /// CRC-32C of the bytes of `log/<version>.json` (0 for version 0): ties the checkpoint
+    /// to the log entry it summarises.
+    pub entry_crc32c: u32,
+    /// CRC-32C of this checkpoint's JSON serialisation with `checksum` set to 0.
+    pub checksum: u32,
 }
+
+impl Checkpoint {
+    fn compute_checksum(&self) -> Result<u32> {
+        let mut c = self.clone();
+        c.checksum = 0;
+        Ok(crc32c::crc32c(&to_json(&c)?))
+    }
+
+    /// Sets the checksum and serialises.
+    pub fn seal(mut self) -> Result<Vec<u8>> {
+        self.checksum = self.compute_checksum()?;
+        to_json(&self)
+    }
+
+    /// Parses and verifies a sealed checkpoint for `version`.
+    pub fn open(bytes: &[u8], version: u64) -> Result<Checkpoint> {
+        let c: Checkpoint = from_json(bytes, "checkpoint")?;
+        if c.version != version {
+            return Err(corrupt(format!(
+                "checkpoint {version} says it is version {}",
+                c.version
+            )));
+        }
+        if c.compute_checksum()? != c.checksum {
+            return Err(corrupt(format!("checkpoint {version}: checksum mismatch")));
+        }
+        Ok(c)
+    }
+}
+
+/// Is `e` a corruption error (as opposed to a store failure)?
+pub fn is_corrupt(e: &Error) -> bool {
+    e.kind() == ErrorKind::Io && e.message().starts_with(CORRUPT)
+}
+
+const CORRUPT: &str = "corrupt database";
 
 /// The `_last_checkpoint` hint.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

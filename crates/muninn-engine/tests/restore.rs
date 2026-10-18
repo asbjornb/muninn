@@ -89,8 +89,17 @@ fn copy(src: &MemEngine, chunk: usize) -> MemEngine {
     }
     let versions = all_versions(&snap);
     let mut ids = snap.batch_ids().into_iter();
-    for part in versions.chunks(chunk.max(1)) {
-        dst.restore(part, ids.next().as_deref()).unwrap();
+    // Chunks of about `chunk` versions, cut only between original batches (a change of
+    // system_time): a batch is never split across restore calls.
+    let mut start = 0;
+    while start < versions.len() {
+        let mut end = (start + chunk.max(1)).min(versions.len());
+        while end < versions.len() && versions[end].system_time == versions[end - 1].system_time {
+            end += 1;
+        }
+        dst.restore(&versions[start..end], ids.next().as_deref())
+            .unwrap();
+        start = end;
     }
     for id in ids {
         dst.restore(&[], Some(&id)).unwrap();
@@ -164,13 +173,11 @@ fn version(seq: u64, system: i64) -> Version {
 fn restore_keeps_times_and_continues_after_them() {
     let e = fresh();
     setup(&e);
+    // Two original batches (system_time 10 and 12) in one restore call.
     let r = e
-        .restore(
-            &[version(5, 10), version(9, 10), version(10, 12)],
-            Some("b"),
-        )
+        .restore(&[version(1, 10), version(2, 10), version(3, 12)], Some("b"))
         .unwrap();
-    assert_eq!((r.stored, r.first_seq), (3, Some(5)));
+    assert_eq!((r.stored, r.first_seq), (3, Some(1)));
     let rows = e
         .history(&LatestRequest {
             table: "t".into(),
@@ -179,61 +186,110 @@ fn restore_keeps_times_and_continues_after_them() {
         .unwrap()
         .rows;
     let got: Vec<(u64, Timestamp)> = rows.iter().map(|r| (r.seq, r.system_time)).collect();
-    assert_eq!(got, vec![(5, h(10)), (9, h(10)), (10, h(12))]);
-    // A later write continues at seq 11 and never goes below last = h(12).
+    assert_eq!(got, vec![(1, h(10)), (2, h(10)), (3, h(12))]);
+    // A later write continues at seq 4, strictly after last = h(12).
     let w = e
         .write(&WriteBatch::new(
             h(3),
             vec![WriteRow::new("a", h(0), h(2)).value("value", Value::F64(2.0))],
         ))
         .unwrap();
-    assert_eq!((w.first_seq, w.system_time), (Some(11), Some(h(12))));
-    // The batch id is committed.
+    assert_eq!(w.first_seq, Some(4));
+    assert!(w.system_time > Some(h(12)));
+    // The batch id is committed; the log (kind `restore`) replays on reopen.
     let mut b = WriteBatch::new(h(20), vec![]);
     b.batch_id = Some("b".into());
     assert!(e.write(&b).unwrap().batch_already_committed);
+    let before = fingerprint(&e);
+    let e2 = Engine::open(Arc::clone(e.store()), opts()).unwrap();
+    assert_eq!(fingerprint(&e2), before);
+}
+
+/// Rewrites log entry `v` of `e`'s store and returns whether the database still opens.
+fn opens_after_tampering(e: &MemEngine, v: u64, edit: impl Fn(&mut serde_json::Value)) -> bool {
+    use muninn_store::Store;
+    let key = muninn_engine::log::entry_key(v);
+    let mut j: serde_json::Value = serde_json::from_slice(&e.store().get(&key).unwrap()).unwrap();
+    edit(&mut j);
+    let store = Arc::new(MemoryStore::new());
+    for k in e.store().list("").unwrap() {
+        let bytes = if k == key {
+            serde_json::to_vec(&j).unwrap()
+        } else {
+            e.store().get(&k).unwrap()
+        };
+        store.put(&k, &bytes).unwrap();
+    }
+    Engine::open(store, opts()).is_ok()
+}
+
+#[test]
+fn restore_entries_are_validated_on_recovery() {
+    let e = fresh();
+    setup(&e); // log versions 1, 2
+    e.restore(&[version(1, 10), version(2, 12)], None).unwrap(); // version 3
+    e.write(&WriteBatch::new(
+        h(20),
+        vec![WriteRow::new("a", h(1), h(2)).value("value", Value::F64(2.0))],
+    ))
+    .unwrap(); // version 4
+    assert!(opens_after_tampering(&e, 3, |_| {}));
+    // A seq gap (more seqs than rows).
+    assert!(!opens_after_tampering(&e, 3, |j| j["next_seq"] = 4.into()));
+    // `last` that is not the greatest restored system_time.
+    assert!(!opens_after_tampering(&e, 3, |j| {
+        j["last_system_time"] = (h(13).as_micros()).into()
+    }));
+    // A write entry may not carry several system_times (only a restore may).
+    assert!(!opens_after_tampering(&e, 3, |j| j["kind"] = "write".into()));
+    // A write whose system_time is not after the previous last.
+    assert!(!opens_after_tampering(&e, 4, |j| {
+        j["last_system_time"] = (h(12).as_micros()).into();
+        j["add"][0]["system_time"] = serde_json::json!([h(12).as_micros(), h(12).as_micros()]);
+    }));
 }
 
 #[test]
 fn malformed_restores_are_rejected_without_effect() {
     let e = fresh();
     setup(&e);
-    e.restore(&[version(3, 10)], Some("x")).unwrap();
+    e.restore(&[version(1, 10)], Some("x")).unwrap();
     let before = fingerprint(&e);
     let version_before = e.version();
-    let mut tomb = version(4, 10);
+    let mut tomb = version(2, 11);
     tomb.deleted = true;
-    let mut wide = version(4, 10);
+    let mut wide = version(2, 11);
     wide.values = vec![None, None, Some(Value::F64(1.0))];
-    let mut wrong = version(4, 10);
+    let mut wrong = version(2, 11);
     wrong.values = vec![None, Some(Value::F64(1.0))];
-    let mut unknown = version(4, 10);
+    let mut unknown = version(2, 11);
     unknown.series = SeriesId(7);
     let cases: Vec<(Vec<Version>, Option<&str>, ErrorKind)> = vec![
-        (vec![version(3, 11)], None, ErrorKind::InvalidArgument), // seq not new
-        (vec![version(2, 11)], None, ErrorKind::InvalidArgument), // seq below next
+        (vec![version(1, 11)], None, ErrorKind::InvalidArgument), // seq not new
+        (vec![version(3, 11)], None, ErrorKind::InvalidArgument), // seq gap
         (
-            vec![version(5, 11), version(5, 11)],
+            vec![version(2, 11), version(2, 11)],
             None,
             ErrorKind::InvalidArgument,
         ),
-        (vec![version(5, 9)], None, ErrorKind::InvalidArgument), // before last
         (
-            vec![version(5, 12), version(6, 11)],
+            vec![version(2, 11), version(4, 11)],
             None,
             ErrorKind::InvalidArgument,
         ),
-        (vec![version(5, 12)], Some("x"), ErrorKind::InvalidArgument), // batch id known
-        (vec![version(5, 12)], Some(""), ErrorKind::InvalidArgument),
+        (vec![version(2, 9)], None, ErrorKind::InvalidArgument), // before last
+        (vec![version(2, 10)], None, ErrorKind::InvalidArgument), // splits batch 10
+        (
+            vec![version(2, 12), version(3, 11)],
+            None,
+            ErrorKind::InvalidArgument,
+        ),
+        (vec![version(2, 12)], Some("x"), ErrorKind::InvalidArgument), // batch id known
+        (vec![version(2, 12)], Some(""), ErrorKind::InvalidArgument),
         (vec![tomb], None, ErrorKind::TombstoneWithValues),
         (vec![wide], None, ErrorKind::UnknownColumn),
         (vec![wrong], None, ErrorKind::TypeMismatch),
         (vec![unknown], None, ErrorKind::UnknownSeries),
-        (
-            vec![version(5, 12), version(4, 12)],
-            None,
-            ErrorKind::InvalidArgument,
-        ),
     ];
     for (vs, id, kind) in cases {
         let err = e.restore(&vs, id).unwrap_err();

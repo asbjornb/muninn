@@ -134,7 +134,7 @@ pub enum Command {
         dump: PathBuf,
         /// New database directory (must not exist or be empty).
         new_db: PathBuf,
-        /// Versions per restore commit.
+        /// Versions per restore commit (approximate: an original batch is never split).
         #[arg(long, default_value_t = 100_000)]
         chunk_rows: usize,
         /// Skip compacting the restored database at the end.

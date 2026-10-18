@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.hypothesis/
+python/muninn/*.so
+python/muninn/*.pyd

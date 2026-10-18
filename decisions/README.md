@@ -20,3 +20,4 @@ Lightweight decision records. One file per decision: `NNNN-short-title.md`.
 | [0003](0003-visibility-order-and-dedup.md) | Frontier clock orders versions; dedup on full content |
 | [0004](0004-commit-log-no-separate-wal.md) | Commit log on the store; no separate WAL in v1 |
 | [0005](0005-sync-engine-own-store-trait.md) | Synchronous engine over a small own Store trait |
+| [0006](0006-durability-and-gc-safety.md) | Durability contract and GC safety |

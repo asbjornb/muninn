@@ -6,14 +6,17 @@
 //! bypasses SPEC §4.2 assignment and §4.3 deduplication, but keeps every invariant the
 //! log and the readers rely on:
 //!
-//! - `seq` is strictly increasing within the call and at least the database's next seq
-//!   (gaps are allowed; later writes continue after the greatest restored seq);
-//! - `system_time` is non-decreasing in seq order and never below the database's `last`
-//!   (SPEC §4.2), so later writes still satisfy `system_time = max(c, last)`;
+//! - `seq` continues the database's counter without gaps: the versions take exactly the
+//!   seqs `next_seq, next_seq + 1, …` (a valid database has no gaps, SPEC §4.2);
+//! - `system_time` is non-decreasing in seq order and every one is strictly greater than
+//!   the database's `last`. A call therefore imports **whole** original batches (one or
+//!   more): versions of one batch share a `system_time`, and batches have strictly
+//!   increasing ones (SPEC §4.2), so a batch must not be split across calls;
 //! - every version is well-typed for its table (series exists, values match column
 //!   types, tombstones carry no values);
-//! - the result is ordinary segments plus one ordinary `write` log entry, so recovery,
-//!   compaction, GC and readers need nothing new.
+//! - the result is ordinary segments plus one log entry of kind `restore`
+//!   (`spec/FORMAT.md` §3.1), which recovery and `verify` validate like a write except
+//!   that its rows may carry several system_times in `(previous last, last]`.
 //!
 //! A failed restore has no effect.
 
@@ -48,11 +51,6 @@ impl<S> EngineSnapshot<S> {
     pub fn next_seq(&self) -> u64 {
         self.state.next_seq
     }
-
-    /// `last` of SPEC §4.2: the greatest `system_time` of any stored version.
-    pub fn last_system_time(&self) -> Option<Timestamp> {
-        self.state.last_system_time
-    }
 }
 
 fn invalid(msg: String) -> Error {
@@ -64,8 +62,8 @@ impl<S: Store> Engine<S> {
     /// given, atomically, optionally recording `batch_id` (SPEC §4.4) in the same commit.
     ///
     /// Errors (nothing is changed): `invalid_argument` for an empty or already committed
-    /// batch id, a seq that is not strictly increasing or is below the next unassigned
-    /// seq, or a `system_time` that decreases or is below the latest stored one;
+    /// batch id, a seq other than the next unassigned one, or a `system_time` that
+    /// decreases or is not after the latest stored one (a split batch);
     /// `unknown_series`, `unknown_column` (more values than the table has columns),
     /// `type_mismatch` and `tombstone_with_values` for malformed versions.
     ///
@@ -122,16 +120,24 @@ impl<S: Store> Engine<S> {
                     at("a tombstone must have every value null".into()),
                 ));
             }
-            if v.seq < next_seq {
+            if v.seq != next_seq {
                 return Err(invalid(at(format!(
-                    "seq must be strictly increasing and at least {next_seq}"
+                    "seq must be {next_seq} (consecutive after the stored versions)"
                 ))));
             }
-            if last.is_some_and(|l| v.system_time < l) {
+            let floor = if i == 0 { st.last_system_time } else { last };
+            let bad_time = match floor {
+                None => false,
+                // The first version must start a new batch; later ones may share it.
+                Some(f) if i == 0 => v.system_time <= f,
+                Some(f) => v.system_time < f,
+            };
+            if bad_time {
                 return Err(invalid(at(format!(
-                    "system_time {} is before {}",
+                    "system_time {} must be {} {} (whole batches, in commit order)",
                     v.system_time,
-                    last.expect("checked")
+                    if i == 0 { "after" } else { "at or after" },
+                    floor.expect("checked")
                 ))));
             }
             next_seq = v
@@ -151,7 +157,14 @@ impl<S: Store> Engine<S> {
         if versions.is_empty() && batch_id.is_none() {
             return Ok(WriteResult::default());
         }
-        let mut entry = self.new_entry(&st, "write");
+        let mut entry = self.new_entry(
+            &st,
+            if versions.is_empty() {
+                "write"
+            } else {
+                "restore"
+            },
+        );
         entry.batch_id = batch_id.map(str::to_owned);
         for ((table, partition), vs) in &groups {
             let t = st.catalog.table(table)?;

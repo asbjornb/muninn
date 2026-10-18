@@ -7,6 +7,7 @@
 | [`muninn-conformance`](muninn-conformance) | Runs `spec/scenarios/**/*.json` (SPEC §9) against any `Database` via `run_scenario` / `run_corpus`, passing each request loose through `muninn_core::wire`. No runtime dependencies. |
 | [`muninn-format`](muninn-format) | Immutable segment files, specified byte for byte in [`spec/FORMAT.md`](../spec/FORMAT.md): one table partition per file, rows sorted by `(series, value_time, received_time, system_time, seq)` in blocks of column chunks (run-length / delta / delta-of-delta varints, bitmaps, plain f64, length-prefixed strings, optional zstd), CRC-32C per chunk and footer, footer with column directory, time/seq/series/column statistics and per-series row ranges. Opens from one ranged read of the tail; decoding is total (corruption is an error, never a panic or a wrong row). Depends on `crc32c`, `zstd`. |
 | [`muninn-engine`](muninn-engine) | `Engine`: `Database` over any `Store`. Commit log of JSON entries (`put_if_absent`) with checkpoints and a `_last_checkpoint` hint; one segment per touched table partition per write; dedup against stored versions; snapshot reads with partition / segment / block / series-slice pruning and a single-pass `grid`; `compact`, `compact_all`, `gc`; `restore` (import versions with their original `system_time`/`seq`, for dump/restore) and per-snapshot catalog log / batch ids / high-water marks. Tested with the scenario corpus (memory, local fs, reopen-before-read, compact-before-read), differential fuzzing against `ModelDb`, crash-at-every-op and ambiguous-failure injection. Depends on `serde`, `serde_json`. |
+| [`muninn-py`](muninn-py) | Python bindings (PyO3 + maturin, abi3 for Python ≥ 3.10): `muninn.open` / `memory`, catalog, writes from pyarrow / pandas / polars / dicts, the five reads returning `pyarrow.Table` with SPEC §11 receipts in the schema metadata, snapshots, compaction, GC, a `MuninnError` hierarchy keyed by spec code. Arrow via the PyCapsule interface (`arrow-pyarrow`, `arrow-array`, `arrow-schema` only). Tested with the scenario corpus and a hypothesis differential test against `spec/reference`. See its [README](muninn-py/README.md). |
 | [`muninn-cli`](muninn-cli) | The `muninn` binary over a local directory: catalog commands, CSV/NDJSON import with line-numbered errors and resumable chunking, every SPEC §6 read with csv/ndjson/table output, `query` (SPEC §9 step JSON via `wire`), `compact`/`gc`/`info`/`verify`, and `dump`/`restore` ([`spec/DUMP.md`](../spec/DUMP.md)). Guide: [`docs/cli.md`](../docs/cli.md). Depends on `clap`, `csv`, `crc32c`. |
 
 Spec ambiguities found while implementing are listed in [SPEC-QUESTIONS.md](SPEC-QUESTIONS.md).
@@ -18,6 +19,7 @@ task test   # cargo test --workspace
 task lint   # rustfmt --check + clippy -D warnings
 task fmt    # cargo fmt
 task fuzz   # heavy differential + crash fuzzing (MUNINN_FUZZ_CASES, release build)
+task py-test # build the Python bindings (uv + maturin) and run their pytest suite
 ```
 
 The engine's property tests use small default case counts so `task test` stays fast; set
@@ -26,4 +28,4 @@ muninn-engine --test engine -- --ignored perf_smoke --nocapture` prints rough ti
 
 Rules: no `unsafe` (`unsafe_code = "forbid"` workspace-wide), doc comments on public
 items (`missing_docs`), lean dependency trees (no async runtime, no Arrow in these
-crates).
+crates; only the `muninn-py` bindings use Arrow, and only its array/schema crates).

@@ -24,3 +24,19 @@ tasks:
     cmds:
       - cargo test --release -p muninn-format
       - cargo test --release -p muninn-engine --test differential --test crash
+
+  py-build:
+    desc: Build the Python bindings (crates/muninn-py) into their uv venv
+    dir: crates/muninn-py
+    env:
+      CARGO_BUILD_JOBS: '4'
+    cmds:
+      - uv sync
+      - uv run maturin develop --uv --release
+
+  py-test:
+    desc: Build the Python bindings and run their tests (corpus, differential vs reference, API)
+    dir: crates/muninn-py
+    deps: [py-build]
+    cmds:
+      - uv run pytest {{.CLI_ARGS}}

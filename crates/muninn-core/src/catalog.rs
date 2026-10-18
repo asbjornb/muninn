@@ -521,11 +521,21 @@ impl PreparedGrid<'_> {
     }
 }
 
-/// SPEC §4.2: `batch.system_time = max(c, last)`.
-pub fn batch_system_time(clock: Timestamp, last: Option<Timestamp>) -> Timestamp {
+/// SPEC §4.2: `batch.system_time = max(c, last + 1us)` — strictly increasing across
+/// stored batches, so no later write can land at or below a system bound taken from an
+/// existing snapshot (§7.3). Fails with `invalid_timestamp` once `last` is the maximum
+/// timestamp (there is no `last + 1us`).
+pub fn batch_system_time(clock: Timestamp, last: Option<Timestamp>) -> Result<Timestamp> {
     match last {
-        Some(last) => clock.max(last),
-        None => clock,
+        None => Ok(clock),
+        Some(last) => Timestamp::from_micros(last.as_micros() + 1)
+            .map(|next| clock.max(next))
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorKind::InvalidTimestamp,
+                    "system_time exhausted: the last stored batch is at the maximum timestamp",
+                )
+            }),
     }
 }
 

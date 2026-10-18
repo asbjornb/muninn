@@ -153,8 +153,8 @@ impl State {
             BatchPlan::Candidates { clock, rows } => (clock, rows),
         };
 
-        // SPEC §4.2: batch.system_time = max(c, last); all rows share it.
-        let system_time = batch_system_time(clock, self.last_system_time());
+        // SPEC §4.2: batch.system_time = max(c, last + 1us); all rows share it.
+        let system_time = batch_system_time(clock, self.last_system_time())?;
 
         // SPEC §4.3: drop rows content-identical to any stored version (a linear scan
         // here) or to an earlier kept row of this batch.

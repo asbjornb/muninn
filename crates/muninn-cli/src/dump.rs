@@ -640,15 +640,18 @@ pub fn restore(
     };
     while let Some(Reverse((_, i))) = heap.pop() {
         let v = heads[i].take().expect("heap entry has a head");
+        // Cut chunks only between original batches (system_time changes): the engine
+        // requires each restore to start a new batch (strictly increasing system_time).
+        if chunk.len() >= chunk_rows && chunk.last().is_some_and(|l| l.system_time != v.system_time)
+        {
+            flush(&mut chunk, &mut ids_iter)?;
+            commits += 1;
+        }
         chunk.push(v);
         total += 1;
         if let Some(next) = readers[i].next_version()? {
             heap.push(Reverse((next.seq, i)));
             heads[i] = Some(next);
-        }
-        if chunk.len() >= chunk_rows {
-            flush(&mut chunk, &mut ids_iter)?;
-            commits += 1;
         }
     }
     if !chunk.is_empty() {
