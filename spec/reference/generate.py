@@ -12,12 +12,13 @@ writer-clock regressions, occasional invalid rows), schema changes and reads of 
 with random contexts. Expectations are the reference's results in the full §9 `rows`
 form. Generation is deterministic per seed (only `random.Random(seed)` is used).
 
-A read or catalog step is given at most ONE fault, so the corpus never depends on the
-order of argument checks for reads/catalog ops (AMBIGUITIES.md A7/A8). Write batches may
-contain several faults: their order is normative (§4.1).
+A read or catalog step is given at most ONE fault. The check order is normative (§10.4),
+so this is not required for correctness; it keeps each error easy to attribute when two
+implementations disagree. Write batches may contain several faults.
 """
 
 import argparse
+import copy
 import json
 import random
 import sys
@@ -27,8 +28,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from muninn_ref.db import CLOCKS, Database  # noqa: E402
 from muninn_ref.errors import MuninnError  # noqa: E402
-from muninn_ref.scenario import check_step, execute  # noqa: E402
+from muninn_ref.scenario import check_step, execute, loads_json  # noqa: E402
 from muninn_ref.timefmt import format_timestamp, parse_timestamp  # noqa: E402
+from muninn_ref.values import NEG_ZERO, NegativeZero  # noqa: E402
 
 DEFAULT_OUT = Path(__file__).resolve().parents[1] / "scenarios" / "generated"
 DEFAULT_COUNT = 150
@@ -38,11 +40,11 @@ US_MIN = 60_000_000
 US_HOUR = 60 * US_MIN
 
 # Value pools. Inputs deliberately include equivalent spellings (42 vs 42.0; an offset
-# timestamp equal to a Z one) so dedup across spellings is exercised. Never the integer
-# token -0 in an f64 position (AMBIGUITIES.md A2).
-F64_POOL = [0.0, -0.0, 1.0, -1.5, 2.5, 100.0, 42, 42.0, 0.1, 1e300, -1e-300, 5e-324,
-            "NaN", "inf", "-inf"]
-I64_POOL = [0, 1, -1, 7, "7", 2**53, "9007199254740993", "-9223372036854775808",
+# timestamp equal to a Z one; the integer token -0 vs -0.0, §10.2) so dedup across
+# spellings is exercised.
+F64_POOL = [0.0, -0.0, NEG_ZERO, 1.0, -1.5, 2.5, 100.0, 42, 42.0, 0.1, 1e300, -1e-300,
+            5e-324, "NaN", "inf", "-inf"]
+I64_POOL = [0, NEG_ZERO, 1, -1, 7, "7", 2**53, "9007199254740993", "-9223372036854775808",
             9223372036854775807]
 BOOL_POOL = [True, False]
 STRING_POOL = ["", "a", "b", "ÆØÅ ☃", "NaN"]
@@ -65,6 +67,7 @@ WINDOW_ENDS = ["0h", "1us", "30m", "1h", "5400s", "2h", "3h", "1d", "10800000ms"
 BAD_DURATIONS = ["1 h", "1H", "1w", "+1h", "1.5h", ""]
 COLUMN_TYPES = ["f64", "f64", "f64", "i64", "bool", "string", "timestamp"]
 RESERVED = ["series", "value_time", "seq", "deleted", "values", "frontier"]
+BAD_CLOCKS = ["wallclock", "Received", 1]
 
 
 def ts(us: int) -> str:
@@ -165,8 +168,11 @@ class Gen:
         kind = self.r.random()
         if kind < 0.5:
             table = self.pick(self.tables)
-            fault = self.pick([None, None, "dup", "reserved", "bad", "table"])
-            if fault is None:
+            fault = self.pick([None, None, "dup", "reserved", "bad", "table", "type"])
+            if fault == "type":  # §10.3 invalid_argument
+                self.emit({"op": "add_column", "table": table, "name": "zz",
+                           "type": self.pick(["float", "F64", "decimal"])})
+            elif fault is None:
                 name, typ = self.new_column()
                 self.emit({"op": "add_column", "table": table, "name": name, "type": typ})
                 self.columns[table].append((name, typ))
@@ -248,7 +254,7 @@ class Gen:
 
     def tweak(self, row: dict) -> dict:
         """A near-duplicate: same as an earlier row except one field."""
-        row = json.loads(json.dumps(row))
+        row = copy.deepcopy(row)
         what = self.pick(["received", "published", "value", "deleted"])
         if what == "received":
             row["received_time"] = ts(self.knowledge_time())
@@ -267,10 +273,20 @@ class Gen:
         return row
 
     def corrupt(self, row: dict) -> dict:
-        row = json.loads(json.dumps(row))
+        row = copy.deepcopy(row)
         table = self.series[row["series"]]
-        fault = self.pick(["series", "column", "type", "tombstone", "timestamp"])
-        if fault == "series":
+        fault = self.pick(["series", "column", "type", "tombstone", "timestamp", "structure"])
+        if fault == "structure":  # §10.3 invalid_argument
+            kind = self.pick(["deleted", "values", "field", "series"])
+            if kind == "deleted":
+                row["deleted"] = self.pick(["yes", 1, None])
+            elif kind == "values":
+                row["values"] = self.pick([[1.0], "x"])
+            elif kind == "field":
+                row["valeus"] = {}
+            else:
+                row["series"] = self.pick([1, None])
+        elif fault == "series":
             row["series"] = self.pick(["nope", "S1", ""])
         elif fault == "column":
             row.setdefault("values", {})["zz_unknown"] = 1.0
@@ -306,21 +322,23 @@ class Gen:
         for _ in range(self.pick([1, 1, 2, 2, 3, 3, 4, 5, 6]) if self.chance(0.97) else 0):
             p = self.r.random()
             if p < 0.25 and self.rows_written:
-                rows.append(json.loads(json.dumps(self.pick(self.rows_written))))  # exact resend
+                rows.append(copy.deepcopy(self.pick(self.rows_written)))  # exact resend
             elif p < 0.4 and self.rows_written:
                 rows.append(self.tweak(self.pick(self.rows_written)))
             elif p < 0.48 and rows:
-                rows.append(json.loads(json.dumps(self.pick(rows))))  # dup within batch
+                rows.append(copy.deepcopy(self.pick(rows)))  # dup within batch
             else:
                 rows.append(self.fresh_row())
         if self.chance(0.08) and len(self.rows_written) >= 2:
             # resend a whole earlier batch-like set
-            rows = [json.loads(json.dumps(x)) for x in self.r.sample(self.rows_written, 2)]
+            rows = [copy.deepcopy(x) for x in self.r.sample(self.rows_written, 2)]
         if rows and self.chance(0.1):
             i = self.r.randrange(len(rows))
             rows[i] = self.corrupt(rows[i])
         step = {"op": "write", "system_time": ts(self.clock)}
-        if self.chance(0.25):
+        if self.chance(0.02):
+            step["batch_id"] = self.pick(["", 7])  # §10.3 invalid_argument
+        elif self.chance(0.25):
             if self.batch_ids and self.chance(0.4):
                 step["batch_id"] = self.pick(self.batch_ids)
             else:
@@ -385,8 +403,8 @@ class Gen:
     def read_step(self):
         op = self.pick(["latest", "latest", "history", "history", "replay", "grid", "asof_join"])
         fault = None
-        if self.chance(0.12):
-            fault = self.pick(["table", "series", "range", "timestamp"])
+        if self.chance(0.13):
+            fault = self.pick(["table", "series", "range", "timestamp", "argument"])
         # Mostly read tables that hold data, so results are rarely trivially empty.
         with_data = sorted({self.db.series_by_id(v.series).table for v in self.db.versions})
         table = self.pick(with_data if with_data and self.chance(0.85) else self.tables)
@@ -444,6 +462,11 @@ class Gen:
                 fault = None
         if fault == "timestamp":
             self.corrupt_timestamp(step, ts_fields)
+        if fault == "argument":  # §10.3 invalid_argument
+            if "series" in step and self.chance(0.4):
+                step["series"] = self.pick([step["series"][0] if step["series"] else "s1", [1]])
+            else:
+                step["clock"] = self.pick(BAD_CLOCKS)
         self.emit(step)
 
     def asof_step(self, step: dict, table: str, fault: str | None):
@@ -471,6 +494,8 @@ class Gen:
             left.insert(self.r.randrange(len(left) + 1),
                         {"series": self.pick(others), "value_time": ts(self.value_time()),
                          "frontier": ts(self.any_time())})
+        elif fault == "argument":
+            step["clock"] = self.pick(BAD_CLOCKS)
         elif fault == "timestamp" and left:
             row = self.pick(left)
             if self.chance(0.3):
@@ -519,13 +544,28 @@ def generate(seed: int) -> dict:
     return Gen(seed).build()
 
 
+_NEG_ZERO_MARK = "\x00NEG_ZERO"
+
+
+def _mark_neg_zero(x):
+    if isinstance(x, NegativeZero):
+        return _NEG_ZERO_MARK
+    if isinstance(x, dict):
+        return {k: _mark_neg_zero(v) for k, v in x.items()}
+    if isinstance(x, list):
+        return [_mark_neg_zero(v) for v in x]
+    return x
+
+
 def dumps(scenario: dict) -> str:
     """Stable, compact-but-diffable JSON: one step per line. Floats use repr (exact
-    round-trip); non-finite values were already encoded as strings."""
+    round-trip); non-finite values were already encoded as strings; the integer token
+    -0 (§10.2) is written as `-0`."""
     head = json.dumps({"name": scenario["name"], "description": scenario["description"]},
                       ensure_ascii=False, allow_nan=False)[:-1]
     steps = ",\n    ".join(
-        json.dumps(s, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+        json.dumps(_mark_neg_zero(s), ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+        .replace(json.dumps(_NEG_ZERO_MARK), "-0")
         for s in scenario["steps"]
     )
     return f'{head}, "steps": [\n    {steps}\n]}}\n'
@@ -533,7 +573,7 @@ def dumps(scenario: dict) -> str:
 
 def self_check(scenario: dict) -> None:
     """Re-run the serialised scenario through the §9 runner logic."""
-    reparsed = json.loads(dumps(scenario))
+    reparsed = loads_json(dumps(scenario))
     db = Database()
     for i, step in enumerate(reparsed["steps"]):
         problem = check_step(db, step)

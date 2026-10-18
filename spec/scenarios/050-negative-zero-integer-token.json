@@ -1,0 +1,22 @@
+{
+  "name": "negative-zero-integer-token",
+  "description": "§10.2: in an f64 position the JSON integer token -0 denotes -0.0 (the sign is meaningful), in writes and in expectations alike; 0 denotes +0.0. So -0 and -0.0 are duplicates of each other, while 0 is a different value (f64 compared bitwise). In an i64 position -0 is simply 0.",
+  "steps": [
+    {"op": "create_table", "name": "t", "columns": [{"name": "value", "type": "f64"}, {"name": "count", "type": "i64"}]},
+    {"op": "create_series", "name": "s", "table": "t"},
+    {"op": "write", "system_time": "2025-01-01T10:00:00Z",
+     "rows": [{"series": "s", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": -0, "count": -0}}],
+     "expect": {"stored": 1, "duplicates": 0, "batch_already_committed": false}},
+    {"op": "latest", "table": "t",
+     "expect": {"rows": [
+       {"series": "s", "value_time": "2025-01-02T00:00:00Z", "published_time": null, "received_time": "2025-01-01T09:00:00Z", "system_time": "2025-01-01T10:00:00Z", "seq": 1, "values": {"value": -0.0, "count": 0}}]}},
+    {"op": "latest", "table": "t", "expect": {"values": [["s", "2025-01-02T00:00:00Z", {"value": -0, "count": -0}]]}},
+    {"op": "write", "system_time": "2025-01-01T11:00:00Z",
+     "rows": [
+       {"series": "s", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": -0.0, "count": 0}},
+       {"series": "s", "value_time": "2025-01-02T00:00:00Z", "received_time": "2025-01-01T09:00:00Z", "values": {"value": 0, "count": 0}}],
+     "expect": {"stored": 1, "duplicates": 1, "batch_already_committed": false}},
+    {"op": "history", "table": "t",
+     "expect": {"values": [["s", "2025-01-02T00:00:00Z", {"value": -0.0}], ["s", "2025-01-02T00:00:00Z", {"value": 0.0}]]}}
+  ]
+}

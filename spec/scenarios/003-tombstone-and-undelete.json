@@ -1,6 +1,6 @@
 {
   "name": "tombstone-and-undelete",
-  "description": "A tombstone hides the point at frontiers after it, not before. Un-deleting is one more version. History and replay include tombstones.",
+  "description": "A tombstone hides the point at frontiers after it, not before. Un-deleting is one more version. History and replay include tombstones. Replay covers (from, to]: what became visible as the frontier moved from 01-01 to 01-03.",
   "steps": [
     {"op": "create_table", "name": "t", "columns": [{"name": "value", "type": "f64"}]},
     {"op": "create_series", "name": "s", "table": "t"},
@@ -20,7 +20,7 @@
      "expect": {"values": [["s", "2025-01-01T00:00:00Z", {"value": 2.0}]]}},
     {"op": "replay", "table": "t", "from": "2025-01-01T00:00:00Z", "to": "2025-01-03T00:00:00Z",
      "expect": {"rows": [
-       {"series": "s", "value_time": "2025-01-01T00:00:00Z", "published_time": null, "received_time": "2025-01-01T00:00:00Z", "system_time": "2025-01-01T00:00:00Z", "seq": 1, "deleted": false, "values": {"value": 1.0}},
-       {"series": "s", "value_time": "2025-01-01T00:00:00Z", "published_time": null, "received_time": "2025-01-02T00:00:00Z", "system_time": "2025-01-02T00:00:00Z", "seq": 2, "deleted": true, "values": {"value": null}}]}}
+       {"series": "s", "value_time": "2025-01-01T00:00:00Z", "published_time": null, "received_time": "2025-01-02T00:00:00Z", "system_time": "2025-01-02T00:00:00Z", "seq": 2, "deleted": true, "values": {"value": null}},
+       {"series": "s", "value_time": "2025-01-01T00:00:00Z", "published_time": null, "received_time": "2025-01-03T00:00:00Z", "system_time": "2025-01-03T00:00:00Z", "seq": 3, "deleted": false, "values": {"value": 2.0}}]}}
   ]
 }

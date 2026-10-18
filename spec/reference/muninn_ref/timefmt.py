@@ -5,7 +5,7 @@ no leap seconds). Dates are converted with Howard Hinnant's civil-date algorithm
 than `datetime`, so that the arithmetic is explicit (and handles year 0000, which can
 occur transiently on input like `0000-12-31T23:30:00-01:00` = `0001-01-01T00:30:00Z`).
 
-Text grammar accepted (see spec/AMBIGUITIES.md A1 for the choices made):
+Text grammar accepted (§10.1):
 
     YYYY-MM-DDTHH:MM:SS[.f{1,6}](Z|+HH:MM|-HH:MM)
 
@@ -140,7 +140,7 @@ def parse_duration(text) -> int:
 
     The spec gives no error code for a bad duration; the only place durations are read
     is the grid window, where §8 says a "bad window" is `invalid_range`. The value must
-    fit in i64 microseconds (AMBIGUITIES.md A6).
+    fit in i64 microseconds (§10.5).
     """
     if not isinstance(text, str):
         raise MuninnError("invalid_range", f"not a duration: {text!r}")

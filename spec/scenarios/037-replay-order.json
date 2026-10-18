@@ -1,6 +1,6 @@
 {
   "name": "replay-order",
-  "description": "§6.3 replay: every version with t_clock in [from, to) and system_time <= S, ordered by k_clock = (t_clock, system_time, seq) ACROSS series (not by series first). Under the published clock null published_time falls back to received_time. from == to is empty; from > to is invalid_range. The order changes completely with the clock.",
+  "description": "§6.3 replay: every version with t_clock in (from, to] and system_time <= S, ordered by k_clock = (t_clock, system_time, seq) ACROSS series (not by series first). from is exclusive and to inclusive, like frontiers: replay(F1, F2) is what became visible when the frontier moved from F1 to F2. Under the published clock null published_time falls back to received_time. from == to is empty; from > to is invalid_range. The order changes completely with the clock.",
   "steps": [
     {"op": "create_table", "name": "prices", "columns": [{"name": "value", "type": "f64"}], "default_clock": "published"},
     {"op": "create_series", "name": "a", "table": "prices"},
@@ -21,9 +21,17 @@
        ["a", "2025-01-16T00:00:00Z", {"value": 2.0}],
        ["a", "2025-01-16T01:00:00Z", {"value": 3.0}],
        ["b", "2025-01-16T01:00:00Z", {"value": 4.0}]]}},
-    {"op": "replay", "table": "prices", "from": "2025-01-15T09:05:00Z",
+    {"op": "replay", "table": "prices", "from": "2025-01-15T09:00:00Z",
      "expect": {"values": [["a", "2025-01-16T00:00:00Z", {"value": 2.0}], ["a", "2025-01-16T01:00:00Z", {"value": 3.0}], ["b", "2025-01-16T01:00:00Z", {"value": 4.0}]]}},
-    {"op": "replay", "table": "prices", "to": "2025-01-15T09:05:00Z",
+    {"op": "replay", "table": "prices", "from": "2025-01-15T09:05:00Z", "expect": {"rows": []}},
+    {"op": "replay", "table": "prices", "from": "2025-01-15T08:59:59.999999Z", "to": "2025-01-15T09:05:00Z",
+     "expect": {"values": [
+       ["b", "2025-01-16T00:00:00Z", {"value": 1.0}],
+       ["a", "2025-01-16T00:00:00Z", {"value": 5.0}],
+       ["a", "2025-01-16T00:00:00Z", {"value": 2.0}],
+       ["a", "2025-01-16T01:00:00Z", {"value": 3.0}],
+       ["b", "2025-01-16T01:00:00Z", {"value": 4.0}]]}},
+    {"op": "replay", "table": "prices", "to": "2025-01-15T09:00:00Z",
      "expect": {"values": [["b", "2025-01-16T00:00:00Z", {"value": 1.0}], ["a", "2025-01-16T00:00:00Z", {"value": 5.0}]]}},
     {"op": "replay", "table": "prices", "from": "2025-01-15T09:00:00Z", "to": "2025-01-15T09:00:00Z", "expect": {"rows": []}},
     {"op": "replay", "table": "prices", "from": "2025-01-15T09:05:00Z", "to": "2025-01-15T09:00:00Z", "expect": {"error": "invalid_range"}},
@@ -37,6 +45,8 @@
        ["b", "2025-01-16T01:00:00Z", {"value": 4.0}],
        ["a", "2025-01-16T00:00:00Z", {"value": 5.0}]]}},
     {"op": "replay", "table": "prices", "clock": "system", "from": "2025-01-15T10:00:00Z", "to": "2025-01-15T11:00:00Z",
+     "expect": {"values": [["b", "2025-01-16T01:00:00Z", {"value": 4.0}], ["a", "2025-01-16T00:00:00Z", {"value": 5.0}]]}},
+    {"op": "replay", "table": "prices", "clock": "system", "to": "2025-01-15T10:00:00Z",
      "expect": {"values": [["b", "2025-01-16T00:00:00Z", {"value": 1.0}], ["a", "2025-01-16T00:00:00Z", {"value": 2.0}], ["a", "2025-01-16T01:00:00Z", {"value": 3.0}]]}},
     {"op": "replay", "table": "prices", "series": ["b"],
      "expect": {"rows": [

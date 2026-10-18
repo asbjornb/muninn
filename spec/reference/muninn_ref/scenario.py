@@ -18,7 +18,7 @@ from pathlib import Path
 from .db import Database
 from .errors import MalformedInput, MuninnError
 from .timefmt import parse_timestamp
-from .values import f64_bits
+from .values import NEG_ZERO, NegativeZero, f64_bits
 
 TIMESTAMP_FIELDS = ("value_time", "published_time", "received_time", "system_time", "frontier")
 
@@ -56,9 +56,18 @@ def _reject_constant(name):
     raise ValueError(f"bare {name} is not JSON; write non-finite f64 as a string")
 
 
+def _parse_int(token: str) -> int:
+    # §10.2: the integer token -0 is kept distinguishable (it denotes -0.0 in f64).
+    return NEG_ZERO if token == "-0" else int(token)
+
+
+def loads_json(text: str):
+    return json.loads(text, parse_constant=_reject_constant, parse_int=_parse_int)
+
+
 def load_json(path) -> dict:
     with open(path, encoding="utf-8") as f:
-        return json.load(f, parse_constant=_reject_constant)
+        return loads_json(f.read())
 
 
 # ---------------------------------------------------------------------------------------
@@ -73,9 +82,13 @@ def execute(db: Database, step: dict):
     if op not in STEP_KEYS:
         raise MalformedInput(f"unknown op {op!r}")
     extra = set(step) - STEP_KEYS[op]
-    if extra:
-        raise MalformedInput(f"unexpected fields for {op}: {sorted(extra)}")
-    g = step.get
+    if extra:  # §10.3: unknown request fields are structurally malformed
+        raise MuninnError("invalid_argument", f"unexpected fields for {op}: {sorted(extra)}")
+    def g(key, default=None):
+        # §10.3: a field given as null is the same as omitting it.
+        value = step.get(key)
+        return default if value is None else value
+
     if op == "create_table":
         db.create_table(g("name"), g("columns", []), g("default_clock", "received"),
                         g("partition", "day"))
@@ -98,10 +111,10 @@ def execute(db: Database, step: dict):
     if op == "replay":
         return "rows", db.replay(**common, **rng, from_=g("from"), to=g("to"))
     if op == "grid":
-        return "rows", db.grid(**common, **rng, frontiers=g("frontiers", []),
+        return "rows", db.grid(**common, **rng, frontiers=g("frontiers"),
                                window_start=g("window_start"), window_end=g("window_end"))
     if op == "asof_join":
-        return "rows", db.asof_join(**common, left=g("left", []))
+        return "rows", db.asof_join(**common, left=g("left"))
     raise AssertionError(op)
 
 
@@ -139,6 +152,8 @@ def _norm_value(col_type, x):
     if col_type == "f64":
         if isinstance(x, bool):
             return _Unparsable(x)
+        if isinstance(x, NegativeZero):
+            return ("f64", f64_bits(-0.0))
         if isinstance(x, (int, float)):
             return ("f64", f64_bits(float(x)))
         if x in ("NaN", "inf", "-inf"):
@@ -148,7 +163,7 @@ def _norm_value(col_type, x):
         if isinstance(x, bool):
             return _Unparsable(x)
         if isinstance(x, int):
-            return ("i64", x)
+            return ("i64", int(x))
         if isinstance(x, str):
             try:
                 return ("i64", int(x))

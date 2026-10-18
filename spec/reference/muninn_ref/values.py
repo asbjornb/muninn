@@ -15,7 +15,7 @@ import math
 import re
 import struct
 
-from .errors import MalformedInput, MuninnError
+from .errors import MuninnError
 from .timefmt import I64_MAX, I64_MIN, format_timestamp, parse_timestamp
 
 # §2.1 column types.
@@ -24,6 +24,29 @@ COLUMN_TYPES = ("f64", "i64", "bool", "string", "timestamp")
 # §4.1: non-finite f64 values are written as these strings in JSON.
 _NONFINITE_IN = {"NaN": math.nan, "inf": math.inf, "-inf": -math.inf}
 _I64_STR_RE = re.compile(r"-?[0-9]+")
+
+
+
+class NegativeZero(int):
+    """The JSON integer token `-0`. It is the integer 0 everywhere, except that in an f64
+    position it denotes -0.0 (§10.2: the sign is meaningful). The scenario loader produces
+    it via json's parse_int hook."""
+
+    def __new__(cls):
+        return super().__new__(cls, 0)
+
+    def __repr__(self):
+        return "-0"
+
+    # A singleton: copies are the same object, so the marker survives deepcopy.
+    def __copy__(self):
+        return self
+
+    def __deepcopy__(self, memo):
+        return self
+
+
+NEG_ZERO = NegativeZero()
 
 # Integers up to this magnitude are emitted as JSON numbers; beyond it as strings (§4.1:
 # a decimal string is accepted "for values beyond 2^53").
@@ -42,6 +65,8 @@ def check_type(col_type: str, raw):
             raise MuninnError("type_mismatch", f"f64 got {raw!r}")
         if isinstance(raw, float):
             return raw
+        if isinstance(raw, NegativeZero):
+            return -0.0  # §10.2: the integer token -0 denotes -0.0
         if isinstance(raw, int):
             try:
                 return float(raw)  # nearest f64 (round-half-even)
@@ -52,7 +77,7 @@ def check_type(col_type: str, raw):
         raise MuninnError("type_mismatch", f"f64 got {raw!r}")
     if col_type == "i64":
         # "integral numbers in i64 range, or a decimal string". A JSON number with a
-        # fraction or exponent (parsed as float) is rejected (AMBIGUITIES.md A3).
+        # fraction or exponent (parsed as float) is rejected (§10.2).
         if isinstance(raw, bool):
             raise MuninnError("type_mismatch", f"i64 got {raw!r}")
         if isinstance(raw, int):
@@ -74,14 +99,14 @@ def check_type(col_type: str, raw):
         raise MuninnError("type_mismatch", f"string got {raw!r}")
     if col_type == "timestamp":
         # "timestamp accepts the text form (§1)". Anything that is not a valid timestamp
-        # (unparsable or out of range) is a type mismatch here (AMBIGUITIES.md A4).
+        # (unparsable or out of range) is a type mismatch here (§10.2).
         if not isinstance(raw, str):
             raise MuninnError("type_mismatch", f"timestamp got {raw!r}")
         try:
             return parse_timestamp(raw)
         except MuninnError:
             raise MuninnError("type_mismatch", f"not a valid timestamp: {raw!r}")
-    raise MalformedInput(f"unknown column type {col_type!r}")
+    raise AssertionError(f"unknown column type {col_type!r}")  # rejected at create time
 
 
 def f64_bits(x: float) -> int:
