@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 202b645fa8d8695b10cf0c5b64a24c2a53e3976ddeca341504cea2c72e163d7c # shrinks to ops = [Resend { which: Index(0), clock: 0, batch_id: None }], seed = 0, p_before = 0.0, p_after = 0.0
+cc febcf1847489b645a970c67675459ef37d1880c602045e7e64d998673cf41577 # shrinks to ops = [Resend { which: Index(0), clock: 0, batch_id: None }], block_rows = 1, checkpoint = 1, picks = [(Index(0), false), (Index(89), false), (Index(3714858538697480255), true), (Index(10089871096466892986), false), (Index(18168555704282933291), false), (Index(3828725530781711007), false), (Index(13325484984382242557), false), (Index(452598334249304799), false), (Index(15161234767151465427), false), (Index(10985490594398052253), true), (Index(11850863991835833065), true), (Index(1270208378386880756), false)]
+cc 9fbb38f711dbc52fdfc3be9cdad07ca6bc7cf06b453a15ae12c96e284f60e9bb # shrinks to ops = [Write { clock: 0, batch_id: Some(0), rows: [] }, CreateTable { name: 2, columns: [], clock: Received, partition: Day }, Gc, Gc], block_rows = 1, checkpoint = 2, picks = [(Index(0), false), (Index(0), false), (Index(11268420337), true), (Index(2696577236999544760), true), (Index(16115769218224256189), false), (Index(15726174444104268359), false), (Index(1478666140695229474), true), (Index(9651652611524462220), false), (Index(4997400679942840304), true), (Index(11984696578646314484), true), (Index(11625080417023924209), false), (Index(11213957036481833883), false)]

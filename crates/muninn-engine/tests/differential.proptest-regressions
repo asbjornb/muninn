@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 81b5fc2eee668f0ad3ace15a544d70740e5e2bb7987546270fa0b4080faf1264 # shrinks to ops = [Write { clock: 0, batch_id: None, rows: [GenRow { series: 0, vt: Hours(24), pt: None, rt: Hours(0), deleted: true, values: [] }] }, Write { clock: 0, batch_id: None, rows: [GenRow { series: 0, vt: Hours(24), pt: None, rt: Hours(1), deleted: true, values: [] }] }, Reopen, Pin, Compact, Reopen, Gc, ReadPinned(Index(0))], block_rows = 1, checkpoint = 1, compress = false

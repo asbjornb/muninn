@@ -7,6 +7,8 @@
 //!   forms (SPEC §1).
 //! - [`types`]: column types, values, catalog definitions, versions, content identity,
 //!   clocks, visibility and knowledge order (SPEC §2–§5) as small pure functions.
+//! - [`catalog`]: the catalog plus the storage-independent steps every implementation
+//!   shares — catalog checks, write validation and dedup planning, read-request checks.
 //! - [`error`]: [`Error`] with one kind per SPEC §8 code.
 //! - [`api`]: request/response types and the [`Database`] / [`Reader`] traits that every
 //!   implementation provides.
@@ -17,6 +19,7 @@
 #![forbid(unsafe_code)]
 
 pub mod api;
+pub mod catalog;
 pub mod error;
 pub mod model;
 pub mod time;
