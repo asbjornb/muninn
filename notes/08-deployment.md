@@ -74,6 +74,34 @@ Must be possible to develop and test everything on a laptop:
   responses, and check results against the reference model from roadmap step 0.
 - Containers for the server mode, so "works in k8s" is the same image we test locally.
 
+## Blob storage is slow — and that's OK
+
+Object stores have high latency (often 10–100 ms to first byte, worse in the tail) but
+good throughput. That hurts small random reads and per-write commits, not big scans.
+Mitigations, all standard:
+
+- Large segments, ranged reads, few requests per query; prefetch in parallel.
+- Local NVMe/RAM cache of hot segments (recent partitions are what backtests hammer).
+- Local WAL for ingest; flush to the bucket in batches.
+
+But this isn't something Muninn has to win at. Because storage sits behind an interface,
+**a single physical server with local NVMe is just another backend**. If blob latency is
+a problem for someone, they run it on a box and serve reads over the network. Object
+storage is an option, not a requirement.
+
+## Central data, many teams
+
+A trading firm most likely wants one central copy that many teams (trading, analysts,
+quants, risk) read from, not a copy per team. (To verify: is that really how firms
+want it?) Both shapes support this:
+
+- **Central server** (the kdb way): one Muninn server on a big box or in a container;
+  everyone reads through it over Flight/HTTP. Also the natural place for access control.
+- **Central bucket**: one writer, teams read the bucket directly with the library.
+  Simpler, scales reads for free, but access control is coarser (bucket/prefix level).
+
+Likely both exist eventually; the server is probably what a firm deploys first.
+
 ## Open
 
 - Object storage as source of truth from v1, or local disk first with the interface in

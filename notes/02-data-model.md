@@ -68,9 +68,9 @@ To consumers this is mostly invisible: they query by tags or names
 
 Open:
 
-- Does catalog metadata change over time (provider renamed, unit fixed), and do those
-  changes need to be versioned/as-of too? Probably yes for some fields, but simple
-  versioning (a history table) is likely enough — not the full time model.
+- Catalog metadata **has history**, mainly for audit: who changed what and when, and the
+  ability to roll back an unintended change. A simple append-only change log is enough —
+  not the full time model, and queries normally use the current catalog.
 - Catalog storage: a tiny embedded store (SQLite?) vs. our own append-only log.
 - Can one series' value schema evolve (adding p95 later)? Additive only, presumably.
 

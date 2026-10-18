@@ -8,6 +8,7 @@ Move to `decisions/` once answered.
   Roadmap step 0 should answer this with data rather than taste.
 - Embedded library, server, or both? Object storage as the source of truth from day
   one? See `08-deployment.md`.
+- Do trading firms want one central store for all teams? (Assumed yes.)
 - How would this actually be deployed at work (cloud provider, k8s or not, .NET clients)?
 - Implementation language: Rust vs. C# vs. something else. Trade-offs: Arrow/Parquet
   ecosystem and Python bindings (Rust strong) vs. familiarity (C#).
@@ -31,7 +32,7 @@ Move to `decisions/` once answered.
 
 - ~~Forecast identity~~ → forecasts and actuals are one model; runs supersede.
 - ~~Flat symbols vs. catalog~~ → integer `series_id` on rows + series catalog.
-- Is series catalog metadata versioned over time? How (history table vs. full as-of)?
+- ~~Catalog history~~ → yes, append-only change log for audit + rollback.
 - Catalog storage: SQLite-like embedded store vs. own log?
 - Fixed-size array values (e.g. quantile vectors) — or always separate scalar columns?
 - Interval-valued points (delivery periods of varying length: 15-min, hourly, blocks)?
