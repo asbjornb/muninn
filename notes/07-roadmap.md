@@ -13,6 +13,9 @@ Not started. Order is "each step is usable on its own and de-risks the next".
 This step might reveal that a DuckDB extension or a thin layer over Parquet is enough.
 That would be a fine outcome.
 
+- Benchmark harness + competitor baselines (ClickHouse, DuckDB/Parquet, XTDB, ArcticDB,
+  SQL Server/Postgres). See `09-benchmarks.md`. Sets the bar before writing the engine.
+
 ## 1. On-disk format
 
 - Column files, segment footer, manifests, WAL, commit markers.
@@ -29,7 +32,7 @@ That would be a fine outcome.
 ## 4. Point-in-time reads
 
 - `AS OF` frontier(s), latest-known, all-versions, replay ordering.
-- Benchmarks against the step-0 reference + ClickHouse/DuckDB doing the same queries.
+- Run the step-0 benchmark suite; compare against the baselines.
 
 ## 5. As-of join
 
@@ -37,11 +40,16 @@ That would be a fine outcome.
 
 ## 6. Python bindings + Arrow results
 
-## 7. Compaction + retention
+## 7. Compaction + retention + purge
 
 - Proven not to change any query result (property tests against step-0 spec).
+- Purge: physically remove a series/range (data licence ends). See `faq.md`.
 
 ## 8. Later
 
 - Derived current-truth views, rollups, server mode (HTTP/Flight), frontier-advancing
   cursor for backtest loops, latency/QA stats.
+- Point-in-time catalog reads (which series/tags existed at T — avoids survivorship bias).
+- Derived series built at query time (frontier applied to all inputs), possibly
+  materialized queries kept up to date as inputs get new versions. Until then users
+  compute them outside and write them in.
