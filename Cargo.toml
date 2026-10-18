@@ -13,6 +13,12 @@ publish = false
 muninn-core = { path = "crates/muninn-core" }
 muninn-store = { path = "crates/muninn-store" }
 muninn-conformance = { path = "crates/muninn-conformance" }
+muninn-format = { path = "crates/muninn-format" }
+muninn-engine = { path = "crates/muninn-engine" }
+crc32c = "0.6.8"
+zstd = { version = "0.14", default-features = false }
+serde = { version = "1", features = ["derive"] }
+tempfile = "3"
 serde_json = { version = "1", features = ["float_roundtrip"] }
 proptest = { version = "1", default-features = false, features = ["std"] }
 
