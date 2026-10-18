@@ -1,6 +1,7 @@
 # Roadmap (rough)
 
-Not started. Order is "each step is usable on its own and de-risks the next".
+Status 2026-10-19: steps 0–4 and 6 done in v0.1 form (see below); 5 partly (grid done,
+as-of join exact-match only); 7 partly (compaction + GC, no retention/purge). Order is "each step is usable on its own and de-risks the next".
 
 ## 0. Prove the semantics before the engine
 

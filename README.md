@@ -10,8 +10,35 @@ know, and when could we act on it" matters as much as the value itself.
 Think kdb+ or DuckDB in ambition (a focused engine you can hold in your head), not
 Postgres or Oracle (a general-purpose RDBMS).
 
-**Status:** thinking stage. No code yet. This repo holds structured notes so the design
-can mature before anything is built.
+**Status:** early prototype (v0.1). The semantics are specified and the engine works end to
+end: storage on a local directory, a CLI and Python bindings. Not production-ready yet: no
+object-store backend, no vintage-delta compression, and the API may still change.
+
+## What exists
+
+| Path | What |
+| --- | --- |
+| [spec/SPEC.md](spec/SPEC.md) | **Normative semantics**: clocks, visibility, knowledge order, writes/dedup, reads, invariants, errors |
+| [spec/scenarios/](spec/scenarios/) | Conformance suite: 51 hand-written + 150 generated scenarios (JSON), run against every implementation |
+| [spec/reference/](spec/reference/) | Pure-Python reference implementation (the oracle) + property tests |
+| [spec/FORMAT.md](spec/FORMAT.md), [spec/DUMP.md](spec/DUMP.md) | On-disk format (segments, commit log, checkpoints) and portable dump format |
+| [crates/](crates/) | Rust: core types + in-memory model, store backends, segment format, engine, CLI, Python bindings |
+| [bench/](bench/) | Synthetic energy datasets, query workload, DuckDB/ClickHouse baselines, results |
+| [docs/cli.md](docs/cli.md) | CLI walkthrough |
+| [decisions/](decisions/) | Decision records 0001–0006 |
+
+```sh
+task test       # Rust workspace: unit, conformance, differential fuzz vs model, crash tests
+task lint       # rustfmt + clippy -D warnings
+task py-test    # Python bindings: scenario corpus + differential test vs reference
+uv run --project spec/reference pytest      # reference + invariants
+python3 spec/reference/run_scenarios.py     # corpus against the reference
+```
+
+How correctness is checked: two independent implementations of the spec (Python reference,
+Rust model) agree on the whole scenario corpus; the engine is differentially fuzzed against
+the Rust model (with compaction, reopen and GC interleaved), crash-tested at every store
+operation, and the Python bindings are fuzzed against the Python reference.
 
 ## Why build instead of choose?
 
@@ -45,7 +72,7 @@ simpler than a general database because it refuses to do most things.
 | [notes/10-ambition.md](notes/10-ambition.md) | Where to be ambitious: 10× targets, spec-as-product, provable leak-freedom |
 | [notes/faq.md](notes/faq.md) | "How do I model X?" — intervals, runs, ensembles, frontiers, trades |
 | [notes/open-questions.md](notes/open-questions.md) | Unresolved questions, grouped by topic |
-| [decisions/](decisions/) | Decision records, once things actually get decided |
+| [decisions/](decisions/) | Decision records |
 | [inbox/](inbox/) | Raw, unedited input (earlier conversations etc.) |
 
 Notes are **input, not dogma** — the inbox material in particular is an early brainstorm and
