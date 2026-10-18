@@ -352,3 +352,39 @@ def test_seq_and_system_time(bs):
     assert [v.seq for v in db.versions] == list(range(1, len(db.versions) + 1))
     sts = [v.system_time for v in db.versions]
     assert sts == sorted(sts)
+
+
+# ---------------------------------------------------------------------------------------
+# §7.7 Replay is the frontier delta
+# ---------------------------------------------------------------------------------------
+
+
+@settings(max_examples=400, deadline=None)
+@given(batches, st.sampled_from(CLOCKS), st.one_of(st.none(), nudged_time),
+       st.one_of(st.none(), nudged_time), st.one_of(st.none(), nudged_time),
+       st.one_of(st.none(), st.lists(st.sampled_from(["s1", "s2"]), max_size=2)),
+       st.one_of(st.none(), st.tuples(st.integers(0, 3), st.integers(0, 3))))
+def test_replay_is_frontier_delta(base, clock, f1, f2, system, series, vrange):
+    """latest at F2 == latest at F1 updated, in order, with replay(from=F1, to=F2)."""
+    if f1 is not None and f2 is not None and f1 > f2:
+        f1, f2 = f2, f1
+    db = new_db()
+    apply(db, base)
+    vf = vt = None
+    if vrange is not None:
+        lo, hi = sorted(vrange)
+        vf, vt = ts(BASE + lo * HOUR), ts(BASE + hi * HOUR)
+    common = dict(series=series, value_from=vf, value_to=vt, clock=clock, system=opt(system))
+    state = {}
+    if f1 is not None:
+        state = {(r["series"], r["value_time"]): r for r in db.latest("t", frontier=ts(f1), **common)}
+    for r in db.replay("t", from_=opt(f1), to=opt(f2), **common):
+        key = (r["series"], r["value_time"])
+        if r["deleted"]:
+            state.pop(key, None)
+        else:
+            state[key] = {k: v for k, v in r.items() if k != "deleted"}
+    folded = sorted(state.values(),
+                    key=lambda r: (db.series_by_name(r["series"]).id, r["value_time"]))
+    expected = db.latest("t", frontier=opt(f2), **common)
+    assert dump(db, "t", folded) == dump(db, "t", expected)

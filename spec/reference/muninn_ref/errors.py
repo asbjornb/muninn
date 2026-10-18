@@ -1,8 +1,8 @@
 """§8 Errors.
 
 Every failure the spec defines is a `MuninnError` carrying one of the §8 codes.
-Anything else (a scenario file that is malformed, e.g. an unknown op or a column type
-that does not exist) is a `MalformedInput` — a bug in the caller, not a spec outcome.
+`MalformedInput` is only for scenario files the runner cannot interpret at all (e.g. an
+unknown op) — a bug in the scenario, not a spec outcome.
 """
 
 # §8 — the complete list of error codes.
@@ -17,6 +17,7 @@ ERROR_CODES = frozenset(
         "invalid_range",
         "invalid_name",
         "already_exists",
+        "invalid_argument",
     }
 )
 

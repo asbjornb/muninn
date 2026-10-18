@@ -13,7 +13,7 @@ JSON form.
 import re
 from dataclasses import dataclass, field
 
-from .errors import MalformedInput, MuninnError
+from .errors import MuninnError
 from .timefmt import parse_duration, to_timestamp
 from .values import COLUMN_TYPES, check_type, encode_value, same_value
 
@@ -121,6 +121,30 @@ class WriteResult:
 _ROW_KEYS = {"series", "value_time", "published_time", "received_time", "deleted", "values"}
 
 
+
+def _arg(ok: bool, what: str) -> None:
+    """§10.3 structural check: a malformed request field is invalid_argument."""
+    if not ok:
+        raise MuninnError("invalid_argument", what)
+
+
+def _is_str_list(x) -> bool:
+    return isinstance(x, list) and all(isinstance(e, str) for e in x)
+
+
+def _check_columns_arg(columns) -> None:
+    _arg(isinstance(columns, list), "columns must be a list")
+    for c in columns:
+        _arg(isinstance(c, dict) and set(c) == {"name", "type"}, f"bad column spec {c!r}")
+        _arg(isinstance(c["name"], str), f"column name must be a string: {c!r}")
+        _arg(isinstance(c["type"], str) and c["type"] in COLUMN_TYPES, f"bad column type {c!r}")
+
+
+def _check_clock_arg(clock, allow_none=True) -> None:
+    _arg((allow_none and clock is None) or (isinstance(clock, str) and clock in CLOCKS),
+         f"bad clock {clock!r}")
+
+
 class Database:
     def __init__(self):
         self.tables: list[Table] = []  # creation order
@@ -149,7 +173,7 @@ class Database:
     def _log(self, kind: str, detail: dict, system_time=None):
         # §2.3: every catalog change is logged with its system_time. The scenario format
         # has no clock on catalog steps; we stamp max(c, greatest system_time seen so far),
-        # or None before anything has a time (AMBIGUITIES.md A10). Catalog changes never
+        # or None before anything has a time (AMBIGUITIES.md). Catalog changes never
         # affect `last` of §4.2, which is defined over stored versions only.
         times = [v.system_time for v in self.versions]
         times += [c.system_time for c in self.catalog_log if c.system_time is not None]
@@ -166,29 +190,25 @@ class Database:
         if name in RESERVED_COLUMN_NAMES:
             raise MuninnError("invalid_name", f"reserved column name {name!r}")
 
-    @staticmethod
-    def _check_column_type(col_type):
-        if col_type not in COLUMN_TYPES:
-            raise MalformedInput(f"unknown column type {col_type!r}")  # AMBIGUITIES.md A9
+
 
     # -- §2.1 tables -------------------------------------------------------------------
 
     def create_table(self, name, columns=(), default_clock="received", partition="day",
                      system_time=None):
-        # Check order (AMBIGUITIES.md A8): table name syntax, table uniqueness, then
-        # each column in order (name syntax / reserved, type, uniqueness).
-        if default_clock not in CLOCKS:
-            raise MalformedInput(f"bad default_clock {default_clock!r}")
-        if partition not in PARTITIONS:
-            raise MalformedInput(f"bad partition {partition!r}")
-        if not isinstance(name, str) or not _NAME_RE.fullmatch(name):
+        # §10.4 check order: invalid_argument (whole request), table name syntax, table
+        # uniqueness, then each column in order (name syntax / reserved, uniqueness).
+        _arg(isinstance(name, str), "table name must be a string")
+        _check_columns_arg(list(columns) if isinstance(columns, tuple) else columns)
+        _check_clock_arg(default_clock, allow_none=False)
+        _arg(isinstance(partition, str) and partition in PARTITIONS, f"bad partition {partition!r}")
+        if not _NAME_RE.fullmatch(name):
             raise MuninnError("invalid_name", f"bad table name {name!r}")
         if any(t.name == name for t in self.tables):
             raise MuninnError("already_exists", f"table {name!r}")
         cols: list[Column] = []
         for c in columns:
             self._check_column_name(c["name"])
-            self._check_column_type(c["type"])
             if any(x.name == c["name"] for x in cols):
                 raise MuninnError("already_exists", f"column {c['name']!r}")
             cols.append(Column(c["name"], c["type"]))
@@ -197,9 +217,11 @@ class Database:
 
     def add_column(self, table, name, type, system_time=None):
         # §2.1 schema evolution: append a column. Old versions read it as null.
+        # §10.4 check order: invalid_argument, unknown_table, invalid_name, already_exists.
+        _arg(isinstance(table, str) and isinstance(name, str), "table/name must be strings")
+        _arg(isinstance(type, str) and type in COLUMN_TYPES, f"bad column type {type!r}")
         t = self.table(table)
         self._check_column_name(name)
-        self._check_column_type(type)
         if t.column(name) is not None:
             raise MuninnError("already_exists", f"column {name!r}")
         t.columns.append(Column(name, type))
@@ -209,8 +231,18 @@ class Database:
 
     def create_series(self, name, table, tags=None, timezone="UTC", resolution=None,
                       system_time=None):
-        # Check order (AMBIGUITIES.md A8): name syntax, table exists, name uniqueness.
-        if not isinstance(name, str) or name == "":
+        # §10.4 check order: invalid_argument, name non-empty, unknown_table, uniqueness.
+        _arg(isinstance(name, str) and isinstance(table, str), "name/table must be strings")
+        _arg(tags is None or (isinstance(tags, dict) and all(
+            isinstance(k, str) and isinstance(v, str) for k, v in tags.items())),
+            f"tags must map strings to strings: {tags!r}")
+        _arg(isinstance(timezone, str), f"timezone must be a string: {timezone!r}")
+        if resolution is not None:
+            try:
+                parse_duration(resolution)
+            except MuninnError:
+                raise MuninnError("invalid_argument", f"bad resolution {resolution!r}")
+        if name == "":
             raise MuninnError("invalid_name", f"bad series name {name!r}")
         self.table(table)  # unknown_table
         if self.series_by_name(name) is not None:
@@ -233,20 +265,27 @@ class Database:
     # §4 Writes
     # -------------------------------------------------------------------------------------
 
+    @staticmethod
+    def _check_row_structure(row) -> None:
+        """§10.3 step 0 of §4.1: a row is an object with known keys only; `series` is a
+        string; `values` is absent, null or an object; `deleted` is absent or a bool."""
+        _arg(isinstance(row, dict), f"row must be an object: {row!r}")
+        _arg(set(row) <= _ROW_KEYS, f"unknown row fields {sorted(set(row) - _ROW_KEYS)}")
+        _arg(isinstance(row.get("series"), str), f"series must be a string: {row.get('series')!r}")
+        _arg(row.get("values") is None or isinstance(row["values"], dict),
+             f"values must be an object: {row.get('values')!r}")
+        _arg("deleted" not in row or isinstance(row["deleted"], bool),
+             f"deleted must be a bool: {row.get('deleted')!r}")
+
     def _validate_row(self, row: dict) -> dict:
-        """§4.1 validation of one row, checks in spec order; first failure wins."""
-        if not isinstance(row, dict) or not set(row) <= _ROW_KEYS:
-            raise MalformedInput(f"bad row {row!r}")
+        """§4.1 validation of one row, checks in spec order; first failure wins.
+        (Structure — step 0 — was already checked for the whole batch.)"""
         # 1. Series name exists.
         s = self.series_by_name(row.get("series"))
         if s is None:
             raise MuninnError("unknown_series", repr(row.get("series")))
         t = self.table(s.table)
-        raw_values = row.get("values")
-        if raw_values is None:
-            raw_values = {}
-        if not isinstance(raw_values, dict):
-            raise MalformedInput(f"values must be an object: {raw_values!r}")
+        raw_values = row.get("values") or {}
         # 2. Every key in `values` is a column of the series' table.
         for key in raw_values:
             if t.column(key) is None:
@@ -258,15 +297,11 @@ class Database:
             values[c.name] = None if raw is None else check_type(c.type, raw)
         # 4. Tombstone with any non-null value.
         deleted = row.get("deleted", False)
-        if deleted is None:
-            deleted = False
-        if not isinstance(deleted, bool):
-            raise MalformedInput(f"deleted must be a bool: {deleted!r}")
         if deleted and any(v is not None for v in values.values()):
             raise MuninnError("tombstone_with_values")
         # 5. value_time, received_time, published_time (if non-null) are valid timestamps.
         # value_time and received_time are required; missing counts as invalid
-        # (AMBIGUITIES.md A5).
+        # (§10.3).
         value_time = to_timestamp(row.get("value_time"))
         received_time = to_timestamp(row.get("received_time"))
         published = row.get("published_time")
@@ -293,12 +328,16 @@ class Database:
 
     def write(self, rows, system_time, batch_id=None) -> WriteResult:
         """§4: commit a batch atomically. `system_time` is the writer clock reading c."""
-        # §4.4 batch ids: a known id makes the write a no-op — no validation at all.
-        if batch_id is not None:
-            if not isinstance(batch_id, str) or batch_id == "":
-                raise MalformedInput(f"batch_id must be a non-empty string: {batch_id!r}")
-            if batch_id in self.batch_ids:
-                return WriteResult(0, 0, True)
+        # §10.4: structure of the whole request first (invalid_argument), even when the
+        # batch id is known.
+        _arg(batch_id is None or (isinstance(batch_id, str) and batch_id != ""),
+             f"batch_id must be a non-empty string: {batch_id!r}")
+        _arg(isinstance(rows, list), "rows must be a list")
+        for r in rows:
+            self._check_row_structure(r)
+        # §4.4 batch ids: a known id makes the write a no-op — no §4.1 validation at all.
+        if batch_id is not None and batch_id in self.batch_ids:
+            return WriteResult(0, 0, True)
         c = to_timestamp(system_time)
 
         # §4.1: validate every row, in input order, before changing anything. Any error
@@ -354,7 +393,7 @@ class Database:
             return v.published_time if v.published_time is not None else v.received_time
         if clock == "system":
             return v.system_time
-        raise MalformedInput(f"bad clock {clock!r}")
+        raise AssertionError(f"bad clock {clock!r}")  # rejected as invalid_argument earlier
 
     @classmethod
     def visible(cls, v: Version, clock: str, frontier: int | None, system: int | None) -> bool:
@@ -396,13 +435,23 @@ class Database:
 
     @staticmethod
     def _in_half_open(x: int, lo: int | None, hi: int | None) -> bool:
+        """[lo, hi) — value ranges (§6)."""
         return (lo is None or lo <= x) and (hi is None or x < hi)
+
+    @staticmethod
+    def _in_open_closed(x: int, lo: int | None, hi: int | None) -> bool:
+        """(lo, hi] — replay's t_clock interval (§6.3), matching inclusive frontiers."""
+        return (lo is None or lo < x) and (hi is None or x <= hi)
+
+    @staticmethod
+    def _check_read_args(clock, series) -> None:
+        """§10.3 structural checks common to reads (first, before any catalog lookup)."""
+        _check_clock_arg(clock)
+        _arg(series is None or _is_str_list(series), f"series must be a list of names: {series!r}")
 
     def _context(self, table: Table, clock, frontier, system):
         """§5 read context; clock defaults to the table's default_clock."""
         clock = table.default_clock if clock is None else clock
-        if clock not in CLOCKS:
-            raise MalformedInput(f"bad clock {clock!r}")
         return clock, self._opt_ts(frontier), self._opt_ts(system)
 
     def _row(self, v: Version, table: Table, with_deleted: bool) -> dict:
@@ -434,12 +483,13 @@ class Database:
                 best[key] = v
         return [best[k] for k in sorted(best) if not best[k].deleted]
 
-    # Read argument checks happen in this order (AMBIGUITIES.md A7): unknown_table,
+    # Read argument checks happen in this order (§10.4): invalid_argument, unknown_table,
     # unknown_series, invalid_timestamp (fields in signature order), invalid_range.
 
     def latest(self, table, series=None, value_from=None, value_to=None, clock=None,
                frontier=None, system=None) -> list[dict]:
         """§6.1 latest-known as of a frontier. Order: (series, value_time)."""
+        self._check_read_args(clock, series)
         t = self.table(table)
         ids = self._resolve_series(t, series)
         lo, hi = self._opt_ts(value_from), self._opt_ts(value_to)
@@ -454,6 +504,7 @@ class Database:
                 frontier=None, system=None) -> list[dict]:
         """§6.2 every visible version, tombstones included.
         Order: (series, value_time, k_clock)."""
+        self._check_read_args(clock, series)
         t = self.table(table)
         ids = self._resolve_series(t, series)
         lo, hi = self._opt_ts(value_from), self._opt_ts(value_to)
@@ -471,8 +522,10 @@ class Database:
 
     def replay(self, table, series=None, value_from=None, value_to=None, clock=None,
                system=None, from_=None, to=None) -> list[dict]:
-        """§6.3 arrival order: system_time <= S and t_clock in [from, to).
+        """§6.3 arrival order: system_time <= S and t_clock in (from, to] — exactly the
+        versions that become visible when the frontier moves from `from` to `to`.
         Order: k_clock alone, across all series. Tombstones included."""
+        self._check_read_args(clock, series)
         t = self.table(table)
         ids = self._resolve_series(t, series)
         lo, hi = self._opt_ts(value_from), self._opt_ts(value_to)
@@ -486,7 +539,7 @@ class Database:
             if v.series in ids
             and self._in_half_open(v.value_time, lo, hi)
             and (system is None or v.system_time <= system)
-            and self._in_half_open(self.t_clock(v, clock), t_from, t_to)
+            and self._in_open_closed(self.t_clock(v, clock), t_from, t_to)
         ]
         selected.sort(key=lambda v: self.k_clock(v, clock))
         return [self._row(v, t, with_deleted=True) for v in selected]
@@ -495,6 +548,8 @@ class Database:
              window_start=None, window_end=None, clock=None, system=None) -> list[dict]:
         """§6.4 for each distinct frontier (ascending), the rows of `latest` at that
         frontier, prefixed with it. Order: (frontier, series, value_time)."""
+        self._check_read_args(clock, series)
+        _arg(isinstance(frontiers, list), f"frontiers must be a list: {frontiers!r}")
         t = self.table(table)
         self._resolve_series(t, series)  # unknown_series before anything else
         absolute = value_from is not None or value_to is not None
@@ -505,7 +560,7 @@ class Database:
         if absolute and relative:
             raise MuninnError("invalid_range", "both absolute and relative window given")
         if relative:
-            # A relative window needs both ends (AMBIGUITIES.md A6).
+            # A relative window needs both ends (§10.5).
             if window_start is None or window_end is None:
                 raise MuninnError("invalid_range", "relative window needs start and end")
             ws, we = parse_duration(window_start), parse_duration(window_end)
@@ -528,6 +583,12 @@ class Database:
     def asof_join(self, table, left, clock=None, system=None) -> list[dict]:
         """§6.5 for each left row (input order) the latest visible version of the point
         (row.series, row.value_time) at frontier = row.frontier."""
+        _check_clock_arg(clock)
+        _arg(isinstance(left, list), "left must be a list")
+        for r in left:
+            _arg(isinstance(r, dict) and set(r) <= {"series", "value_time", "frontier"},
+                 f"bad left row {r!r}")
+            _arg(isinstance(r.get("series"), str), f"left series must be a string: {r!r}")
         t = self.table(table)
         resolved = []
         for r in left:

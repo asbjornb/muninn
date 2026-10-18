@@ -13,13 +13,14 @@ implementation must reproduce them exactly.
 - f64 values are emitted with Python's shortest round-trip repr (parsing to the nearest
   f64 gives back the exact value); non-finite values are the strings `"NaN"`, `"inf"`,
   `"-inf"`; i64 values beyond ±2^53 are decimal strings; timestamps are canonical §1 text.
-- Inputs include equivalent spellings on purpose (`42` vs `42.0` in f64 columns, a
-  `+01:00` timestamp equal to a `Z` one, `"7"` vs `7` in i64 columns).
+- Inputs include equivalent spellings on purpose (`42` vs `42.0` in f64 columns, the
+  integer token `-0` vs `-0.0` (both -0.0, §10.2), a `+01:00` timestamp equal to a `Z`
+  one, `"7"` vs `7` in i64 columns). Parse `-0` per §10.2.
 - Every scenario ends with an unfiltered `history` of each table, i.e. the full stored
   state (all versions with their system_time and seq).
-- Read and catalog steps contain at most one fault, so these files never depend on the
-  order of argument checks that `spec/AMBIGUITIES.md` A7/A8 leave open. Write batches may
-  contain several faults: their order is normative (§4.1).
+- Read and catalog steps contain at most one fault (the check order of §10.4 is normative
+  anyway; this just keeps disagreements easy to attribute). Write batches may contain
+  several faults.
 
 ## Regenerate
 
