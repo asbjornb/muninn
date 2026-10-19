@@ -23,7 +23,7 @@ from queries.edges import edge_queries
 from queries.params import load_workload, workload_for
 
 SYSTEMS = os.environ.get("MUNINN_BENCH_SYSTEMS",
-                         "duckdb-native,duckdb-parquet,duckdb-native-window,clickhouse").split(",")
+                         "muninn,duckdb-native,duckdb-parquet,duckdb-native-window,clickhouse").split(",")
 
 
 @pytest.fixture(scope="session")

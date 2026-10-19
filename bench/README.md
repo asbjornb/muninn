@@ -40,7 +40,7 @@ Large data, work directories and the ClickHouse binary live under `bench/data/` 
 | `competitors/reference/` | the oracle: `spec/reference/muninn_ref` behind the same interface |
 | `competitors/duckdb/` | DuckDB native table and over-Parquet layouts ([tuning notes](competitors/duckdb/README.md)) |
 | `competitors/clickhouse/` | ClickHouse MergeTree ([tuning notes](competitors/clickhouse/README.md)) |
-| `competitors/muninn/` | placeholder for the engine; raises `Unavailable` until a binding/CLI exists |
+| `competitors/muninn/` | the Muninn engine via its Python binding (`uv sync --project bench --group muninn`) |
 | `competitors/registry.py` | system name -> adapter factory |
 | `tests/` | correctness against the oracle, write-stream round trip through the reference |
 | `run.py` | the end-to-end runner and report writer |
@@ -50,7 +50,7 @@ Large data, work directories and the ClickHouse binary live under `bench/data/` 
 
 Each dataset is its own database with one table (SPEC §2), so series ids and `seq` start at 1
 per dataset. The generator plays both writer and engine: dataset modules emit write batches
-with a writer clock `c`; the writer applies SPEC §4.2 (`system_time = max(c, last)`, one
+with a writer clock `c`; the writer applies SPEC §4.2 (`system_time = max(c, last + 1us)`, one
 `seq` counter, input order within a batch) and §4.3 (exact re-sends are dropped and go to
 `resends.parquet`). Batches are emitted in commit order one commit-day at a time, so a
 late batch never pushes earlier arrivals' `system_time` forward. All randomness is keyed
@@ -159,5 +159,6 @@ irregular intervals beyond `sparse`.
    then `bench/run.py --systems <system>`.
 4. Document schema/tuning choices in `competitors/<system>/README.md`.
 
-The Muninn engine plugs in the same way (`competitors/muninn/adapter.py` describes the
-binding/CLI shape it expects).
+The Muninn engine is plugged in this way (`competitors/muninn/adapter.py`); install its
+binding into the bench environment with `uv sync --project bench --group muninn` (builds the
+Rust extension), otherwise it is skipped.

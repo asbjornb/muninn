@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .base import Unavailable  # noqa: F401  (re-exported)
+from .base import Adapter, Unavailable  # noqa: F401  (re-exported)
 
 
 def _duckdb(layout, **kw):
@@ -40,7 +40,7 @@ SYSTEMS = {
     "muninn": _muninn(),
 }
 
-DEFAULT_SYSTEMS = ["duckdb-native", "duckdb-parquet", "clickhouse"]
+DEFAULT_SYSTEMS = ["muninn", "duckdb-native", "duckdb-parquet", "clickhouse"]
 
 
 def make(name, workdir, threads=6, memory_limit_mb=4096):

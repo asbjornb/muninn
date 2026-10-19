@@ -22,7 +22,7 @@ from pathlib import Path
 from .common import SeriesSpec, VersionWriter, write_catalog
 from .datasets import DATASETS, SCALES, START, now_of
 
-GENERATOR_VERSION = 2
+GENERATOR_VERSION = 3
 
 
 def generate_dataset(name: str, scale: str, seed: int, out: Path) -> dict:
@@ -60,6 +60,8 @@ def generate_dataset(name: str, scale: str, seed: int, out: Path) -> dict:
         "generate_seconds": round(gen_s, 2),
     }
     catalog["stats"] = dataset_stats(d)
+    # §4.2: system times strictly increase per stored batch, so each batch has its own
+    assert catalog["stats"]["distinct_system_times"] == info["batches"], (name, info)
     write_catalog(d / "catalog.json", catalog)
     return catalog
 
@@ -89,7 +91,8 @@ def dataset_stats(d: Path) -> dict:
       (SELECT epoch_us(max(value_time)) FROM v) AS value_time_max,
       (SELECT epoch_us(min(received_time)) FROM v) AS received_min,
       (SELECT epoch_us(max(received_time)) FROM v) AS received_max,
-      (SELECT epoch_us(max(system_time)) FROM v) AS system_max
+      (SELECT epoch_us(max(system_time)) FROM v) AS system_max,
+      (SELECT count(DISTINCT system_time) FROM v) AS distinct_system_times
     """
     cur = con.execute(q)
     row = cur.fetchone()
