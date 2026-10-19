@@ -4,7 +4,7 @@
   {
    "storage": "btrfs",
    "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
-   "system": "muninn",
+   "system": "muninn (pre-0009)",
    "dataset": "da_prices",
    "mode": "per-batch",
    "date": "2026-10-19",
@@ -196,7 +196,7 @@
   {
    "storage": "btrfs",
    "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
-   "system": "muninn",
+   "system": "muninn (pre-0009)",
    "dataset": "da_prices",
    "mode": "bulk",
    "date": "2026-10-19",
@@ -274,7 +274,7 @@
   {
    "storage": "btrfs",
    "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
-   "system": "muninn-100k",
+   "system": "muninn-100k (pre-0009)",
    "dataset": "da_prices",
    "mode": "bulk",
    "date": "2026-10-19",
@@ -449,7 +449,7 @@
   {
    "storage": "btrfs",
    "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
-   "system": "muninn",
+   "system": "muninn (pre-0009)",
    "dataset": "forecasts",
    "mode": "per-batch",
    "date": "2026-10-19",
@@ -641,7 +641,7 @@
   {
    "storage": "btrfs",
    "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
-   "system": "muninn",
+   "system": "muninn (pre-0009)",
    "dataset": "forecasts",
    "mode": "bulk",
    "date": "2026-10-19",
@@ -724,7 +724,7 @@
   {
    "storage": "btrfs",
    "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
-   "system": "muninn-100k",
+   "system": "muninn-100k (pre-0009)",
    "dataset": "forecasts",
    "mode": "bulk",
    "date": "2026-10-19",
@@ -899,7 +899,7 @@
   {
    "storage": "btrfs",
    "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
-   "system": "muninn",
+   "system": "muninn (pre-0009)",
    "dataset": "settlement",
    "mode": "per-batch",
    "date": "2026-10-19",
@@ -1091,7 +1091,7 @@
   {
    "storage": "btrfs",
    "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
-   "system": "muninn",
+   "system": "muninn (pre-0009)",
    "dataset": "settlement",
    "mode": "bulk",
    "date": "2026-10-19",
@@ -1169,7 +1169,7 @@
   {
    "storage": "btrfs",
    "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
-   "system": "muninn-100k",
+   "system": "muninn-100k (pre-0009)",
    "dataset": "settlement",
    "mode": "bulk",
    "date": "2026-10-19",
@@ -1344,7 +1344,7 @@
   {
    "storage": "btrfs",
    "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
-   "system": "muninn",
+   "system": "muninn (pre-0009)",
    "dataset": "sparse",
    "mode": "per-batch",
    "date": "2026-10-19",
@@ -1536,7 +1536,7 @@
   {
    "storage": "btrfs",
    "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
-   "system": "muninn",
+   "system": "muninn (pre-0009)",
    "dataset": "sparse",
    "mode": "bulk",
    "date": "2026-10-19",
@@ -1614,7 +1614,7 @@
   {
    "storage": "btrfs",
    "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
-   "system": "muninn-100k",
+   "system": "muninn-100k (pre-0009)",
    "dataset": "sparse",
    "mode": "bulk",
    "date": "2026-10-19",
@@ -1789,7 +1789,7 @@
   {
    "storage": "btrfs",
    "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
-   "system": "muninn",
+   "system": "muninn (pre-0009)",
    "dataset": "backfill",
    "mode": "per-batch",
    "date": "2026-10-19",
@@ -1981,7 +1981,7 @@
   {
    "storage": "btrfs",
    "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
-   "system": "muninn",
+   "system": "muninn (pre-0009)",
    "dataset": "backfill",
    "mode": "bulk",
    "date": "2026-10-19",
@@ -2059,7 +2059,7 @@
   {
    "storage": "btrfs",
    "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
-   "system": "muninn-100k",
+   "system": "muninn-100k (pre-0009)",
    "dataset": "backfill",
    "mode": "bulk",
    "date": "2026-10-19",
@@ -2234,7 +2234,7 @@
   {
    "storage": "tmpfs",
    "workdir": "/dev/shm/muninn-ingest",
-   "system": "muninn",
+   "system": "muninn (pre-0009)",
    "dataset": "da_prices",
    "mode": "per-batch",
    "date": "2026-10-19",
@@ -2356,7 +2356,7 @@
   {
    "storage": "tmpfs",
    "workdir": "/dev/shm/muninn-ingest",
-   "system": "muninn",
+   "system": "muninn (pre-0009)",
    "dataset": "da_prices",
    "mode": "bulk",
    "date": "2026-10-19",
@@ -2434,7 +2434,7 @@
   {
    "storage": "tmpfs",
    "workdir": "/dev/shm/muninn-ingest",
-   "system": "muninn-100k",
+   "system": "muninn-100k (pre-0009)",
    "dataset": "da_prices",
    "mode": "bulk",
    "date": "2026-10-19",
@@ -2551,7 +2551,7 @@
   {
    "storage": "tmpfs",
    "workdir": "/dev/shm/muninn-ingest",
-   "system": "muninn",
+   "system": "muninn (pre-0009)",
    "dataset": "forecasts",
    "mode": "per-batch",
    "date": "2026-10-19",
@@ -2673,7 +2673,7 @@
   {
    "storage": "tmpfs",
    "workdir": "/dev/shm/muninn-ingest",
-   "system": "muninn",
+   "system": "muninn (pre-0009)",
    "dataset": "forecasts",
    "mode": "bulk",
    "date": "2026-10-19",
@@ -2756,7 +2756,7 @@
   {
    "storage": "tmpfs",
    "workdir": "/dev/shm/muninn-ingest",
-   "system": "muninn-100k",
+   "system": "muninn-100k (pre-0009)",
    "dataset": "forecasts",
    "mode": "bulk",
    "date": "2026-10-19",
@@ -2873,7 +2873,7 @@
   {
    "storage": "tmpfs",
    "workdir": "/dev/shm/muninn-ingest",
-   "system": "muninn",
+   "system": "muninn (pre-0009)",
    "dataset": "settlement",
    "mode": "per-batch",
    "date": "2026-10-19",
@@ -2995,7 +2995,7 @@
   {
    "storage": "tmpfs",
    "workdir": "/dev/shm/muninn-ingest",
-   "system": "muninn",
+   "system": "muninn (pre-0009)",
    "dataset": "settlement",
    "mode": "bulk",
    "date": "2026-10-19",
@@ -3073,7 +3073,7 @@
   {
    "storage": "tmpfs",
    "workdir": "/dev/shm/muninn-ingest",
-   "system": "muninn-100k",
+   "system": "muninn-100k (pre-0009)",
    "dataset": "settlement",
    "mode": "bulk",
    "date": "2026-10-19",
@@ -3190,7 +3190,7 @@
   {
    "storage": "tmpfs",
    "workdir": "/dev/shm/muninn-ingest",
-   "system": "muninn",
+   "system": "muninn (pre-0009)",
    "dataset": "sparse",
    "mode": "per-batch",
    "date": "2026-10-19",
@@ -3312,7 +3312,7 @@
   {
    "storage": "tmpfs",
    "workdir": "/dev/shm/muninn-ingest",
-   "system": "muninn",
+   "system": "muninn (pre-0009)",
    "dataset": "sparse",
    "mode": "bulk",
    "date": "2026-10-19",
@@ -3390,7 +3390,7 @@
   {
    "storage": "tmpfs",
    "workdir": "/dev/shm/muninn-ingest",
-   "system": "muninn-100k",
+   "system": "muninn-100k (pre-0009)",
    "dataset": "sparse",
    "mode": "bulk",
    "date": "2026-10-19",
@@ -3507,7 +3507,7 @@
   {
    "storage": "tmpfs",
    "workdir": "/dev/shm/muninn-ingest",
-   "system": "muninn",
+   "system": "muninn (pre-0009)",
    "dataset": "backfill",
    "mode": "per-batch",
    "date": "2026-10-19",
@@ -3629,7 +3629,7 @@
   {
    "storage": "tmpfs",
    "workdir": "/dev/shm/muninn-ingest",
-   "system": "muninn",
+   "system": "muninn (pre-0009)",
    "dataset": "backfill",
    "mode": "bulk",
    "date": "2026-10-19",
@@ -3707,7 +3707,7 @@
   {
    "storage": "tmpfs",
    "workdir": "/dev/shm/muninn-ingest",
-   "system": "muninn-100k",
+   "system": "muninn-100k (pre-0009)",
    "dataset": "backfill",
    "mode": "bulk",
    "date": "2026-10-19",

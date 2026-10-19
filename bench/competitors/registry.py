@@ -42,6 +42,10 @@ SYSTEMS = {
     "muninn": _muninn(),
     # bulk ingest in writes of 100k rows instead of 1M (faster per row, bench/ingest.py)
     "muninn-100k": _muninn(bulk_rows=100_000),
+    # per-batch ingest through the fast write path's group commit (ADR 0009; needs a build
+    # with write_many): 64 original batches per write_many call, or 8 producer threads
+    "muninn-wm64": _muninn(group=64, ingest_compact_every=0),
+    "muninn-8p": _muninn(producers=8, ingest_compact_every=0),
 }
 
 DEFAULT_SYSTEMS = ["muninn", "duckdb-native", "duckdb-parquet", "clickhouse"]

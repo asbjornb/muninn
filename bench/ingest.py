@@ -54,6 +54,17 @@ from datagen.datasets import DATASETS  # noqa: E402
 from run import fmt_bytes, machine_info  # noqa: E402
 
 DEFAULT_SYSTEMS = ["muninn", "muninn-100k", "duckdb-native", "clickhouse", "clickhouse-fsync"]
+#: report order; per-batch-only Muninn variants (fast write path, ADR 0009) after muninn
+ORDER = ["muninn", "muninn-wm64", "muninn-8p", "muninn-100k", "duckdb-native", "clickhouse",
+         "clickhouse-fsync"]
+PER_BATCH_ONLY = {"muninn-wm64", "muninn-8p"}
+BULK_ONLY = {"muninn-100k"}
+
+
+def sys_key(label: str):
+    """Sort key of a report label ``system`` or ``system (tag)``: ORDER, then tag."""
+    base, _, tag = label.partition(" ")
+    return (ORDER.index(base) if base in ORDER else 99, tag)
 DEFAULT_PREFIX = "sparse=10000"
 FSYNC_CATS = ["segment file", "segment dir", "log file", "log dir", "other file", "other dir"]
 SHIM_SRC = HERE / "fsyncstat.c"
@@ -188,7 +199,6 @@ def markdown(rep) -> str:
     by_storage: dict = {}
     for r in rep["runs"]:
         by_storage.setdefault(r["storage"], []).append(r)
-    order = {s: i for i, s in enumerate(DEFAULT_SYSTEMS)}
     for storage, runs in by_storage.items():
         where = runs[0].get("workdir", "")
         L.append(f"## Storage: {storage} (`{where}`)")
@@ -197,7 +207,7 @@ def markdown(rep) -> str:
                  "writes/s | rows/s | per write p50 / p99 ms | size (B/version) | fsyncs (time) |")
         L.append("| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
         runs = sorted(runs, key=lambda r: (list(DATASETS).index(r["dataset"]),
-                                           INGEST_MODES.index(r["mode"]), order.get(r["system"], 99)))
+                                           INGEST_MODES.index(r["mode"]), sys_key(r["system"])))
         for r in runs:
             x = r["result"]
             pre = "" if x["complete"] else f" (prefix: {x['writes']:,} of {x['batches_total']:,} batches)"
@@ -210,15 +220,16 @@ def markdown(rep) -> str:
                      f"{fmt_rate(x['rows_per_second'])} | {lat} | "
                      f"{fmt_bytes(x['bytes_on_disk'])} ({x['bytes_per_version']}) | {fsync_cell(x)} |")
         L.append("")
-        mrows = [r for r in runs if r["system"] == "muninn" and r["result"].get("write_fsync") is not None
+        mrows = [r for r in runs if r["system"].partition(" ")[0] == "muninn"
+                 and r["result"].get("write_fsync") is not None
                  and r["mode"] == "per-batch"]
         if mrows:
             L.append("Muninn per-batch, inside `write` only (excludes the periodic compact+gc): "
                      "mean latency and the part of it spent in fsync, per write.")
             L.append("")
-            L.append("| dataset | writes | mean ms/write | fsyncs/write | segment file+dir fsync ms | "
+            L.append("| dataset | system | writes | mean ms/write | fsyncs/write | segment file+dir fsync ms | "
                      "log file+dir fsync ms | other ms (encode, dedup, file writes, Python) |")
-            L.append("| --- | ---: | ---: | ---: | ---: | ---: | ---: |")
+            L.append("| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |")
             for r in mrows:
                 x = r["result"]
                 w = x["writes"]
@@ -229,7 +240,7 @@ def markdown(rep) -> str:
                 n = sum(v["count"] for v in f.values()) / w
                 mean = x["write_latency_ms"]["mean"]
                 seg, log = ms("segment file", "segment dir"), ms("log file", "log dir")
-                L.append(f"| {r['dataset']} | {w:,} | {mean:.2f} | {n:.1f} | {seg:.2f} | {log:.2f} | "
+                L.append(f"| {r['dataset']} | {r['system']} | {w:,} | {mean:.2f} | {n:.1f} | {seg:.2f} | {log:.2f} | "
                          f"{mean - seg - log - ms('other file', 'other dir'):.2f} |")
             L.append("")
     L.append("## Runs")
@@ -261,7 +272,7 @@ def summary_markdown(rep, link: str) -> list[str]:
          "writes; `muninn-100k`: 100k-row writes).", "",
          "Cells: wall seconds incl. finalisation (rows/s). *prefix*: only the first N batches, "
          "the same N for every system.", ""]
-    systems = [s for s in DEFAULT_SYSTEMS if any(r["system"] == s for r in rep["runs"])]
+    systems = sorted({r["system"] for r in rep["runs"]}, key=sys_key)
     by_storage: dict = {}
     for r in rep["runs"]:
         by_storage.setdefault(r["storage"], {})[(r["dataset"], r["mode"], r["system"])] = r["result"]
@@ -304,6 +315,9 @@ def main(argv=None):
     ap.add_argument("--workdir", default=str(HERE / "data" / "work"))
     ap.add_argument("--out", default=None, help="report directory (default results/<date>-<host>)")
     ap.add_argument("--render", default=None, help="only re-render <dir>/ingest-<scale>.md")
+    ap.add_argument("--tag", default=None,
+                    help="label the systems of this run as '<system> (<tag>)' in the report, e.g. "
+                         "the engine build (post-0009)")
     args = ap.parse_args(argv)
 
     if args.render:
@@ -331,9 +345,11 @@ def main(argv=None):
     for ds in datasets:
         for mode in args.modes.split(","):
             for system in args.systems.split(","):
-                if system == "muninn-100k" and mode != "bulk":
-                    continue  # same as muninn in per-batch mode
-                print(f"[{storage}] {ds} {mode} {system} ...", flush=True)
+                if (system in BULK_ONLY and mode != "bulk") or (system in PER_BATCH_ONLY
+                                                                and mode != "per-batch"):
+                    continue  # the same as muninn in the other mode
+                label = f"{system} ({args.tag})" if args.tag else system
+                print(f"[{storage}] {ds} {mode} {label} ...", flush=True)
                 try:
                     r = run_one(system, mode, ds, data_dir, args, prefix.get(ds), probe)
                 except registry.Unavailable as e:
@@ -346,10 +362,10 @@ def main(argv=None):
                       f"{r['rows_per_second']:,} rows/s, p50 {lat.get('p50')} ms, "
                       f"{fmt_bytes(r['bytes_on_disk'])}, fsync {fsync_dict_total(r.get('fsync'))}",
                       flush=True)
-                key = (storage, system, ds, mode)
+                key = (storage, label, ds, mode)
                 rep["runs"] = [x for x in rep["runs"]
                                if (x["storage"], x["system"], x["dataset"], x["mode"]) != key]
-                rep["runs"].append({"storage": storage, "workdir": args.workdir, "system": system,
+                rep["runs"].append({"storage": storage, "workdir": args.workdir, "system": label,
                                     "dataset": ds, "mode": mode, "date": date,
                                     "host": socket.gethostname(), "result": r})
                 path.write_text(json.dumps(rep, indent=1))

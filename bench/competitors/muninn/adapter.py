@@ -41,6 +41,11 @@ except ImportError:  # pragma: no cover
     muninn = None
 
 
+def _has_flush() -> bool:
+    """Whether the binding has the fast write path (ADR 0009: memtable, ``flush``)."""
+    return muninn is not None and hasattr(getattr(muninn, "Database", object), "flush")
+
+
 def _dur(us):
     return f"{int(us)}us"
 
@@ -59,6 +64,15 @@ class MuninnAdapter(Adapter):
     lead_pushdown = True
     #: rows per write in the ``bulk`` ingest mode (bench/ingest.py)
     bulk_rows = 1_000_000
+    #: per-batch ingest mode only: compact+gc every this many writes (None = compact_every;
+    #: 0 = only at the end, e.g. with the fast write path's background flush, ADR 0009)
+    ingest_compact_every = None
+    #: per-batch ingest mode only: submit this many original batches per ``write_many``
+    #: call (one group commit; each batch still its own transaction and system_time)
+    group = 1
+    #: per-batch ingest mode only: this many producer threads calling ``write`` (the
+    #: engine groups concurrent writes into one commit, ADR 0009)
+    producers = 1
 
     def __init__(self, workdir, threads=6, memory_limit_mb=4096, **kw):
         super().__init__(workdir, threads, memory_limit_mb)
@@ -189,7 +203,8 @@ class MuninnAdapter(Adapter):
         if mode == "per-batch":
             if max_batches is not None:
                 starts, ends = starts[:max_batches], ends[:max_batches]
-            compact_every = self.compact_every
+            compact_every = (self.compact_every if self.ingest_compact_every is None
+                             else self.ingest_compact_every)
         elif mode == "bulk":
             n = len(st)
             starts = np.arange(0, n, self.bulk_rows)
@@ -201,8 +216,17 @@ class MuninnAdapter(Adapter):
         t0 = time.perf_counter()
         db = self._create(catalog)
         setup_s = time.perf_counter() - t0
-        lats, maint = self._write_loop(db, data, starts, ends, st[ends - 1], compact_every)
+        calls = None
+        if mode == "per-batch" and self.group > 1:
+            lats, maint, calls = self._write_many_loop(db, data, starts, ends, st[ends - 1],
+                                                       compact_every)
+        elif mode == "per-batch" and self.producers > 1:
+            lats, maint = self._threaded_loop(db, data, starts, ends, st[ends - 1])
+        else:
+            lats, maint = self._write_loop(db, data, starts, ends, st[ends - 1], compact_every)
         t1 = time.perf_counter()
+        if _has_flush():  # fast write path (ADR 0009): memtable -> segment files
+            db.flush()
         db.compact()
         db.gc(grace="0s")
         t2 = time.perf_counter()
@@ -210,7 +234,8 @@ class MuninnAdapter(Adapter):
         del db
         self._open()
         complete = rows == len(st)
-        self.exact = mode == "per-batch" and complete
+        # concurrent producers commit the batches in nondeterministic order
+        self.exact = mode == "per-batch" and complete and self.producers == 1
         if self.exact:
             self._verify_system_time(seq, st)
         return {"mode": mode, "writes": int(len(starts)), "rows": rows,
@@ -222,7 +247,72 @@ class MuninnAdapter(Adapter):
                 "bytes_on_disk": size, "segment_bytes": seg_bytes, "log_bytes": size - seg_bytes,
                 "files": nfiles, "exact_system_time": self.exact,
                 # fsync (count, ns) per category inside db.write only (bench/fsyncstat.c)
-                "write_fsync": None if self.write_fsync is None else self.write_fsync.tolist()}
+                "write_fsync": None if self.write_fsync is None else self.write_fsync.tolist(),
+                "group": self.group, "producers": self.producers, "calls": calls,
+                "fast_write_path": _has_flush()}
+
+    def _write_many_loop(self, db, data, starts, ends, clocks, compact_every):
+        """``write_many`` over groups of ``group`` original batches; latency per call."""
+        lats, maint, calls, done = [], 0.0, 0, 0
+        self.write_fsync = None
+        n = len(starts)
+        for g in range(0, n, self.group):
+            idx = range(g, min(g + self.group, n))
+            items = [{"data": data.slice(int(starts[i]), int(ends[i] - starts[i])),
+                      "clock": int(clocks[i])} for i in idx]
+            t0 = time.perf_counter()
+            res = db.write_many(items)
+            lats.append(time.perf_counter() - t0)
+            calls += 1
+            for i, r in zip(idx, res):
+                assert not isinstance(r, BaseException), r
+                assert r.stored == ends[i] - starts[i], (r, i)
+            before, done = done, done + len(items)
+            if compact_every and done // compact_every > before // compact_every:
+                t1 = time.perf_counter()
+                db.compact()
+                db.gc(grace="0s")
+                maint += time.perf_counter() - t1
+        return lats, maint, calls
+
+    def _threaded_loop(self, db, data, starts, ends, clocks):
+        """``producers`` threads take the original batches in order from a shared counter
+        and ``write`` them (each blocks until durable); latency per write."""
+        import threading
+
+        lock = threading.Lock()
+        nxt = [0]
+        lats: list[float] = []
+        errors: list[BaseException] = []
+        self.write_fsync = None
+
+        def work():
+            mine = []
+            try:
+                while True:
+                    with lock:
+                        i = nxt[0]
+                        nxt[0] += 1
+                    if i >= len(starts):
+                        break
+                    a, b = int(starts[i]), int(ends[i])
+                    t0 = time.perf_counter()
+                    r = db.write(data.slice(a, b - a), clock=int(clocks[i]))
+                    mine.append(time.perf_counter() - t0)
+                    assert r.stored == b - a, (r, a, b)
+            except BaseException as e:  # noqa: BLE001
+                errors.append(e)
+            with lock:
+                lats.extend(mine)
+
+        ts = [threading.Thread(target=work) for _ in range(self.producers)]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join()
+        if errors:
+            raise errors[0]
+        return lats, 0.0
 
     def cold(self):
         self.db = None
