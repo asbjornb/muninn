@@ -98,15 +98,16 @@ can't leak, whatever else they get wrong.
 | `muninn.open(path, *, create=False)` / `muninn.memory()` | open a local directory / an in-memory database |
 | `db.create_table(name, columns={"value": "f64"}, default_clock="received", partition="day")` | types `f64 i64 bool string timestamp` (or `float int bool str datetime`) |
 | `db.add_column(table, name, type)`, `db.create_series(name, table, tags=None, timezone=None, resolution=None)` | |
+| `db.create_series_batch(series, table=None)` | many series (mappings with `name`, `table`, `tags`, `timezone`, `resolution`, or bare names) in one atomic commit — use it for bulk loads |
 | `db.tables()`, `db.table(name)`, `db.series(table=None, **tag_filters)` | `TableInfo` / `SeriesInfo` dataclasses |
 | `db.write(data, *, batch_id=None, clock=None, assume_utc=False)` | `WriteResult(stored, duplicates, batch_already_committed, system_time, first_seq)` |
 | `latest(table, series=None, value_from=None, value_to=None, clock=None, frontier=None, system=None)` | SPEC §6.1 |
-| `history(...)` (same arguments) | §6.2, every visible version, tombstones included (`deleted`) |
+| `history(..., lead=None)` (same arguments) | §6.2, every visible version, tombstones included (`deleted`); `lead=(column, min, max)` keeps only versions with `min <= value_time - column < max` (a `timestamp` column, e.g. a forecast's issue time), evaluated by the engine and recorded in the receipt |
 | `replay(table, from_, to, *, series, value_from, value_to, clock, system)` | §6.3, arrival order, `(from_, to]` |
 | `grid(table, frontiers, *, window=("0h", "36h") \| value_from/value_to, series, clock, system)` | §6.4 |
 | `asof_join(table, left, clock=None, system=None, *, assume_utc=False, suffix="_right")` | §6.5, appends to `left` |
 | `db.snapshot()` | a read-only `Snapshot` with the same read methods, pinned to one commit |
-| `db.compact(table=None, partition=None)`, `db.gc(grace=None)` | maintenance; neither changes a result |
+| `db.compact(table=None, partition=None)`, `db.gc(grace=None)` | maintenance; neither changes a result (`gc` also truncates the commit log, `GcReport.log_deleted`) |
 | `muninn.receipt(result)`, `muninn.replay_receipt(db, receipt, *, left=None)` | SPEC §11 |
 
 Every read on `db` takes a fresh snapshot. A `Snapshot` keeps seeing exactly the same data

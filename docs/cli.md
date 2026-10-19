@@ -189,7 +189,10 @@ line. Failures print `{"error": "<code>", "message": ...}` and make the exit cod
 
 ## Operations
 
-- `compact [--table T]` merges each partition's segments into one; results never change.
+- `compact [--table T]` merges, per partition, the segments whose versions became known
+  (on the table's default clock) in the same period of the partition granularity — e.g. a
+  day partition keeps one segment per arrival day, which lets reads bounded by knowledge
+  time skip the others. Results never change.
 - `gc [--grace 1h]` deletes segment files no committed state references (left by failed
   writes, or retired by compaction) once they are older than the grace period. It also
   truncates the commit log: it checkpoints the head and removes the entries and

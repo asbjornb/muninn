@@ -3,13 +3,15 @@
 //! The Muninn storage engine: an implementation of [`muninn_core::Database`] over any
 //! [`muninn_store::Store`] (memory, local filesystem, later object stores).
 //!
-//! ## Architecture (decisions 0004, 0005)
+//! ## Architecture (decisions 0004–0008)
 //!
 //! - **Commit log.** `log/<20-digit version>.json`, one entry per committed change (catalog
 //!   change, write batch, compaction, GC), written with `put_if_absent`. The entry *is* the
-//!   commit. Every few versions a full-state checkpoint `log/<version>.checkpoint.json` is
-//!   written, and `log/_last_checkpoint` names the newest one (a hint only: recovery
-//!   verifies it and falls back to listing). See [`log`].
+//!   commit. A full-state checkpoint `log/<version>.checkpoint.json` is written once the
+//!   entries since the last one outweigh it (size-triggered), and `log/_last_checkpoint`
+//!   names the newest one (a hint only: recovery verifies it and falls back to listing).
+//!   GC truncates the log below the older of the two newest checkpoints (decision 0007).
+//!   See [`log`].
 //! - **Segments.** A write encodes its new versions as one immutable segment file per
 //!   touched `(table, partition)` (`muninn-format`), writes them, then commits the log
 //!   entry. A crash before the commit leaves orphan files that [`Engine::gc`] removes.

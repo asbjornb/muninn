@@ -4,6 +4,9 @@ a JSON + Markdown report to bench/results/<date>-<host>/<scale>.{json,md}.
     uv run --project bench python bench/run.py --scale small
     uv run --project bench python bench/run.py --scale medium --systems duckdb-native,clickhouse
     uv run --project bench python bench/run.py --scale tiny --check      # + oracle check
+    # re-run one system and merge it into an existing report (other systems kept as they
+    # were; the agreement check is recomputed across all of them):
+    uv run --project bench python bench/run.py --scale small --systems muninn --merge results/<dir>
 
 Measurement protocol, per (system, dataset):
   * ingest: the adapter's own load from the generator's Parquet into its tuned layout
@@ -208,6 +211,11 @@ def markdown(report) -> str:
              f"{report['threads']} threads and {report['memory_mb']} MB. "
              "Latencies in ms, end to end through the Python client to a canonical Arrow table. "
              "p50/p99 over warm samples (few samples ⇒ p99 ≈ max).")
+    for s, r in report.get("rerun", {}).items():
+        L.append("")
+        L.append(f"**{s}** was re-run on {r['date']} on `{r['machine']['host']}` (datasets: "
+                 f"{', '.join(r['datasets'])}) and merged into this report; the other systems' "
+                 "numbers are from the original run.")
     L.append("")
     L.append("## Datasets")
     L.append("")
@@ -334,6 +342,9 @@ def main(argv=None):
     ap.add_argument("--workdir", default=str(HERE / "data" / "work"))
     ap.add_argument("--out", default=None, help="report directory (default results/<date>-<host>)")
     ap.add_argument("--check", action="store_true", help="also compare with the reference (tiny only)")
+    ap.add_argument("--merge", default=None,
+                    help="report directory whose <scale>.json gets the systems of this run "
+                         "(replacing their earlier results; the others are kept)")
     args = ap.parse_args(argv)
 
     data_dir = Path(args.data) / f"{args.scale}-s{args.seed}"
@@ -353,6 +364,14 @@ def main(argv=None):
     systems = args.systems.split(",")
     for s in systems:
         run_system(s, data_dir, datasets, args.scale, args, report)
+    if args.merge:
+        base = json.loads((Path(args.merge) / f"{args.scale}.json").read_text())
+        for s in systems:
+            base["systems"][s] = report["systems"][s]
+            base.setdefault("rerun", {})[s] = {"date": date, "machine": report["machine"],
+                                               "datasets": datasets}
+        report = base
+        args.out = args.merge
     report["cross_check"] = cross_check(report)
     if args.check:
         report["oracle_check"] = oracle_check(data_dir, datasets, args.scale, systems, args)

@@ -25,7 +25,7 @@ object-store backend, no vintage-delta compression, and the API may still change
 | [crates/](crates/) | Rust: core types + in-memory model, store backends, segment format, engine, CLI, Python bindings |
 | [bench/](bench/) | Synthetic energy datasets, query workload, DuckDB/ClickHouse baselines, results |
 | [docs/cli.md](docs/cli.md) | CLI walkthrough |
-| [decisions/](decisions/) | Decision records 0001–0006 |
+| [decisions/](decisions/) | Decision records 0001–0008 |
 
 ```sh
 task test       # Rust workspace: unit, conformance, differential fuzz vs model, crash tests
