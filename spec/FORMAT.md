@@ -60,10 +60,10 @@ segment file that no entry (still) references is garbage: it MUST be ignored.
 
 Garbage collection may **truncate** the log (§3.6): entry 1 is then replaced by a marker
 and the entries `2..T-1` are deleted, where a valid checkpoint at version `T` or later
-summarises them. The entries present are then `1` (the marker) and the gapless range
-`T..=N`. A reader that finds entry `N+1` absent MUST then also find entry `N` present
-(and, for `N = 1`, not the marker) before concluding that `N` is the head; otherwise its
-state is older than the truncation and it MUST reload from a checkpoint (§3.6).
+summarises them. The entries present are then `1` (the marker), possibly some leftovers
+below `T`, and the gapless range `T..=N`. A reader that finds entry `N+1` absent MUST
+then list `log/`: if any entry greater than `N+1` is present, its state is older than a
+truncation and it MUST reload from a checkpoint (§3.6); otherwise `N` was the head.
 
 Segment names written by the reference engine are
 `<creation wall time µs, 20 digits>-<64-bit nonce, 16 lowercase hex>.seg`. Readers MUST
@@ -222,24 +222,27 @@ with every commit forever. The rules (decision 0007), with `G` the grace period 
    fallback if the newest is damaged.
 2. Removable are the entries `< T` and the checkpoints `< T`. GC removes each only after
    it has itself observed it removable for at least `G` (its own clock).
-3. Entries are removed in **ascending** order, and only after every lower entry is gone:
-   entry 1 is not deleted but overwritten with the **truncation marker**
+3. Entry 1 is not deleted but overwritten with the **truncation marker**
    `{"format": 2, "version": 1, "kind": "truncated", "wall_time": t, "next_seq": 1,
-   "last_system_time": null}`, entries `2, 3, …` are then deleted. Entry 1 therefore
-   always exists once written: nobody can create it again, and a reader that replays
-   from the start fails on the marker instead of seeing an empty database.
-4. **Readers** detect a truncation with rule 3: having found entry `v+1` absent, they read
-   entry `v`; if it is absent (or `v = 1` and it is the marker), the entries after their
-   state were removed and they reload from a checkpoint. If `v` is present, `v+1` cannot
-   have been deleted yet (ascending order) — it did not exist when they looked.
+   "last_system_time": null}`. Entry 1 therefore always exists once written: nobody can
+   create it again, and a reader that replays from the start fails on the marker instead
+   of seeing an empty database. The other removable entries and checkpoints are deleted
+   in any order (a crash may leave any subset of them; GC removes the rest later).
+   Entry `T` and every entry above it are never removed by this truncation.
+4. **Readers** detect a truncation as follows: having found entry `v+1` absent, they list
+   `log/`. If an entry greater than `v+1` is present, `v+1` was removed (or written and
+   followed by more entries since they looked — either way their state is stale) and they
+   reload from a checkpoint. If none is, `v+1` had not been written when they looked:
+   whenever an entry has been removed, entry `T` above it is present (rule 3), and entries
+   are created in order.
 5. **Writers** commit entry `v+1` only after a recent proof that `v` is the head: their own
-   successful commit of `v`, or a read that found `v+1` absent and then `v` present (rule
-   4), younger than `G / 2` by their own clock. Otherwise they repeat that read first, and
-   treat a present `v+1` or a removed `v` as a conflict. Since GC deletes `v+1` no earlier
-   than `G` after it first saw it, which is after `v+1` was created, a lagging writer can
-   never re-create a removed entry (assuming, as in §3.5, that a store call completes
-   within `G / 2`). `G = 0` disables the timing (single process tests only); writers then
-   check the head before every commit.
+   successful commit of `v`, or a read that found `v+1` absent and nothing beyond it (rule
+   4), younger than `G / 2` by their own clock. Otherwise they repeat that check first and
+   treat a present or removed `v+1` as a conflict. Since GC deletes `v+1` no earlier than
+   `G` after it first saw it, which is after `v+1` was created, a lagging writer can never
+   re-create a removed entry (assuming, as in §3.5, that a store call completes within
+   `G / 2`). `G = 0` disables the timing (single process tests only); writers then check
+   the head before every commit.
 
 A reader that only knows format 1 does not know rules 3–5; a log that was ever truncated
 contains format-2 entries and checkpoints, which such a reader rejects (§7).

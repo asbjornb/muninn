@@ -740,16 +740,20 @@ impl<S: Store> Engine<S> {
             head
         };
         let mut purged = Vec::new();
-        for key in candidates {
-            self.shared
-                .store
-                .delete(&key)
-                .map_err(|e| store_err(&format!("deleting {key}"), e))?;
-            lock(&self.unreferenced_since).remove(&key);
-            if st.retired.iter().any(|(k, _)| *k == key) {
-                purged.push(key.as_str().to_owned());
+        self.shared
+            .store
+            .delete_many(&candidates)
+            .map_err(|e| store_err("deleting unreferenced segments", e))?;
+        {
+            let retired: BTreeSet<&Key> = st.retired.iter().map(|(k, _)| k).collect();
+            let mut since = lock(&self.unreferenced_since);
+            for key in candidates {
+                since.remove(&key);
+                if retired.contains(&key) {
+                    purged.push(key.as_str().to_owned());
+                }
+                report.deleted.push(key);
             }
-            report.deleted.push(key);
         }
         // Retired entries whose file is already gone (deleted by an earlier GC that
         // crashed before committing, or by another writer's GC) can be forgotten too.
@@ -779,9 +783,9 @@ impl<S: Store> Engine<S> {
     /// Log truncation (decision 0007, FORMAT.md §3.6): checkpoints the head if the newest
     /// checkpoint is older, then removes everything only needed to replay to the
     /// *second*-newest checkpoint `T` — entries below `T` (entry 1 is replaced by the
-    /// truncation marker, the others deleted, in ascending order) and checkpoints below
-    /// `T` — once this engine has seen them truncatable for the grace period. The newest
-    /// checkpoint must verify first; the second-newest one stays as a fallback.
+    /// truncation marker, the others deleted) and checkpoints below `T` — once this
+    /// engine has seen them truncatable for the grace period. The newest checkpoint must
+    /// verify first; the second-newest one stays as a fallback.
     fn gc_log(&self, st: &State, now: i64, grace: i64) -> Result<Vec<Key>> {
         let store = &self.shared.store;
         let listed = store
@@ -832,43 +836,33 @@ impl<S: Store> Engine<S> {
                 .get(k)
                 .is_some_and(|&first| now.saturating_sub(first) >= grace)
         };
-        let mut deleted = Vec::new();
-        // Entries in ascending order, stopping at the first that is not ripe: an entry is
-        // only ever removed after every lower one is gone (entry 1: marked), which is what
-        // lets readers tell a truncated log from the head (`head_probe`).
-        for &v in entries.iter().filter(|&&v| v < keep_from) {
-            let key = log::entry_key(v);
-            if !ripe(&since, &key) {
-                break;
-            }
-            if v == 1 {
-                let bytes = store
-                    .get(&key)
-                    .map_err(|e| store_err("reading log entry 1", e))?;
-                let marked = from_json::<LogEntry>(&bytes, "log entry 1")
-                    .is_ok_and(|e| e.is_truncation_marker());
-                if !marked {
-                    store
-                        .put(&key, &to_json(&LogEntry::truncation_marker(now))?)
-                        .map_err(|e| store_err("marking log entry 1", e))?;
-                }
-            } else {
+        // Entry 1 becomes the truncation marker (never deleted, so it cannot be created
+        // again and a replay from the start fails instead of seeing an empty database);
+        // the other ripe entries and checkpoints below `keep_from` are deleted, in any
+        // order: readers recognise a truncation by checkpoint `keep_from` and its entry,
+        // which stay (`after_head`).
+        let one = log::entry_key(1);
+        if entries.first() == Some(&1) && keep_from > 1 && ripe(&since, &one) {
+            let bytes = store
+                .get(&one)
+                .map_err(|e| store_err("reading log entry 1", e))?;
+            let marked = from_json::<LogEntry>(&bytes, "log entry 1")
+                .is_ok_and(|e| e.is_truncation_marker());
+            if !marked {
                 store
-                    .delete(&key)
-                    .map_err(|e| store_err(&format!("deleting {key}"), e))?;
-                since.remove(&key);
-                deleted.push(key);
+                    .put(&one, &to_json(&LogEntry::truncation_marker(now))?)
+                    .map_err(|e| store_err("marking log entry 1", e))?;
             }
         }
-        for &v in cks.iter().filter(|&&v| v < keep_from) {
-            let key = log::checkpoint_key(v);
-            if ripe(&since, &key) {
-                store
-                    .delete(&key)
-                    .map_err(|e| store_err(&format!("deleting {key}"), e))?;
-                since.remove(&key);
-                deleted.push(key);
-            }
+        let deleted: Vec<Key> = candidates
+            .into_iter()
+            .filter(|k| *k != one && ripe(&since, k))
+            .collect();
+        store
+            .delete_many(&deleted)
+            .map_err(|e| store_err("truncating the log", e))?;
+        for k in &deleted {
+            since.remove(k);
         }
         Ok(deleted)
     }
@@ -1004,7 +998,7 @@ struct CaughtUp {
 }
 
 /// Applies every entry after `state.version` until the first missing one, which must be
-/// the head and not a truncation (see [`head_probe`]).
+/// the head and not a truncation (see [`after_head`]).
 fn catch_up<S: Store>(shared: &Shared<S>, mut state: State) -> Result<CaughtUp> {
     let (mut entries, mut bytes) = (0, 0);
     loop {
@@ -1012,15 +1006,18 @@ fn catch_up<S: Store>(shared: &Shared<S>, mut state: State) -> Result<CaughtUp> 
         let probe = Instant::now();
         let raw = match shared.store.get(&log::entry_key(v)) {
             Ok(b) => b,
-            Err(e) if e.kind() == StoreErrorKind::NotFound => {
-                entry_present(shared, state.version)?;
-                return Ok(CaughtUp {
-                    state,
-                    entries,
-                    bytes,
-                    at_head: probe,
-                });
-            }
+            Err(e) if e.kind() == StoreErrorKind::NotFound => match after_head(shared, v)? {
+                Beyond::Nothing => {
+                    return Ok(CaughtUp {
+                        state,
+                        entries,
+                        bytes,
+                        at_head: probe,
+                    });
+                }
+                Beyond::Next => continue, // committed meanwhile
+                Beyond::Truncated(why) => return Err(truncated(why)),
+            },
             Err(e) => return Err(store_err(&format!("reading log version {v}"), e)),
         };
         let entry: LogEntry = from_json(&raw, &format!("log entry {v}"))?;
@@ -1035,33 +1032,43 @@ fn catch_up<S: Store>(shared: &Shared<S>, mut state: State) -> Result<CaughtUp> 
     }
 }
 
-/// Having found entry `v + 1` absent, proves it was never written (rather than
-/// truncated away): GC removes entries only in ascending order and replaces entry 1 by
-/// the truncation marker instead of deleting it, so if entry `v` is still present (and,
-/// for `v = 1`, not the marker), entry `v + 1` cannot have been removed yet — it did not
-/// exist when we looked (decision 0007).
-fn entry_present<S: Store>(shared: &Shared<S>, v: u64) -> Result<()> {
-    if v == 0 {
-        return Ok(()); // entry 1 is never deleted
-    }
-    match shared.store.get(&log::entry_key(v)) {
-        Ok(b) if v == 1 => {
-            if from_json::<LogEntry>(&b, "log entry 1").is_ok_and(|e| e.is_truncation_marker()) {
-                Err(truncated("entry 1 was replaced by the truncation marker"))
-            } else {
-                Ok(())
-            }
-        }
-        Ok(_) => Ok(()),
-        Err(e) if e.kind() == StoreErrorKind::NotFound => {
-            Err(truncated(format!("entry {v} was removed")))
-        }
-        Err(e) => Err(store_err(&format!("reading log version {v}"), e)),
-    }
+/// What lies beyond a missing entry `v` (see [`after_head`]).
+enum Beyond {
+    /// The log ends before `v`: `v - 1` was the head when we looked.
+    Nothing,
+    /// Entry `v` exists now (written since we looked).
+    Next,
+    /// Entry `v` was removed by log truncation (our state is too old).
+    Truncated(String),
 }
 
-/// Proves that `v` is the head now: entry `v + 1` absent, then entry `v` present (see
-/// [`entry_present`]). `Conflict` if `v + 1` exists.
+/// Having found entry `v` absent, tells a log that ends there from one that was truncated
+/// past it (decision 0007, FORMAT.md §3.6). GC removes entries only below a checkpoint
+/// `T` whose entry it keeps, and never removes an entry at or above the newest such `T`
+/// — so whenever `v` has been removed, some entry `> v` is present. Listed after `v` was
+/// found absent, no entry `> v` can exist if `v` had not been written yet (entries are
+/// created in order). Deletions therefore need no order and no individual sync.
+fn after_head<S: Store>(shared: &Shared<S>, v: u64) -> Result<Beyond> {
+    let listed = shared
+        .store
+        .list("log/")
+        .map_err(|e| store_err("listing the log", e))?;
+    let mut beyond = None;
+    for k in &listed {
+        match log::parse_entry_key(k.as_str()) {
+            Some(e) if e == v => return Ok(Beyond::Next),
+            Some(e) if e > v => beyond = Some(beyond.map_or(e, |b: u64| b.min(e))),
+            _ => {}
+        }
+    }
+    Ok(match beyond {
+        Some(e) => Beyond::Truncated(format!("entry {v} is missing but entry {e} exists")),
+        None => Beyond::Nothing,
+    })
+}
+
+/// Proves that `v` is the head now: entry `v + 1` absent and nothing beyond it (see
+/// [`after_head`]). `Conflict` if the log moved past `v`.
 fn head_probe<S: Store>(shared: &Shared<S>, v: u64) -> Result<()> {
     match shared.store.head(&log::entry_key(v + 1)) {
         Ok(_) => {
@@ -1073,7 +1080,14 @@ fn head_probe<S: Store>(shared: &Shared<S>, v: u64) -> Result<()> {
         Err(e) if e.kind() == StoreErrorKind::NotFound => {}
         Err(e) => return Err(store_err(&format!("reading log version {}", v + 1), e)),
     }
-    entry_present(shared, v)
+    match after_head(shared, v + 1)? {
+        Beyond::Nothing => Ok(()),
+        Beyond::Next => Err(Error::new(
+            ErrorKind::Conflict,
+            format!("log version {} exists", v + 1),
+        )),
+        Beyond::Truncated(why) => Err(truncated(why)),
+    }
 }
 
 // ---------------------------------------------------------------------------------------

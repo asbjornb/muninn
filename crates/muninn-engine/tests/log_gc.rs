@@ -157,6 +157,60 @@ fn lagging_writer_after_truncation_conflicts_and_recovers() {
     assert_eq!(fingerprint(&fresh), fingerprint(&model));
 }
 
+proptest! {
+    #![proptest_config(ProptestConfig { cases: cases(64), ..ProptestConfig::default() })]
+
+    /// GC deletes truncated entries in no particular order (and a crash may leave any
+    /// subset of them): lagging readers and writers at any version still recognise the
+    /// truncation, never mistake a hole for the head and never re-create an entry.
+    #[test]
+    fn partial_truncation_in_any_order_is_detected(
+        lag in 0u64..12,
+        keep in prop::collection::vec(any::<bool>(), 16),
+    ) {
+        let store: Mem = Arc::new(MemoryStore::new());
+        let a = Engine::open(Arc::clone(&store), opts()).unwrap();
+        setup(&a);
+        let mut lagging = Vec::new();
+        for i in 0..12 {
+            if i == lag {
+                lagging.push(Engine::open(Arc::clone(&store), opts()).unwrap());
+                lagging.push(Engine::open(Arc::clone(&store), opts()).unwrap());
+            }
+            a.write(&WriteBatch::new(h(i as i64), vec![row("a", i as i64, i as i64, 1.0)]))
+                .unwrap();
+        }
+        a.checkpoint().unwrap();
+        a.write(&WriteBatch::new(h(20), vec![row("b", 0, 0, 1.0)])).unwrap();
+        a.checkpoint().unwrap();
+        // What GC would remove below the older checkpoint, but only a random subset.
+        let cks = checkpoints(&store);
+        let t = cks[cks.len() - 2];
+        for v in 2..t {
+            if !keep[(v as usize) % keep.len()] {
+                store.delete(&log::entry_key(v)).unwrap();
+            }
+        }
+        let expected = fingerprint(&a);
+        let (reader, writer) = (&lagging[0], &lagging[1]);
+        prop_assert_eq!(reader.refresh().unwrap(), a.version());
+        prop_assert_eq!(fingerprint(reader), expected.clone());
+        let b = Engine::open(Arc::clone(&store), opts()).unwrap();
+        prop_assert_eq!(fingerprint(&b), expected);
+        // A writer that lagged (its next entry may be gone) conflicts instead of writing
+        // that entry again; the retry commits at the head.
+        let before = entries(&store);
+        let batch = WriteBatch::new(h(30), vec![row("b", 5, 30, 2.0)]);
+        let r = write_retrying(writer, &batch);
+        prop_assert_eq!(r.stored, 1);
+        let after = entries(&store);
+        let new: Vec<u64> = after.iter().filter(|v| !before.contains(v)).copied().collect();
+        prop_assert_eq!(new, vec![a.version() + 1]);
+        a.refresh().unwrap();
+        prop_assert_eq!(fingerprint(&a), fingerprint(writer));
+    }
+}
+
 /// The same for a reader: `refresh` notices the truncation and reloads.
 #[test]
 fn lagging_reader_refreshes_across_a_truncation() {

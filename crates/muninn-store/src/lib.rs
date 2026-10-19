@@ -279,6 +279,13 @@ pub trait Store: Send + Sync {
 
     /// Removes the object. Deleting an absent key succeeds (idempotent).
     fn delete(&self, key: &Key) -> Result<()>;
+
+    /// Removes several objects, in no particular order; like [`Store::delete`] for each
+    /// (durable once it returns; on an error some may have been removed). Backends may
+    /// do this more cheaply than one `delete` each (one directory sync per directory).
+    fn delete_many(&self, keys: &[Key]) -> Result<()> {
+        keys.iter().try_for_each(|k| self.delete(k))
+    }
 }
 
 macro_rules! forward_store {
@@ -291,6 +298,7 @@ macro_rules! forward_store {
             fn put_if_absent(&self, key: &Key, data: &[u8]) -> Result<PutOutcome> { (**self).put_if_absent(key, data) }
             fn list(&self, prefix: &str) -> Result<Vec<Key>> { (**self).list(prefix) }
             fn delete(&self, key: &Key) -> Result<()> { (**self).delete(key) }
+            fn delete_many(&self, keys: &[Key]) -> Result<()> { (**self).delete_many(keys) }
         }
     )*};
 }

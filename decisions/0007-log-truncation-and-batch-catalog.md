@@ -25,12 +25,16 @@ longer exist.
   bytes; recovery reads at most about one checkpoint's worth of entries.
 - **Log truncation by GC** (FORMAT.md §3.6, log format 2). GC checkpoints the head, keeps
   the two newest checkpoints, and removes entries and checkpoints below the second-newest
-  one once it has seen them removable for the grace period — entries in ascending order,
-  entry 1 overwritten by a `truncated` marker instead of deleted. The newest checkpoint
-  must verify first. Readers that find `v+1` absent check that `v` is still present;
-  if not, they reload from a checkpoint. Writers commit `v+1` only within `G / 2` of a
-  proof that `v` was the head, so a writer that lagged behind a truncation conflicts
-  instead of re-creating a deleted entry.
+  one once it has seen them removable for the grace period — in any order, batched
+  (`Store::delete_many`, one directory sync per directory), entry 1 overwritten by a
+  `truncated` marker instead of deleted. The newest checkpoint must verify first.
+  Entry `T` and everything above it stay, so a reader that finds `v+1` absent lists
+  `log/`: an entry beyond `v+1` means its state is stale (truncated past) and it reloads
+  from a checkpoint. Writers commit `v+1` only within `G / 2` of a proof that `v` was the
+  head, so a writer that lagged behind a truncation conflicts instead of re-creating a
+  deleted entry. (A first version deleted entries in ascending order and checked that
+  `v` was still present; that needs every delete to be durable before the next — one
+  directory fsync per entry — so the listing rule replaced it.)
 - **Version bump.** Entries and checkpoints are written with `format: 2`; format 1 is read
   unchanged. Truncation is the only semantic difference, and a format-1 reader rejects
   format-2 files rather than misreading a truncated log.
@@ -44,8 +48,10 @@ longer exist.
 - Losing both retained checkpoints (bit rot) makes the database unrecoverable from the
   log alone, where before a full replay was possible. Both are sealed and verified; the
   segments carry the data either way.
-- A truncation-safe writer needs one extra `HEAD` + `GET` before a commit when its last
-  proof of the head is older than `G / 2` (every commit when `G = 0`).
+- Detecting the head costs a `LIST` of `log/` whenever a reader reaches the end of the
+  log (refresh, reload, GC), and a truncation-safe writer needs a `HEAD` + `LIST` before a
+  commit when its last proof of the head is older than `G / 2` (every commit when
+  `G = 0`). Truncation keeps `log/` short, so the listing stays small.
 - `create_series` one at a time is still one commit each and copies the catalog per call
   (snapshots share it); bulk loads should use the batch API (Python
   `create_series_batch`, CLI `series import`, and `restore` batches runs of series).
