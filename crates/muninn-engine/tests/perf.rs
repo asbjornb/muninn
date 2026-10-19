@@ -364,3 +364,32 @@ fn perf_reads() {
     });
     eprintln!("    ({} rows)", r.rows.len());
 }
+
+/// Store operations per write (forecast-like workload, compact + gc every 200 writes).
+#[test]
+#[ignore]
+fn perf_store_ops() {
+    use muninn_store::FaultyStore;
+    let store = Arc::new(FaultyStore::new(Arc::new(MemoryStore::new()), 0));
+    let e = Engine::open(Arc::clone(&store), EngineOptions::default()).unwrap();
+    setup(&e, 2);
+    let start = store.op_count() as usize;
+    let writes = 1000i64;
+    for run in 0..writes / 2 {
+        for s in 0..2 {
+            let rows = run_rows(&format!("s{s}"), run * HOUR, s);
+            e.write(&WriteBatch::new(ts(run * HOUR), rows)).unwrap();
+        }
+        if (run + 1) % 100 == 0 {
+            e.compact_all().unwrap();
+            e.gc_with_grace(std::time::Duration::ZERO).unwrap();
+        }
+    }
+    let mut counts = std::collections::BTreeMap::new();
+    for r in &store.op_log()[start..] {
+        *counts.entry(format!("{:?}", r.op)).or_insert(0usize) += 1;
+    }
+    for (k, v) in counts {
+        eprintln!("{k}: {:.2} per write", v as f64 / writes as f64);
+    }
+}

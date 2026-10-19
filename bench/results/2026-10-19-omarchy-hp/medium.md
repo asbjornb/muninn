@@ -2,6 +2,8 @@
 
 2026-10-19 on `omarchy-hp`: AMD Ryzen 5 PRO 5650U with Radeon Graphics, 12 logical CPUs, 14.9 GB RAM, Linux-7.2.3-arch1-3-x86_64-with-glibc2.44. Systems limited to 6 threads and 4096 MB. Latencies in ms, end to end through the Python client to a canonical Arrow table. p50/p99 over warm samples (few samples ⇒ p99 ≈ max).
 
+**muninn** was re-run on 2026-10-19 on `omarchy-hp` (datasets: da_prices, forecasts, settlement, sparse, backfill) and merged into this report; the other systems' numbers are from the original run.
+
 ## Datasets
 
 | dataset | series | versions | points | versions/point (mean / p99 / max) | tombstones | null published | generator Parquet |
@@ -16,45 +18,46 @@
 
 | dataset | muninn ingest s | muninn size (B/version) | duckdb-native ingest s | duckdb-native size (B/version) | duckdb-parquet ingest s | duckdb-parquet size (B/version) | clickhouse ingest s | clickhouse size (B/version) |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| da_prices | 144.7 | 59.4 MB (34.45) | 0.3 | 17.8 MB (10.3) | 0.3 | 9.8 MB (5.68) | 0.6 | 6.1 MB (3.51) |
-| forecasts | 2420.6 | 543.1 MB (22.8) | 4.4 | 568.0 MB (23.85) | 4.3 | 85.3 MB (3.58) | 9.3 | 71.2 MB (2.99) |
-| settlement | 291.0 | 82.6 MB (22.56) | 0.7 | 101.8 MB (27.79) | 0.6 | 19.0 MB (5.19) | 1.6 | 12.7 MB (3.47) |
-| sparse | - | - | 0.9 | 113.0 MB (36.51) | 1.0 | 102.1 MB (32.97) | 3.1 | 97.7 MB (31.57) |
-| backfill | 24.0 | 21.9 MB (8.3) | 0.4 | 47.0 MB (17.86) | 0.5 | 34.2 MB (13.0) | 1.1 | 20.3 MB (7.72) |
+| da_prices | 456.1 | 6.7 MB (3.88) | 0.3 | 17.8 MB (10.3) | 0.3 | 9.8 MB (5.68) | 0.6 | 6.1 MB (3.51) |
+| forecasts | 1940.5 | 75.2 MB (3.16) | 4.4 | 568.0 MB (23.85) | 4.3 | 85.3 MB (3.58) | 9.3 | 71.2 MB (2.99) |
+| settlement | 508.6 | 13.6 MB (3.7) | 0.7 | 101.8 MB (27.79) | 0.6 | 19.0 MB (5.19) | 1.6 | 12.7 MB (3.47) |
+| sparse | 12.2 | 133.0 MB (42.97) | 0.9 | 113.0 MB (36.51) | 1.0 | 102.1 MB (32.97) | 3.1 | 97.7 MB (31.57) |
+| backfill | 52.9 | 16.6 MB (6.29) | 0.4 | 47.0 MB (17.86) | 0.5 | 34.2 MB (13.0) | 1.1 | 20.3 MB (7.72) |
 
 ## Query latency (ms): p50 / p99 warm, cold
 
 | query | rows | muninn | duckdb-native | duckdb-parquet | clickhouse |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `fc_asof_single` | 96 | 5.27 / 6.74, 6.76 | 4.79 / 8.89, 9.64 | 12 / 15, 16 | 8.66 / 10, 11 |
-| `da_asof_published` | 57 | 1.30 / 2.38, 1.52 | 1.77 / 4.31, 6.39 | 6.48 / 8.89, 9.96 | 4.17 / 5.07, 6.36 |
-| `st_asof_system` | 96 | 3.11 / 5.05, 3.27 | 2.15 / 4.64, 7.06 | 8.03 / 11, 13 | 4.40 / 5.49, 6.24 |
-| `sp_asof_single` | 6 | - | 1.70 / 4.61, 6.76 | 13 / 15, 16 | 4.84 / 6.58, 6.67 |
-| `bf_asof_single` | 24 | 2.41 / 3.26, 3.50 | 1.78 / 3.74, 6.36 | 8.07 / 11, 13 | 4.15 / 6.53, 5.84 |
-| `fc_grid_365` | 52,416 | 2285 / 2446, 2575 | 1109 / 1174, 1252 | 1367 / 1416, 1444 | 10654 / 10963, 10292 |
-| `fc_grid_365_all` | 157,248 | 5208 / 5274, 5719 | 5063 / 5214, 4979 | 5134 / 5206, 5128 | 33415 / 33697, 33171 |
-| `da_grid_365` | 1,863,360 | 2379 / 2422, 2489 | 843 / 853, 916 | 880 / 885, 935 | 1747 / 1770, 1571 |
-| `st_grid_365` | 37,795 | 93 / 104, 127 | 40 / 42, 53 | 45 / 52, 86 | 123 / 134, 125 |
-| `bf_grid_365` | 17,156 | 15 / 15, 15 | 12 / 14, 19 | 19 / 21, 26 | 19 / 32, 22 |
-| `fc_history_day` | 22,837 | 8.51 / 13, 8.92 | 4.08 / 7.66, 11 | 11 / 15, 18 | 6.54 / 17, 12 |
-| `st_history_month` | 8,198 | 11 / 15, 13 | 2.47 / 5.60, 7.55 | 8.80 / 13, 15 | 4.99 / 6.15, 5.98 |
-| `fc_replay_6h` | 16,848 | 103 / 123, 101 | 5.58 / 13, 16 | 22 / 23, 27 | 15 / 50, 51 |
-| `sp_replay_day` | 8,955 | - | 16 / 19, 47 | 85 / 89, 87 | 136 / 140, 130 |
-| `fc_lead_24h` | 8,559 | 1030 / 1064, 1285 | 9.15 / 25, 28 | 39 / 41, 43 | 48 / 51, 48 |
-| `st_latest_now` | 26,868 | 53 / 55, 53 | 11 / 12, 34 | 57 / 58, 63 | 33 / 35, 34 |
-| `sp_latest_now` | 156,891 | - | 64 / 70, 115 | 133 / 139, 152 | 253 / 269, 271 |
-| `fc_latest_now` | 2,868 | 59 / 60, 84 | 15 / 18, 23 | 26 / 30, 35 | 44 / 45, 47 |
-| `da_asof_join_signals` | 10,000 | 197 / 204, 202 | 202 / 209, 226 | 225 / 238, 246 | 922 / 980, 853 |
-| `fc_asof_join_lead24` | 2,880 | 190 / 192, 198 | 73 / 82, 107 | 85 / 88, 102 | 333 / 404, 423 |
+| `fc_asof_single` | 96 | 1.04 / 3.73, 4.54 | 4.79 / 8.89, 9.64 | 12 / 15, 16 | 8.66 / 10, 11 |
+| `da_asof_published` | 57 | 0.22 / 0.33, 0.47 | 1.77 / 4.31, 6.39 | 6.48 / 8.89, 9.96 | 4.17 / 5.07, 6.36 |
+| `st_asof_system` | 96 | 0.62 / 0.71, 0.92 | 2.15 / 4.64, 7.06 | 8.03 / 11, 13 | 4.40 / 5.49, 6.24 |
+| `sp_asof_single` | 6 | 1.58 / 3.87, 5.19 | 1.70 / 4.61, 6.76 | 13 / 15, 16 | 4.84 / 6.58, 6.67 |
+| `bf_asof_single` | 24 | 0.57 / 0.68, 0.89 | 1.78 / 3.74, 6.36 | 8.07 / 11, 13 | 4.15 / 6.53, 5.84 |
+| `fc_grid_365` | 52,416 | 417 / 467, 1133 | 1109 / 1174, 1252 | 1367 / 1416, 1444 | 10654 / 10963, 10292 |
+| `fc_grid_365_all` | 157,248 | 1205 / 1208, 1213 | 5063 / 5214, 4979 | 5134 / 5206, 5128 | 33415 / 33697, 33171 |
+| `da_grid_365` | 1,863,360 | 658 / 682, 668 | 843 / 853, 916 | 880 / 885, 935 | 1747 / 1770, 1571 |
+| `st_grid_365` | 37,795 | 23 / 24, 24 | 40 / 42, 53 | 45 / 52, 86 | 123 / 134, 125 |
+| `bf_grid_365` | 17,156 | 4.36 / 4.76, 4.59 | 12 / 14, 19 | 19 / 21, 26 | 19 / 32, 22 |
+| `fc_history_day` | 22,837 | 6.85 / 8.06, 8.41 | 4.08 / 7.66, 11 | 11 / 15, 18 | 6.54 / 17, 12 |
+| `st_history_month` | 8,198 | 4.23 / 5.05, 28 | 2.47 / 5.60, 7.55 | 8.80 / 13, 15 | 4.99 / 6.15, 5.98 |
+| `fc_replay_6h` | 16,848 | 7.96 / 12, 7.78 | 5.58 / 13, 16 | 22 / 23, 27 | 15 / 50, 51 |
+| `sp_replay_day` | 8,955 | 53 / 62, 37 | 16 / 19, 47 | 85 / 89, 87 | 136 / 140, 130 |
+| `fc_lead_24h` | 8,559 | 20 / 24, 25 | 9.15 / 25, 28 | 39 / 41, 43 | 48 / 51, 48 |
+| `st_latest_now` | 26,868 | 27 / 28, 27 | 11 / 12, 34 | 57 / 58, 63 | 33 / 35, 34 |
+| `sp_latest_now` | 156,891 | 112 / 114, 115 | 64 / 70, 115 | 133 / 139, 152 | 253 / 269, 271 |
+| `fc_latest_now` | 2,868 | 14 / 15, 30 | 15 / 18, 23 | 26 / 30, 35 | 44 / 45, 47 |
+| `da_asof_join_signals` | 10,000 | 127 / 133, 128 | 202 / 209, 226 | 225 / 238, 246 | 922 / 980, 853 |
+| `fc_asof_join_lead24` | 2,880 | 81 / 84, 231 | 73 / 82, 107 | 85 / 88, 102 | 333 / 404, 423 |
 
 ## Agreement
 
 All systems returned identical results for all 361 (dataset, query, instance) combinations.
 
+Compared on every field except `system_time` (a system loaded them with coalesced batches, see its notes): sparse.
+
 ## Systems
 
 - **muninn** (0.1.0): Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable.
-  - sparse: not run (150,000 series > 50,000: create_series is quadratic in the catalog size (see adapter))
 - **duckdb-native** (1.5.6): DuckDB 1.5.6, threads=6, memory_limit=4096MB, layout=native, latest=argmax, grid=asof. Cold = fresh connection (DuckDB buffer pool and Parquet metadata empty); the OS page cache is not dropped (no root).
 - **duckdb-parquet** (1.5.6): DuckDB 1.5.6, threads=6, memory_limit=4096MB, layout=parquet, latest=argmax, grid=asof. Cold = fresh connection (DuckDB buffer pool and Parquet metadata empty); the OS page cache is not dropped (no root).
 - **clickhouse** (26.7.34.3): ClickHouse server (official static binary), max_threads=6, max_memory_usage=4096MB, MergeTree, query cache off. Cold = SYSTEM DROP MARK/UNCOMPRESSED/MMAP/QUERY CACHE (OS page cache not dropped).

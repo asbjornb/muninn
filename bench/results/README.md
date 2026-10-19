@@ -4,7 +4,80 @@ One directory per run date and host; `<scale>.md` is the readable report, `<scal
 everything measured (per-instance result hashes included). Regenerate with
 `uv run --project bench python bench/run.py --scale <scale>`.
 
-## 2026-10-19, omarchy-hp (laptop: Ryzen 5 PRO 5650U, 12 threads, 15 GB, NVMe)
+## 2026-10-19 (later), omarchy-hp: Muninn after fixing the three problems below
+
+The Muninn column of `2026-10-19-omarchy-hp/{small,medium}.{md,json}` was re-run after the
+fixes (`run.py --systems muninn --merge`, ADRs 0007 and 0008) and merged into the reports;
+DuckDB and ClickHouse numbers are from the original run on the same machine. All systems
+still return identical results for all 361 (dataset, query, instance) combinations at
+small and at medium scale — at medium now including Muninn on the 150k-series sparse
+dataset, which could not be loaded before.
+
+Medium (ms, warm p50; before → after, DuckDB native for comparison):
+
+| query | Muninn before | Muninn after | DuckDB native | ClickHouse |
+| --- | ---: | ---: | ---: | ---: |
+| `fc_asof_single` | 5.3 | 1.0 | 4.8 | 8.7 |
+| `da_asof_published` | 1.3 | 0.22 | 1.8 | 4.2 |
+| `fc_grid_365` | 2 285 | **417** | 1 109 | 10 654 |
+| `fc_grid_365_all` | 5 208 | **1 205** | 5 063 | 33 415 |
+| `da_grid_365` | 2 379 | **658** | 843 | 1 747 |
+| `st_grid_365` | 93 | 23 | 40 | 123 |
+| `da_asof_join_signals` | 197 | 127 | 202 | 922 |
+| `fc_asof_join_lead24` | 190 | 81 | 73 | 333 |
+| `fc_replay_6h` | 103 | **8.0** | 5.6 | 15 |
+| `fc_lead_24h` | 1 030 | **20** | 9.2 | 48 |
+| `st_latest_now` | 53 | 27 | 11 | 33 |
+| `fc_latest_now` | 59 | 14 | 15 | 44 |
+| `fc_history_day` | 8.5 | 6.9 | 4.1 | 6.5 |
+| `st_history_month` | 11 | 4.2 | 2.5 | 5.0 |
+| `sp_latest_now` (150k series) | not run | 112 | 64 | 253 |
+| `sp_replay_day` | not run | 53 | 16 | 136 |
+
+Goals: the grid queries now beat DuckDB (`fc_grid_365` 2.7x, `da_grid_365` 1.3x faster;
+at small scale 3.0x and 1.16x); `fc_replay_6h` is 1.4x DuckDB, `fc_lead_24h` 2.2x
+(1.9x at small). Still slower than DuckDB: the sparse replay/latest queries (many tiny
+series), `st_latest_now`, the history queries (~1.7x) and `fc_asof_join_lead24` (1.1x).
+
+Bytes per stored version, total on disk (segments + log), medium: forecasts 22.8 → 3.16
+(log 4.3 MB for 74.5 MB of segments, was 476 MB), da_prices 34.5 → 3.88, settlement
+22.6 → 3.70, backfill 8.3 → 6.29, sparse (medium) 43.0 (87 MB segments, 52 MB log: two
+checkpoints and the creation entries of a 150k-series catalog). Segment bytes alone grew
+slightly (forecasts 2.79 → 2.98 B/version) from smaller, series-aligned blocks and
+per-arrival-period segments.
+
+Ingest. The engine work per write no longer depends on history (dedup index): a 960-row
+forecast write costs ~1 ms in memory at any history depth (was 8.5 → 50 ms), and the whole
+small forecasts load takes 7 s on tmpfs. On this machine's btrfs NVMe the load is bound by
+`fsync` (~12 file creations per forecast write, each with a file and a directory sync)
+and the disk got ~2x slower between the runs, so the bench ingest numbers (medium
+forecasts 2 421 → 1 940 s, da_prices 145 → 456 s, settlement 291 → 509 s, sparse: not
+loadable → 12 s, 150k series created in one batch) mix the fix with that drift. A
+same-time A/B of the small da_prices load against the original build: 132 s → 95–99 s
+(writes 13.7 → 12.3 ms each, fsync-bound; compaction + GC 27 → 2.2 s).
+
+What changed, per problem:
+
+1. **Write cost vs history** — an in-memory index of each point's stored received-time
+   range per (table, partition), brought up to date with the writer's current state
+   before every use (other writers, compaction elsewhere, restarts), so stored versions are
+   compared only for rows that could be duplicates (re-sends, out-of-order backfills).
+2. **Metadata** — `create_series_batch` (engine, Python, CLI `series import`, `restore`),
+   a catalog name index, size-triggered checkpoints, and log truncation by GC below the
+   older of the two newest checkpoints (log format 2, ADR 0007). 5 000 series one by one:
+   2.9 s / 17.8 MB of log → 2.5 s / 2.6 MB; as one batch: 6 ms.
+3. **Reads** — compaction keeps one segment per knowledge-time period per partition (the
+   time statistics were already there; full compaction had made them useless), blocks end
+   at series boundaries, streaming latest/grid reductions, a lead-time filter pushed into
+   the engine (`history(lead=...)`), reused decode buffers, and segment format 2 with a
+   nibble-length integer encoding (ADR 0008). Engine-column decoding: 58 → 23 ns/row.
+
+Not solved: sparse/many-series replay and latest; history queries; skipping older
+segments for points already answered by newer ones (would cut grid/latest further);
+results are built row by row and then converted to Arrow; ingest on fsync-heavy
+filesystems (one file per touched partition per write).
+
+## 2026-10-19, omarchy-hp (laptop: Ryzen 5 PRO 5650U, 12 threads, 15 GB, NVMe) — original run
 
 Muninn 0.1.0 (engine via the Python binding, release build, local directory) vs DuckDB 1.5.6
 (native table, and over Parquet) vs ClickHouse 26.7 (MergeTree), 6 threads each (Muninn's
