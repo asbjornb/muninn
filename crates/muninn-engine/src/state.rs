@@ -4,19 +4,59 @@
 //! Every commit computes the next state with the *same* `apply` that recovery uses, before
 //! the entry is written; so the state an engine serves after a commit is exactly the state a
 //! fresh process reconstructs from the log.
+//!
+//! Since log format 3 (decision 0009) the state also holds the *memtable*: the inline
+//! segments of write entries (rows stored in the log itself), with their bytes and decoded
+//! footers in memory. They are listed among the partitions' segments like segment files,
+//! so every read serves them, until a `flush` entry replaces them by files.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 use muninn_core::catalog::{Catalog, CatalogChange};
 use muninn_core::types::SeriesId;
 use muninn_core::{Result, Timestamp};
-use muninn_format::{Partition, TimeBounds};
+use muninn_format::{Footer, Partition, SegmentFile, TimeBounds};
 use muninn_store::Key;
 
 use crate::log::{
     CatalogChangeJson, Checkpoint, LOG_FORMAT, LogEntry, SegmentJson, corrupt, format_supported,
+    inline_key, is_inline_key,
 };
+
+/// The bytes and decoded footer of an inline segment (decision 0009).
+pub struct InlineData {
+    /// The segment file.
+    pub bytes: Vec<u8>,
+    /// Its footer, decoded and checked against the segment record.
+    pub footer: Arc<Footer>,
+}
+
+impl PartialEq for InlineData {
+    fn eq(&self, other: &InlineData) -> bool {
+        self.bytes == other.bytes
+    }
+}
+
+impl Eq for InlineData {}
+
+impl std::fmt::Debug for InlineData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "InlineData({} bytes)", self.bytes.len())
+    }
+}
+
+impl InlineData {
+    /// Opens segment bytes (header, tail and footer checks).
+    pub fn open(bytes: Vec<u8>) -> std::result::Result<InlineData, muninn_format::Error> {
+        let mut footer = SegmentFile::open(&bytes)?.footer().clone();
+        footer.file_size = bytes.len() as u64;
+        Ok(InlineData {
+            bytes,
+            footer: Arc::new(footer),
+        })
+    }
+}
 
 /// A live segment: its key and the statistics recorded in the log.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -45,9 +85,62 @@ pub struct SegmentRef {
     pub series: (SeriesId, SeriesId),
     /// Wall clock at creation (µs).
     pub created: i64,
+    /// For an inline segment (a memtable segment held in the log, decision 0009): its
+    /// bytes and footer. `None` for a segment file in the store.
+    pub inline: Option<Arc<InlineData>>,
+}
+
+/// Does `footer` agree with what the log says about `seg`?
+pub(crate) fn footer_matches(seg: &SegmentRef, footer: &Footer) -> bool {
+    let st = &footer.stats;
+    footer.row_count == seg.rows
+        && footer.partition == seg.partition
+        && footer.table == seg.table
+        && (st.seq_min, st.seq_max) == seg.seq
+        && st.value_time == seg.value_time
+        && st.received_time == seg.received_time
+        && st.published_time == seg.published_time
+        && st.system_time == seg.system_time
+        && footer.series.first().map(|s| s.id) == Some(seg.series.0)
+        && footer.series.last().map(|s| s.id) == Some(seg.series.1)
 }
 
 impl SegmentRef {
+    /// The record of a segment whose footer is `footer` (statistics from the footer).
+    pub(crate) fn from_footer(
+        key: Key,
+        table: &str,
+        footer: &Footer,
+        size: u64,
+        created: i64,
+        inline: Option<Arc<InlineData>>,
+    ) -> SegmentRef {
+        let st = &footer.stats;
+        SegmentRef {
+            key,
+            table: table.to_owned(),
+            partition: footer.partition,
+            size,
+            rows: footer.row_count,
+            value_time: st.value_time,
+            received_time: st.received_time,
+            published_time: st.published_time,
+            system_time: st.system_time,
+            seq: (st.seq_min, st.seq_max),
+            series: (
+                footer.series.first().expect("non-empty").id,
+                footer.series.last().expect("non-empty").id,
+            ),
+            created,
+            inline,
+        }
+    }
+
+    /// Is this an inline (memtable) segment?
+    pub fn is_inline(&self) -> bool {
+        self.inline.is_some()
+    }
+
     /// `t_clock` bounds.
     pub fn t_clock(&self, clock: muninn_core::Clock) -> TimeBounds {
         match clock {
@@ -72,18 +165,35 @@ impl SegmentRef {
             seq: [self.seq.0, self.seq.1],
             series: [self.series.0.0, self.series.1.0],
             created: self.created,
+            data: self.inline.as_ref().map(|d| crate::b64::encode(&d.bytes)),
         }
     }
 
     fn from_json(j: &SegmentJson, catalog: &Catalog) -> Result<SegmentRef> {
+        Self::from_json_prepared(j, catalog, None)
+    }
+
+    /// [`SegmentRef::from_json`], taking an inline segment's decoded data from `prepared`
+    /// (the writer's own, for the record it just made) instead of decoding `data`.
+    fn from_json_prepared(
+        j: &SegmentJson,
+        catalog: &Catalog,
+        prepared: Option<&Arc<InlineData>>,
+    ) -> Result<SegmentRef> {
         let table = catalog
             .table(&j.table)
             .map_err(|_| corrupt(format!("segment {} of unknown table {:?}", j.key, j.table)))?;
         let partition = Partition::parse_label(table.partition, &j.partition)
             .map_err(|e| corrupt(format!("segment {}: {}", j.key, e.message())))?;
         let key = Key::new(j.key.clone()).map_err(|e| corrupt(format!("segment key: {e}")))?;
+        if j.data.is_some() != is_inline_key(&j.key) {
+            return Err(corrupt(format!(
+                "segment {}: inline segments (and only they) have an inline key and data",
+                j.key
+            )));
+        }
         let expected_prefix = format!("segments/{}/{}/", j.table, j.partition);
-        if !j.key.starts_with(&expected_prefix) {
+        if j.data.is_none() && !j.key.starts_with(&expected_prefix) {
             return Err(corrupt(format!(
                 "segment key {} outside {expected_prefix}",
                 j.key
@@ -110,6 +220,7 @@ impl SegmentRef {
             seq: (j.seq[0], j.seq[1]),
             series: (SeriesId(j.series[0]), SeriesId(j.series[1])),
             created: j.created,
+            inline: None,
         };
         if s.rows == 0 || s.seq.0 > s.seq.1 || s.series.0 > s.series.1 {
             return Err(corrupt(format!("segment {}: bad statistics", j.key)));
@@ -117,6 +228,29 @@ impl SegmentRef {
         let r = partition.range();
         if !(r.contains(s.value_time.min) && r.contains(s.value_time.max)) {
             return Err(corrupt(format!("segment {} outside its partition", j.key)));
+        }
+        let mut s = s;
+        if let Some(data) = &j.data {
+            // An inline segment is checked when it is read from the log, like a footer
+            // is checked against its record when a file is opened.
+            let d = match prepared {
+                Some(d) => Arc::clone(d),
+                None => {
+                    let bytes = crate::b64::decode(data)
+                        .ok_or_else(|| corrupt(format!("segment {}: data is not base64", j.key)))?;
+                    Arc::new(
+                        InlineData::open(bytes)
+                            .map_err(|e| corrupt(format!("inline segment {}: {e}", j.key)))?,
+                    )
+                }
+            };
+            if d.bytes.len() as u64 != s.size || !footer_matches(&s, &d.footer) {
+                return Err(corrupt(format!(
+                    "inline segment {}: data disagrees with the record",
+                    j.key
+                )));
+            }
+            s.inline = Some(d);
         }
         Ok(s)
     }
@@ -146,7 +280,8 @@ impl BatchIds {
         }
     }
 
-    fn iter(&self) -> impl Iterator<Item = &String> {
+    /// Every batch id.
+    pub fn iter(&self) -> impl Iterator<Item = &String> {
         self.chunks.iter().flat_map(|c| c.iter())
     }
 }
@@ -173,6 +308,8 @@ pub struct State {
     pub partitions: BTreeMap<(String, i64), PartitionSegments>,
     /// Removed but not yet deleted segments, with their removal wall time.
     pub retired: Arc<Vec<(Key, i64)>>,
+    /// The memtable: live inline segments (also listed in `partitions`), in commit order.
+    pub memtable: Arc<Vec<Arc<SegmentRef>>>,
 }
 
 impl State {
@@ -189,20 +326,51 @@ impl State {
         self.catalog_log.last().map(|c| c.system_time)
     }
 
-    /// Every live segment.
+    /// Every live segment (files and inline segments).
     pub fn segments(&self) -> impl Iterator<Item = &Arc<SegmentRef>> {
         self.partitions.values().flat_map(|v| v.iter())
+    }
+
+    /// Every live segment file (not the memtable's inline segments).
+    pub fn file_segments(&self) -> impl Iterator<Item = &Arc<SegmentRef>> {
+        self.segments().filter(|s| !s.is_inline())
+    }
+
+    /// Rows in the memtable.
+    pub fn memtable_rows(&self) -> u64 {
+        self.memtable.iter().map(|s| s.rows).sum()
+    }
+
+    /// Bytes of the memtable's inline segments.
+    pub fn memtable_bytes(&self) -> u64 {
+        self.memtable.iter().map(|s| s.size).sum()
+    }
+
+    /// Writer wall time (µs) of the oldest memtable segment.
+    pub fn memtable_oldest(&self) -> Option<i64> {
+        self.memtable.iter().map(|s| s.created).min()
     }
 
     /// Applies the next log entry, validating it against this state. Used both to commit
     /// and to recover, so a successful `apply` is the definition of a valid entry.
     pub fn apply(&self, e: &LogEntry) -> Result<State> {
-        self.clone().apply_owned(e)
+        self.clone().apply_owned_with(e, &[])
+    }
+
+    /// [`State::apply`] for an entry this process just made: the inline segments of
+    /// `prepared` (matched by key) are taken as they are instead of being decoded from
+    /// the entry again. They must be the ones the entry's records were made from.
+    pub(crate) fn apply_prepared(&self, e: &LogEntry, prepared: &[SegmentRef]) -> Result<State> {
+        self.clone().apply_owned_with(e, prepared)
     }
 
     /// [`State::apply`] consuming the state, so that parts nobody else shares (the
     /// catalog, during a replay) are updated in place instead of copied.
     pub fn apply_owned(self, e: &LogEntry) -> Result<State> {
+        self.apply_owned_with(e, &[])
+    }
+
+    fn apply_owned_with(self, e: &LogEntry, prepared: &[SegmentRef]) -> Result<State> {
         let mut next = self;
         let (prev_version, prev_next_seq, prev_last) =
             (next.version, next.next_seq, next.last_system_time);
@@ -243,7 +411,7 @@ impl State {
                 log.push(change);
             }
         }
-        if let Some(id) = &e.batch_id {
+        for id in e.batch_id.iter().chain(&e.batch_ids) {
             if id.is_empty() || next.batch_ids.contains(id) {
                 return Err(corrupt(format!(
                     "entry {}: batch id {id:?} repeated",
@@ -251,6 +419,12 @@ impl State {
                 )));
             }
             next.batch_ids.insert(id.clone());
+        }
+        if e.format < 3 && !e.batch_ids.is_empty() {
+            return Err(corrupt(format!(
+                "entry {}: batch_ids needs log format 3",
+                e.version
+            )));
         }
         // High-water marks only move forward.
         let last = e.last_system_time.map(Timestamp::from_micros);
@@ -275,7 +449,24 @@ impl State {
         // A write's rows all share the batch system_time, which is the new `last` and
         // strictly greater than the previous one (SPEC §4.2). A restore (dump/restore,
         // `Engine::restore`) imports one or more whole batches with their original times:
-        // its rows lie in `(previous last, last]` and the greatest of them is `last`.
+        // its rows lie in `(previous last, last]` and the greatest of them is `last`. So
+        // does a format-3 write, which may hold several batches (group commit, decision
+        // 0009).
+        //
+        // Inline segments (format 3) are added only by writes, each under the key
+        // `inline/<version>/<index in add>`; only a flush removes them, replacing each
+        // partition's flushed inline segments by files with the same rows.
+        for (i, j) in e.add.iter().enumerate() {
+            if j.data.is_some()
+                && (e.kind != "write" || e.format < 3 || j.key != inline_key(e.version, i).as_str())
+            {
+                return Err(corrupt(format!(
+                    "entry {}: inline segment {} not allowed here",
+                    e.version, j.key
+                )));
+            }
+        }
+        let multi_batch = e.kind == "restore" || e.format >= 3;
         match e.kind.as_str() {
             "write" | "restore" => {
                 let rows: u64 = e.add.iter().map(|j| j.rows).sum();
@@ -295,7 +486,7 @@ impl State {
                             let [lo, hi] = j.system_time;
                             Some(hi) <= last_us
                                 && after_prev(lo)
-                                && (e.kind == "restore" || (lo == hi && Some(hi) == last_us))
+                                && (multi_batch || (lo == hi && Some(hi) == last_us))
                         })
                         && e.add.iter().map(|j| j.system_time[1]).max() == last_us;
                     if !ok {
@@ -332,7 +523,8 @@ impl State {
                 let ok = matches!(e.add.as_slice(), [new] if
                     removed.len() == e.remove.len()
                     && removed.len() >= 2
-                    && removed.iter().all(|s| s.table == new.table && s.partition.label() == new.partition)
+                    && new.data.is_none()
+                    && removed.iter().all(|s| !s.is_inline() && s.table == new.table && s.partition.label() == new.partition)
                     && removed.iter().map(|s| s.rows).sum::<u64>() == new.rows
                     && removed.iter().map(|s| s.seq.0).min() == Some(new.seq[0])
                     && removed.iter().map(|s| s.seq.1).max() == Some(new.seq[1]))
@@ -342,6 +534,7 @@ impl State {
                     return Err(corrupt(format!("entry {}: invalid compaction", e.version)));
                 }
             }
+            "flush" => next.check_flush(e, prev_next_seq, prev_last, last)?,
             "catalog" | "gc" => {
                 if !e.add.is_empty() || !e.remove.is_empty() {
                     return Err(corrupt(format!(
@@ -358,12 +551,32 @@ impl State {
             }
         }
 
-        let mut retired = if e.remove.is_empty() && e.purged.is_empty() {
+        // A flush removes inline segments: they leave the memtable and their partitions,
+        // and are not retired (they are not files).
+        if e.kind == "flush" {
+            let gone: HashSet<&str> = e.remove.iter().map(String::as_str).collect();
+            let mut parts: BTreeSet<(String, i64)> = BTreeSet::new();
+            for s in next
+                .memtable
+                .iter()
+                .filter(|s| gone.contains(s.key.as_str()))
+            {
+                parts.insert((s.table.clone(), s.partition.index));
+            }
+            Arc::make_mut(&mut next.memtable).retain(|s| !gone.contains(s.key.as_str()));
+            for pk in parts {
+                if let Some(segs) = next.partitions.get_mut(&pk) {
+                    Arc::make_mut(segs).retain(|s| !gone.contains(s.key.as_str()));
+                }
+            }
+        }
+        let file_removals: &[String] = if e.kind == "flush" { &[] } else { &e.remove };
+        let mut retired = if file_removals.is_empty() && e.purged.is_empty() {
             None
         } else {
             Some((*next.retired).clone())
         };
-        for k in &e.remove {
+        for k in file_removals {
             let key = Key::new(k.clone()).map_err(|err| corrupt(format!("removed key: {err}")))?;
             // Only a compaction removes, and its removed segments are in the added one's
             // partition (checked above).
@@ -407,7 +620,11 @@ impl State {
         };
         let mut added: Vec<Arc<SegmentRef>> = Vec::with_capacity(e.add.len());
         for j in &e.add {
-            let s = SegmentRef::from_json(j, &next.catalog)?;
+            let pre = prepared
+                .iter()
+                .find(|p| p.key.as_str() == j.key)
+                .and_then(|p| p.inline.as_ref());
+            let s = SegmentRef::from_json_prepared(j, &next.catalog, pre)?;
             if (e.kind == "write" || e.kind == "restore")
                 && !(prev_next_seq <= s.seq.0 && s.seq.1 < e.next_seq)
             {
@@ -433,6 +650,9 @@ impl State {
         }
         drop(retired_keys);
         for s in added {
+            if s.is_inline() {
+                Arc::make_mut(&mut next.memtable).push(Arc::clone(&s));
+            }
             let segs = next
                 .partitions
                 .entry((s.table.clone(), s.partition.index))
@@ -449,6 +669,77 @@ impl State {
             next.retired = Arc::new(retired);
         }
         Ok(next)
+    }
+
+    /// Validates a `flush` entry against this state: it removes live inline segments
+    /// (at least one) and adds segment files, nothing else; per partition the added files
+    /// hold as many rows as the removed inline segments, with the same seq hull (as for a
+    /// compaction); the high-water marks are unchanged.
+    fn check_flush(
+        &self,
+        e: &LogEntry,
+        prev_next_seq: u64,
+        prev_last: Option<Timestamp>,
+        last: Option<Timestamp>,
+    ) -> Result<()> {
+        // Per (table, partition index): rows, min seq, max seq.
+        type Agg = BTreeMap<(String, i64), (u64, u64, u64)>;
+        let fold = |m: &mut Agg, k: (String, i64), rows: u64, seq: (u64, u64)| {
+            let a = m.entry(k).or_insert((0, u64::MAX, 0));
+            a.0 += rows;
+            a.1 = a.1.min(seq.0);
+            a.2 = a.2.max(seq.1);
+        };
+        let bad = |why: &str| corrupt(format!("entry {}: invalid flush: {why}", e.version));
+        if e.remove.is_empty()
+            || e.add.is_empty()
+            || !e.catalog.is_empty()
+            || e.batch_id.is_some()
+            || !e.batch_ids.is_empty()
+            || e.next_seq != prev_next_seq
+            || last != prev_last
+            || e.format < 3
+        {
+            return Err(bad("it may only replace inline segments by files"));
+        }
+        let live: HashMap<&str, &Arc<SegmentRef>> =
+            self.memtable.iter().map(|s| (s.key.as_str(), s)).collect();
+        let mut removed = Agg::new();
+        let mut seen = HashSet::new();
+        for k in &e.remove {
+            let s = live
+                .get(k.as_str())
+                .filter(|_| seen.insert(k.as_str()))
+                .ok_or_else(|| bad(&format!("{k} is not a live inline segment")))?;
+            fold(
+                &mut removed,
+                (s.table.clone(), s.partition.index),
+                s.rows,
+                s.seq,
+            );
+        }
+        let mut added = Agg::new();
+        for j in &e.add {
+            if j.data.is_some() {
+                return Err(bad("it adds an inline segment"));
+            }
+            let t = self
+                .catalog
+                .table(&j.table)
+                .map_err(|_| bad(&format!("unknown table {:?}", j.table)))?;
+            let p = Partition::parse_label(t.partition, &j.partition)
+                .map_err(|err| bad(err.message()))?;
+            fold(
+                &mut added,
+                (j.table.clone(), p.index),
+                j.rows,
+                (j.seq[0], j.seq[1]),
+            );
+        }
+        if removed != added {
+            return Err(bad("the added files do not hold the removed rows"));
+        }
+        Ok(())
     }
 
     /// The checkpoint of this state.
@@ -504,13 +795,21 @@ impl State {
             s.batch_ids.insert(id.clone());
         }
         for j in &c.segments {
-            let seg = SegmentRef::from_json(j, &s.catalog)?;
+            if j.data.is_some() && c.format < 3 {
+                return Err(corrupt(
+                    "inline segment in a checkpoint before log format 3",
+                ));
+            }
+            let seg = Arc::new(SegmentRef::from_json(j, &s.catalog)?);
+            if seg.is_inline() {
+                Arc::make_mut(&mut s.memtable).push(Arc::clone(&seg));
+            }
             Arc::make_mut(
                 s.partitions
                     .entry((seg.table.clone(), seg.partition.index))
                     .or_default(),
             )
-            .push(Arc::new(seg));
+            .push(seg);
         }
         s.retired = Arc::new(
             c.retired

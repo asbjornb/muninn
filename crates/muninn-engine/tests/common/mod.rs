@@ -121,6 +121,9 @@ pub enum Op {
         clock: i64,
         batch_id: Option<u8>,
     },
+    /// Several `Write`/`Resend` ops as one group commit (`Engine::write_many`; the model
+    /// writes them one by one). Resends refer to the writes before the group.
+    WriteMany(Vec<Op>),
     Latest {
         req: LatestRequest,
         history: bool,
@@ -129,6 +132,8 @@ pub enum Op {
     Grid(GridRequest),
     Asof(AsofJoinRequest),
     Compact,
+    /// Flush the memtable into segment files.
+    Flush,
     Reopen,
     Gc,
     /// Pin a snapshot of both implementations.
@@ -146,6 +151,7 @@ impl Op {
                 | Op::CreateSeries { .. }
                 | Op::Write { .. }
                 | Op::Resend { .. }
+                | Op::WriteMany(_)
         )
     }
 }
@@ -431,7 +437,8 @@ pub fn arb_mutation() -> impl Strategy<Value = Op> {
             clock,
             batch_id,
             rows,
-        });
+        })
+        .boxed();
     let resend = (
         any::<Index>(),
         0i64..30,
@@ -441,13 +448,17 @@ pub fn arb_mutation() -> impl Strategy<Value = Op> {
             which,
             clock,
             batch_id,
-        });
+        })
+        .boxed();
+    let group = prop::collection::vec(prop_oneof![4 => write.clone(), 1 => resend.clone()], 1..6)
+        .prop_map(Op::WriteMany);
     prop_oneof![
         1 => create_table,
         1 => add_column,
         1 => create_series,
         12 => write,
         3 => resend,
+        3 => group,
     ]
 }
 
@@ -457,6 +468,7 @@ pub fn arb_ops(len: usize) -> impl Strategy<Value = Vec<Op>> {
         10 => arb_mutation(),
         8 => arb_read(),
         1 => Just(Op::Compact),
+        1 => Just(Op::Flush),
         1 => Just(Op::Reopen),
         1 => Just(Op::Gc),
         1 => Just(Op::Pin),
@@ -505,7 +517,26 @@ pub fn test_options(block_rows: usize, checkpoint_interval: u64, compress: bool)
             format_version: muninn_format::FORMAT_VERSION,
         },
         gc_grace: std::time::Duration::ZERO,
+        // Writes go to the memtable (log-resident inline segments) and are flushed at
+        // small, deterministic thresholds inside the write that reaches them (no
+        // background thread, one I/O thread: store operations happen in a fixed order,
+        // which crash tests that crash at "op N" rely on).
+        inline_max_rows: 8,
+        flush_rows: 24,
+        flush_segments: 6,
+        memtable_limit_rows: 1_000,
+        background_flush: false,
+        io_threads: 1,
         ..EngineOptions::default()
+    }
+}
+
+/// [`test_options`] with every write writing segment files (no memtable), for tests
+/// about the physical layout of segment files (one per touched partition per write).
+pub fn file_options(block_rows: usize, checkpoint_interval: u64, compress: bool) -> EngineOptions {
+    EngineOptions {
+        inline_max_rows: 0,
+        ..test_options(block_rows, checkpoint_interval, compress)
     }
 }
 
@@ -571,12 +602,74 @@ pub fn batch_of(op: &Op, history: &[Vec<GenRow>]) -> Option<(WriteBatch, Vec<Gen
     ))
 }
 
+/// Group commit: the engine's `write_many`, the model's writes one by one.
+pub trait Writes {
+    /// Writes `batches` as one group; one result per batch.
+    fn write_group(&self, batches: &[WriteBatch]) -> Vec<Result<WriteResult, Error>>;
+}
+
+impl Writes for ModelDb {
+    fn write_group(&self, batches: &[WriteBatch]) -> Vec<Result<WriteResult, Error>> {
+        batches.iter().map(|b| self.write(b)).collect()
+    }
+}
+
+impl<S: Store> Writes for Engine<S> {
+    fn write_group(&self, batches: &[WriteBatch]) -> Vec<Result<WriteResult, Error>> {
+        self.write_many(batches)
+    }
+}
+
+/// [`apply_mutation`] that also appends the rows of every successful write to `history`
+/// (what later `Resend` ops pick from).
+pub fn apply_and_record<D: Database + Writes>(
+    db: &D,
+    op: &Op,
+    history: &mut Vec<Vec<GenRow>>,
+) -> Option<Result<String, Error>> {
+    if let Op::WriteMany(subs) = op {
+        let built: Vec<(WriteBatch, Vec<GenRow>)> =
+            subs.iter().filter_map(|s| batch_of(s, history)).collect();
+        let batches: Vec<WriteBatch> = built.iter().map(|b| b.0.clone()).collect();
+        let results = db.write_group(&batches);
+        for ((_, rows), r) in built.into_iter().zip(&results) {
+            if r.is_ok() {
+                history.push(rows);
+            }
+        }
+        // Errors by kind (the leading `io`/`conflict` decides for the crash tests).
+        if let Some(e) = results.iter().find_map(|r| {
+            r.as_ref()
+                .err()
+                .filter(|e| matches!(e.kind(), ErrorKind::Io | ErrorKind::Conflict))
+        }) {
+            return Some(Err(e.clone()));
+        }
+        let shown: Vec<_> = results
+            .iter()
+            .map(|r| r.as_ref().map_err(|e| e.kind()))
+            .collect();
+        return Some(Ok(format!("{shown:?}")));
+    }
+    let out = apply_mutation(db, op, history);
+    if matches!(out, Some(Ok(_)))
+        && let Some((_, rows)) = batch_of(op, history)
+    {
+        history.push(rows);
+    }
+    out
+}
+
 /// Applies a catalog or write op to any database; `Ok(None)` for non-mutations.
-pub fn apply_mutation<D: Database>(
+pub fn apply_mutation<D: Database + Writes>(
     db: &D,
     op: &Op,
     history: &[Vec<GenRow>],
 ) -> Option<Result<String, Error>> {
+    if matches!(op, Op::WriteMany(_)) {
+        let mut h = history.to_vec();
+        return apply_and_record(db, op, &mut h);
+    }
     Some(match op {
         Op::CreateTable {
             name,
@@ -647,7 +740,7 @@ pub type MemEngine = Engine<Arc<MemoryStore>>;
 
 /// Runs `ops` (after [`setup_ops`]) against a fresh engine on `store` and a model,
 /// comparing every outcome. Returns the engine for further checks.
-pub fn run_differential<S: Store + Clone>(
+pub fn run_differential<S: Store + Clone + 'static>(
     store: S,
     opts: EngineOptions,
     ops: &[Op],
@@ -660,6 +753,10 @@ pub fn run_differential<S: Store + Clone>(
         match op {
             Op::Compact => {
                 engine.compact_all().unwrap();
+            }
+            Op::Flush => {
+                engine.flush().unwrap();
+                prop_assert_eq!(engine.memtable().rows, 0);
             }
             Op::Reopen => {
                 // Snapshots of the old instance are invisible to the new one's GC
@@ -686,16 +783,13 @@ pub fn run_differential<S: Store + Clone>(
                 }
             }
             _ if op.is_mutation() => {
-                let a = apply_mutation(&model, op, &history);
-                let b = apply_mutation(&engine, op, &history);
+                let mut h = history.clone();
+                let a = apply_and_record(&model, op, &mut history);
+                let b = apply_and_record(&engine, op, &mut h);
                 let norm = |r: Option<Result<String, Error>>| r.map(|r| r.map_err(|e| e.kind()));
                 let (a, b) = (norm(a), norm(b));
                 prop_assert_eq!(&b, &a, "step {}: {:?}", i, op);
-                if let Some((_, rows)) = batch_of(op, &history)
-                    && matches!(a, Some(Ok(_)))
-                {
-                    history.push(rows);
-                }
+                prop_assert_eq!(h.len(), history.len());
             }
             _ => {
                 let a = read(&model, op);

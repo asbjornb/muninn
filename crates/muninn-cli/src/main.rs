@@ -107,7 +107,7 @@ pub enum Command {
     AsofJoin(AsofArgs),
     /// Execute SPEC §9 step JSON (a single object, `@file`, or `-` for NDJSON on stdin).
     Query(QueryArgs),
-    /// Merge each partition's segments into one (never changes a result).
+    /// Flush the memtable, then merge each partition's segments (never changes a result).
     Compact {
         /// Only this table.
         #[arg(long)]

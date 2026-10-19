@@ -592,22 +592,41 @@ pub fn plan_dedup(
     next_seq: u64,
     mut is_stored: impl FnMut(&Version) -> Result<bool>,
 ) -> Result<DedupPlan> {
-    let mut kept: Vec<Version> = Vec::new();
-    // Kept rows by point: only versions of the same point can be content-identical.
-    let mut by_point: HashMap<(SeriesId, Timestamp), Vec<usize>> = HashMap::new();
+    let mut kept: Vec<Version> = Vec::with_capacity(candidates.len());
+    // Only versions of the same point can be content-identical. Batches usually list
+    // each point once, in order: then no row can duplicate an earlier one and the
+    // per-point index is not needed.
+    let distinct_points = candidates
+        .windows(2)
+        .all(|w| (w[0].series, w[0].value_time) < (w[1].series, w[1].value_time));
+    // Kept rows by point: the first kept index, then a chain through `next_same`.
+    let mut first: HashMap<(SeriesId, Timestamp), usize> = HashMap::new();
+    let mut next_same: Vec<usize> = Vec::new();
     let mut duplicates = 0u64;
     for mut v in candidates {
         let point = (v.series, v.value_time);
-        let dup_in_batch = by_point
-            .get(&point)
-            .is_some_and(|ix| ix.iter().any(|&i| kept[i].content_identical(&v)));
+        let dup_in_batch = !distinct_points && {
+            let mut at = first.get(&point).copied();
+            let mut found = false;
+            while let Some(i) = at {
+                if kept[i].content_identical(&v) {
+                    found = true;
+                    break;
+                }
+                at = (next_same[i] != usize::MAX).then_some(next_same[i]);
+            }
+            found
+        };
         if dup_in_batch || is_stored(&v)? {
             duplicates += 1;
             continue;
         }
         v.system_time = system_time;
         v.seq = next_seq + kept.len() as u64;
-        by_point.entry(point).or_default().push(kept.len());
+        if !distinct_points {
+            let i = kept.len();
+            next_same.push(first.insert(point, i).unwrap_or(usize::MAX));
+        }
         kept.push(v);
     }
     Ok(DedupPlan { kept, duplicates })

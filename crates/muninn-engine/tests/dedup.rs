@@ -38,7 +38,7 @@ fn write<D: Database>(db: &D, clock: i64, rows: Vec<WriteRow>) -> (u64, u64) {
 fn opts(index: usize) -> EngineOptions {
     EngineOptions {
         dedup_index_points: index,
-        ..test_options(2, 3, false)
+        ..file_options(2, 3, false)
     }
 }
 

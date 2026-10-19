@@ -977,49 +977,72 @@ impl Database {
         clock: Option<&Bound<'_, PyAny>>,
         assume_utc: bool,
     ) -> PyResult<WriteTuple> {
-        let batch_id = match batch_id.filter(|o| !o.is_none()) {
-            None => None,
-            Some(b) => match b.cast::<PyString>() {
-                Ok(s) => Some(s.to_str()?.to_owned()),
-                Err(_) => {
-                    return Err(py_err(py, &invalid("batch_id must be a non-empty string")));
-                }
-            },
-        };
-        let rows = match (rows, arrow) {
-            (Some(r), _) => {
-                let list = r
-                    .cast::<PyList>()
-                    .map_err(|_| py_err(py, &invalid("rows must be a list of dicts")))?;
-                let h = Helpers::new(py, assume_utc)?;
-                input::rows_from_dicts(list, &h).map_err(|e| conv_err(py, e))?
-            }
-            (None, Some(a)) => {
-                let batches = arrow_batches(py, a)?;
-                py.detach(|| input::rows_from_arrow(&batches, assume_utc))
-                    .or_py(py)?
-            }
-            (None, None) => Vec::new(),
-        };
-        let clock = match clock.filter(|o| !o.is_none()) {
-            None => TimeInput::Micros(muninn_engine::system_wall_clock()),
-            Some(c) => input::time_input(c),
-        };
-        let batch = WriteBatch {
-            rows,
-            batch_id,
-            clock,
-        };
+        let batch = write_batch(py, rows, arrow, batch_id, clock, assume_utc)?;
         let r = py.detach(|| self.engine.write(&batch)).or_py(py)?;
-        Ok((
-            r.stored,
-            r.duplicates,
-            r.batch_already_committed,
-            r.system_time.map(Timestamp::as_micros),
-            r.first_seq,
-        ))
+        Ok(write_tuple(&r))
     }
 
+    /// Several batches as one group commit (decision 0009): `batches` is a list of
+    /// `(rows, arrow, batch_id, clock)` tuples as for `write`. Every batch is converted
+    /// first (a conversion error raises before anything is written); then each is
+    /// written atomically, and the result list holds per batch either its write tuple or
+    /// the `MuninnError` instance it failed with.
+    #[pyo3(signature = (batches, assume_utc))]
+    fn write_many(
+        &self,
+        py: Python<'_>,
+        batches: &Bound<'_, PyList>,
+        assume_utc: bool,
+    ) -> PyResult<Vec<Py<PyAny>>> {
+        let mut prepared = Vec::with_capacity(batches.len());
+        for item in batches.iter() {
+            let t = item.cast::<PyTuple>().map_err(|_| {
+                py_err(
+                    py,
+                    &invalid("batches must be (rows, arrow, batch_id, clock) tuples"),
+                )
+            })?;
+            if t.len() != 4 {
+                return Err(py_err(
+                    py,
+                    &invalid("batches must be (rows, arrow, batch_id, clock) tuples"),
+                ));
+            }
+            let opt = |i: usize| -> PyResult<Option<Bound<'_, PyAny>>> {
+                let v = t.get_item(i)?;
+                Ok((!v.is_none()).then_some(v))
+            };
+            let (rows, arrow, batch_id, clock) = (opt(0)?, opt(1)?, opt(2)?, opt(3)?);
+            prepared.push(write_batch(
+                py,
+                rows.as_ref(),
+                arrow.as_ref(),
+                batch_id.as_ref(),
+                clock.as_ref(),
+                assume_utc,
+            )?);
+        }
+        let results = py.detach(|| self.engine.write_many(&prepared));
+        results
+            .into_iter()
+            .map(|r| match r {
+                Ok(r) => Ok(write_tuple(&r).into_pyobject(py)?.into_any().unbind()),
+                Err(e) => Ok(py_err(py, &e).into_value(py).into_any()),
+            })
+            .collect()
+    }
+
+    /// Flushes the memtable (rows held in the commit log) into segment files now.
+    /// Returns whether anything was flushed.
+    fn flush(&self, py: Python<'_>) -> PyResult<bool> {
+        py.detach(|| self.engine.flush()).or_py(py)
+    }
+
+    /// `(segments, rows, bytes, flushes)` of the memtable.
+    fn memtable(&self) -> (usize, u64, u64, u64) {
+        let m = self.engine.memtable();
+        (m.segments, m.rows, m.bytes, m.flushes)
+    }
     /// Compacts one partition (`table` + `partition` label) or, with neither, every
     /// partition with more than one segment. Returns how many partitions were compacted.
     #[pyo3(signature = (table=None, partition=None))]
@@ -1065,6 +1088,60 @@ impl Database {
             r.log_deleted.len(),
         ))
     }
+}
+
+/// A write batch from the Python arguments of `write`.
+fn write_batch(
+    py: Python<'_>,
+    rows: Option<&Bound<'_, PyAny>>,
+    arrow: Option<&Bound<'_, PyAny>>,
+    batch_id: Option<&Bound<'_, PyAny>>,
+    clock: Option<&Bound<'_, PyAny>>,
+    assume_utc: bool,
+) -> PyResult<WriteBatch> {
+    let batch_id = match batch_id.filter(|o| !o.is_none()) {
+        None => None,
+        Some(b) => match b.cast::<PyString>() {
+            Ok(s) => Some(s.to_str()?.to_owned()),
+            Err(_) => {
+                return Err(py_err(py, &invalid("batch_id must be a non-empty string")));
+            }
+        },
+    };
+    let rows = match (rows, arrow) {
+        (Some(r), _) => {
+            let list = r
+                .cast::<PyList>()
+                .map_err(|_| py_err(py, &invalid("rows must be a list of dicts")))?;
+            let h = Helpers::new(py, assume_utc)?;
+            input::rows_from_dicts(list, &h).map_err(|e| conv_err(py, e))?
+        }
+        (None, Some(a)) => {
+            let batches = arrow_batches(py, a)?;
+            py.detach(|| input::rows_from_arrow(&batches, assume_utc))
+                .or_py(py)?
+        }
+        (None, None) => Vec::new(),
+    };
+    let clock = match clock.filter(|o| !o.is_none()) {
+        None => TimeInput::Micros(muninn_engine::system_wall_clock()),
+        Some(c) => input::time_input(c),
+    };
+    Ok(WriteBatch {
+        rows,
+        batch_id,
+        clock,
+    })
+}
+
+fn write_tuple(r: &muninn_core::api::WriteResult) -> WriteTuple {
+    (
+        r.stored,
+        r.duplicates,
+        r.batch_already_committed,
+        r.system_time.map(Timestamp::as_micros),
+        r.first_seq,
+    )
 }
 
 /// A `create_series` request from Python arguments.

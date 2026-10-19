@@ -60,7 +60,7 @@ fn all(table: &str) -> LatestRequest {
 #[test]
 fn gc_on_lagging_engine_deletes_other_writers_live_segments() {
     let store: Mem = Arc::new(MemoryStore::new());
-    let opts = test_options(4, 0, false); // gc_grace = 0 (stands in for "older than grace")
+    let opts = file_options(4, 0, false); // gc_grace = 0 (stands in for "older than grace")
     let a = Engine::open(Arc::clone(&store), opts.clone()).unwrap();
     setup_t(&a);
     // b opens after setup and writes; a never hears about it.
@@ -689,7 +689,7 @@ proptest! {
 #[test]
 fn lagging_engine_recovers_after_its_segments_were_compacted_and_collected() {
     let store: Mem = Arc::new(MemoryStore::new());
-    let opts = test_options(4, 0, false);
+    let opts = file_options(4, 0, false);
     let a = Engine::open(Arc::clone(&store), opts.clone()).unwrap();
     setup_t(&a);
     let b = Engine::open(Arc::clone(&store), opts).unwrap();
@@ -720,7 +720,7 @@ fn lagging_engine_recovers_after_its_segments_were_compacted_and_collected() {
 #[test]
 fn damaged_checkpoint_falls_back_to_the_log() {
     let store: Mem = Arc::new(MemoryStore::new());
-    let opts = test_options(4, 0, false);
+    let opts = file_options(4, 0, false);
     let e = Engine::open(Arc::clone(&store), opts.clone()).unwrap();
     setup_t(&e);
     e.write(&WriteBatch::new(h(1), vec![row("a", 0, 0, 1.0)]))

@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, Iterable, Mapping, Sequence, Union
 
 from . import _convert as cv
 from . import _native
-from ._errors import InternalError, InvalidArgumentError, IoError
+from ._errors import InternalError, InvalidArgumentError, IoError, MuninnError
 
 if TYPE_CHECKING:
     import pyarrow as pa
@@ -444,28 +444,64 @@ class Database(_Reads):
         ``batch_id`` makes the whole batch idempotent (a resend is a no-op); identical rows
         are always deduplicated. ``clock`` is the writer clock reading (default: now); the
         engine commits at ``max(clock, last + 1µs)``."""
-        if not isinstance(data, list):
-            a = cv.to_arrow(data, records_fallback=True)
-            if isinstance(a, list):
-                data = a
-        if isinstance(data, list):
-            r = self._native.write(data, None, batch_id, cv.time_arg(clock, assume_utc), assume_utc)
-        else:
-            if a is None:
-                raise InvalidArgumentError(
-                    "data must be a pyarrow/pandas/polars table or a list of dicts, "
-                    f"not {type(data).__name__}"
-                )
-            r = self._native.write(None, a, batch_id, cv.time_arg(clock, assume_utc), assume_utc)
-        stored, dups, already, st, seq = r
-        return WriteResult(stored, dups, already, cv.micros_to_datetime(st), seq)
+        rows, arrow = _write_input(data)
+        r = self._native.write(rows, arrow, batch_id, cv.time_arg(clock, assume_utc), assume_utc)
+        return _write_result(r)
+
+    def write_many(
+        self,
+        batches: Sequence[Any],
+        *,
+        assume_utc: bool = False,
+    ) -> list[WriteResult | MuninnError]:
+        """Writes several batches in one group commit: one durable store write for all of
+        them. Each item of ``batches`` is ``data`` as for :meth:`write`, or a dict
+        ``{"data": ..., "batch_id": ..., "clock": ...}``. Each batch is atomic and is
+        validated, deduplicated and given its own ``system_time`` and seqs exactly as if
+        written by :meth:`write` one after another.
+
+        Input that cannot be converted raises before anything is written. Otherwise the
+        result list holds, per batch, its :class:`WriteResult` or the
+        :class:`MuninnError` it failed with (a failed batch has no effect; the others are
+        still written).
+
+        Concurrent :meth:`write` calls from several threads are grouped the same way."""
+        items = []
+        for b in batches:
+            if isinstance(b, dict) and "data" in b:
+                extra = set(b) - {"data", "batch_id", "clock"}
+                if extra:
+                    raise InvalidArgumentError(f"unknown batch keys: {sorted(extra)}")
+                data, batch_id, clock = b["data"], b.get("batch_id"), b.get("clock")
+            else:
+                data, batch_id, clock = b, None, None
+            rows, arrow = _write_input(data)
+            items.append((rows, arrow, batch_id, cv.time_arg(clock, assume_utc)))
+        out: list[WriteResult | MuninnError] = []
+        for r in self._native.write_many(items, assume_utc):
+            out.append(r if isinstance(r, BaseException) else _write_result(r))
+        return out
 
     # -- maintenance -------------------------------------------------------------------
 
+    def flush(self) -> bool:
+        """Moves the memtable — recent writes, held in the commit log — into segment files
+        now (normally done in the background). Never changes a result. Returns whether
+        anything was flushed."""
+        return self._native.flush()
+
+    def memtable(self) -> dict[str, int]:
+        """Size of the memtable: ``segments``, ``rows``, ``bytes``, and the ``flushes``
+        this process committed."""
+        segments, rows, nbytes, flushes = self._native.memtable()
+        return {"segments": segments, "rows": rows, "bytes": nbytes, "flushes": flushes}
+
     def compact(self, table: str | None = None, partition: str | None = None) -> int:
-        """Merges the segments of one partition (``table`` + partition label such as
-        ``"2025-01-15"``), or of every partition with more than one segment. Never changes
-        a result. Returns the number of partitions compacted."""
+        """Flushes the memtable (:meth:`flush`), then merges the segments of one partition
+        (``table`` + partition label such as ``"2025-01-15"``), or of every partition with
+        more than one segment. Never changes a result. Returns the number of partitions
+        compacted."""
+        self._native.flush()
         return self._native.compact(table, partition)
 
     def gc(self, grace: DurationLike | None = None) -> GcReport:
@@ -483,6 +519,26 @@ class Database(_Reads):
             us = g
         deleted, kept, log_deleted = self._native.gc(us)
         return GcReport(list(deleted), kept, log_deleted)
+
+
+def _write_input(data: Any) -> tuple[list | None, Any]:
+    """``(rows, arrow)`` for the native write: a list of dicts, or Arrow data."""
+    if isinstance(data, list):
+        return data, None
+    a = cv.to_arrow(data, records_fallback=True)
+    if isinstance(a, list):
+        return a, None
+    if a is None:
+        raise InvalidArgumentError(
+            "data must be a pyarrow/pandas/polars table or a list of dicts, "
+            f"not {type(data).__name__}"
+        )
+    return None, a
+
+
+def _write_result(r: tuple) -> WriteResult:
+    stored, dups, already, st, seq = r
+    return WriteResult(stored, dups, already, cv.micros_to_datetime(st), seq)
 
 
 _pytype = type

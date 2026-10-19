@@ -314,13 +314,30 @@ fn happy_path_wind_forecast() {
     let out = t.ok(&["info", "--format", "ndjson"], "");
     assert!(out.contains("\"next_seq\": 6"), "{out}");
     t.ok(&["verify"], "");
+    // Writes went to the memtable (rows in the log, decision 0009): compact flushes
+    // them into one segment file per partition first, leaving nothing to merge.
     let out = t.ok(&["compact"], "");
+    assert!(out.contains("flushed 5 row(s)"), "{out}");
+    assert!(out.contains("compacted 0 partition"), "{out}");
+    let out = t.ok(&["gc", "--grace", "0s"], "");
+    assert!(out.contains("deleted 0 file"), "{out}");
+    t.ok(&["verify"], "");
+    // A later write goes to the memtable again; the next flush adds a second file to
+    // its partition, which compaction merges with the first.
+    let f = t.write_file(
+        "run13.csv",
+        "series,value_time,published_time,received_time,mw\n\
+         dk1,2025-01-16T00:00:00Z,2025-01-15T13:00:00Z,2025-01-15T13:01:00Z,130\n",
+    );
+    t.ok(&["write", &f, "--writer-clock", "2025-01-15T13:02:00Z"], "");
+    let out = t.ok(&["compact"], "");
+    assert!(out.contains("flushed 1 row(s)"), "{out}");
     assert!(out.contains("compacted 1 partition"), "{out}");
     let out = t.ok(&["gc", "--grace", "0s"], "");
     assert!(out.contains("deleted 2 file"), "{out}");
     t.ok(&["verify"], "");
     let out = t.ok(&["history", "--table", "wind", "--format", "csv"], "");
-    assert_eq!(out.lines().count(), 6);
+    assert_eq!(out.lines().count(), 7);
 
     // query: a SPEC §9 read step.
     let out = t.ok(
@@ -1133,6 +1150,26 @@ fn verify_detects_a_flipped_byte() {
     t.ok(&["write", "--received-time", "now"], &csv);
     let out = t.ok(&["verify"], "");
     assert!(out.starts_with("ok:"), "{out}");
+    // The rows are in the memtable: inline in log entry 3 (decision 0009). A changed
+    // character of its data is caught.
+    let entry = t.db().join("log/00000000000000000003.json");
+    let text = fs::read_to_string(&entry).unwrap();
+    let data_at = text.find("\"data\":\"").unwrap() + 8;
+    for at in [
+        data_at + 40,
+        data_at + text[data_at..].find('"').unwrap() / 2,
+    ] {
+        let copy = t.path(&format!("copyinline{at}"));
+        copy_dir(&t.db(), &copy);
+        let mut bytes = text.clone().into_bytes();
+        bytes[at] = if bytes[at] == b'A' { b'B' } else { b'A' };
+        fs::write(copy.join("log/00000000000000000003.json"), bytes).unwrap();
+        let out = t.run_on(&copy, &["verify"], "");
+        assert!(!out.status.success(), "change at {at} not detected");
+    }
+    // Flushed to a segment file.
+    let out = t.ok(&["compact"], "");
+    assert!(out.contains("flushed 200 row(s)"), "{out}");
     let seg = segment_files(&t.db()).pop().unwrap();
     let len = fs::metadata(&seg).unwrap().len() as usize;
     for (i, at) in [0, 9, len / 4, len / 2, len * 3 / 4, len - 30, len - 1]

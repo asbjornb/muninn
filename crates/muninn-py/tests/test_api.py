@@ -556,6 +556,8 @@ def test_persistence_across_reopen(tmp_path):
     for k in range(5):
         db.write([{"series": "DK1", "value_time": T0 + k * H, "received_time": T0,
                    "value": float(k)}], clock=T0 + k * H, batch_id=f"b{k}")
+        if k == 2:
+            assert db.flush()  # rows 0-2 to a segment file; 3-4 stay in the memtable
     first = db.history("prices")
     r = muninn.receipt(db.latest("prices"))
     del db
@@ -563,6 +565,7 @@ def test_persistence_across_reopen(tmp_path):
     assert db.history("prices").equals(first)
     assert db.series()[0].tags == {"a": "b"}
     assert db.write([], batch_id="b3").batch_already_committed  # batch ids persist
+    assert db.memtable()["rows"] == 2  # recovered from the log
     assert db.compact() == 1
     assert db.gc(grace="0s").deleted
     db2 = muninn.open(str(path))
@@ -691,3 +694,72 @@ def test_pandas_fallback_reports_spec_codes(db):
     with pytest.raises(muninn.InvalidArgumentError):
         db.asof_join("prices", pd.DataFrame({"series": ["DK1"], "value_time": [T0],
                                              "frontier": [T0], "o": [object()]}))
+
+
+# ---------------------------------------------------------------------------------------
+# Fast write path (decision 0009): group commit, write_many, memtable and flush
+# ---------------------------------------------------------------------------------------
+
+
+def test_concurrent_writers_share_commits(tmp_path):
+    db = muninn.open(tmp_path / "db", create=True)
+    db.create_table("t", columns={"x": "f64"})
+    db.create_series_batch([f"s{i}" for i in range(8)], table="t")
+    results = {}
+
+    def writer(i):
+        out = []
+        for k in range(25):
+            rows = [{"series": f"s{i}", "value_time": T0 + j * H, "received_time": T0 + k * H,
+                     "x": float(k)} for j in range(4)]
+            out.append(db.write(rows, clock=T0, batch_id=f"w{i}-{k}"))
+        results[i] = out
+
+    threads = [threading.Thread(target=writer, args=(i,)) for i in range(8)]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join()
+    every = [r for rs in results.values() for r in rs]
+    assert len(every) == 200 and all(r.stored == 4 for r in every)
+    # Every batch has its own system_time and a contiguous seq range, in the same order.
+    by_seq = sorted(every, key=lambda r: r.first_seq)
+    assert [r.first_seq for r in by_seq] == list(range(1, 801, 4))
+    times = [r.system_time for r in by_seq]
+    assert all(a < b for a, b in zip(times, times[1:]))
+    # A producer's writes commit in its order.
+    for rs in results.values():
+        assert [r.first_seq for r in rs] == sorted(r.first_seq for r in rs)
+    h = db.history("t")
+    assert h.num_rows == 800
+    assert db.write([], batch_id="w3-7").batch_already_committed
+    db.flush()
+    again = muninn.open(tmp_path / "db")
+    assert again.history("t").equals(h)
+
+
+def test_write_many_and_memtable(db):
+    def rows(k):
+        return [{"series": "DK1", "value_time": T0 + k * H, "received_time": T0, "value": float(k)}]
+
+    out = db.write_many([
+        {"data": rows(0), "clock": T0},
+        {"data": rows(1), "batch_id": "a", "clock": T0},
+        {"data": rows(2), "batch_id": "a", "clock": T0},  # same id: a no-op
+        {"data": rows(0), "clock": T0},  # a duplicate of the first batch
+        [{"series": "nope", "value_time": T0, "received_time": T0}],
+        {"data": pa.Table.from_pylist(rows(3)), "clock": T0 + 5 * H},
+    ])
+    assert (out[0].stored, out[1].stored, out[3].duplicates) == (1, 1, 1)
+    assert out[2].batch_already_committed and out[2].stored == 0
+    assert isinstance(out[4], muninn.UnknownSeriesError) and out[4].code == "unknown_series"
+    assert out[5].system_time == T0 + 5 * H
+    assert out[0].system_time < out[1].system_time < out[5].system_time
+    assert (out[0].first_seq, out[1].first_seq, out[5].first_seq) == (1, 2, 3)
+    assert db.memtable()["rows"] == 3
+    before = db.history("prices")
+    assert db.flush()
+    assert db.memtable()["rows"] == 0
+    assert db.history("prices").equals(before)
+    with pytest.raises(muninn.InvalidArgumentError):
+        db.write_many([{"data": rows(9), "bogus": 1}])

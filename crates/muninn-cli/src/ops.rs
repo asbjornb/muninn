@@ -17,6 +17,10 @@ use crate::{CliError, FormatArg, Res};
 /// `compact`.
 pub fn compact(ctx: &Context, table: Option<&str>) -> Res<()> {
     let db = ctx.open()?;
+    // The memtable (rows still in the log, decision 0009) goes to segment files first.
+    let flushed = db.memtable().rows;
+    db.flush()?;
+    output::line(&format!("flushed {flushed} row(s) from the memtable"))?;
     let done = match table {
         None => db.compact_all()?,
         Some(t) => {
@@ -73,7 +77,6 @@ pub fn info(ctx: &Context, f: FormatArg) -> Res<()> {
             log_bytes += size;
         }
     }
-    let cp = st.to_checkpoint();
     let mut db_rows = Rows::flat(&["key", "value"]);
     let kv: Vec<(&str, Wire)> = vec![
         ("database", s(ctx.dir()?.display().to_string())),
@@ -87,11 +90,13 @@ pub fn info(ctx: &Context, f: FormatArg) -> Res<()> {
             n(st.segments().map(|x| x.size).sum::<u64>()),
         ),
         ("retired_segments", n(st.retired.len())),
+        ("memtable_segments", n(st.memtable.len())),
+        ("memtable_rows", n(st.memtable_rows())),
         ("store_bytes", n(total_bytes)),
         ("log_bytes", n(log_bytes)),
         ("next_seq", n(st.next_seq)),
         ("last_system_time", ots(st.last_system_time)),
-        ("batch_ids", n(cp.batch_ids.len())),
+        ("batch_ids", n(st.batch_ids.iter().count())),
         ("catalog_changes", n(st.catalog_log.len())),
     ];
     for (k, v) in kv {
@@ -198,7 +203,12 @@ fn check_segment<S: Store>(
 ) -> u64 {
     let key = seg.key.as_str();
     let mut bad = |m: String| problems.push(format!("segment {key}: {m}"));
-    let bytes = match store.get(&seg.key) {
+    // An inline (memtable) segment's bytes are in its log entry, not in a file.
+    let read = match &seg.inline {
+        Some(d) => Ok(d.bytes.clone()),
+        None => store.get(&seg.key),
+    };
+    let bytes = match read {
         Ok(b) => b,
         Err(e) => {
             bad(format!("cannot read: {e}"));
@@ -468,7 +478,7 @@ pub fn verify(ctx: &Context) -> Res<()> {
         )),
         Ok(db) => {
             // The batch ids the engine serves are exactly those the log records.
-            let mut folded = state.to_checkpoint().batch_ids;
+            let mut folded: Vec<String> = state.batch_ids.iter().cloned().collect();
             folded.sort();
             match muninn_core::Database::snapshot(&db) {
                 Ok(snap) if snap.batch_ids() != folded => problems

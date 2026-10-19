@@ -16,7 +16,7 @@ use muninn_store::MemoryStore;
 use proptest::prelude::*;
 
 fn opts() -> EngineOptions {
-    test_options(3, 7, false)
+    file_options(3, 7, false)
 }
 
 fn fresh() -> MemEngine {
@@ -240,8 +240,13 @@ fn restore_entries_are_validated_on_recovery() {
     assert!(!opens_after_tampering(&e, 3, |j| {
         j["last_system_time"] = (h(13).as_micros()).into()
     }));
-    // A write entry may not carry several system_times (only a restore may).
-    assert!(!opens_after_tampering(&e, 3, |j| j["kind"] = "write".into()));
+    // A format-2 write entry may not carry several system_times (only a restore may);
+    // since log format 3 a write may (it can hold several batches, decision 0009).
+    assert!(!opens_after_tampering(&e, 3, |j| {
+        j["kind"] = "write".into();
+        j["format"] = 2.into();
+    }));
+    assert!(opens_after_tampering(&e, 3, |j| j["kind"] = "write".into()));
     // A write whose system_time is not after the previous last.
     assert!(!opens_after_tampering(&e, 4, |j| {
         j["last_system_time"] = (h(12).as_micros()).into();

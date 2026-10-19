@@ -189,16 +189,22 @@ line. Failures print `{"error": "<code>", "message": ...}` and make the exit cod
 
 ## Operations
 
-- `compact [--table T]` merges, per partition, the segments whose versions became known
-  (on the table's default clock) in the same period of the partition granularity — e.g. a
-  day partition keeps one segment per arrival day, which lets reads bounded by knowledge
-  time skip the others. Results never change.
+Writes go into the commit log first (the *memtable*, decision 0009): each `write` (and
+each chunk of an import) is one durable log entry holding its rows. They are moved into
+segment files by a flush — automatically once enough rows collect, or by `compact`. (A
+write storing more than 20 000 rows is written to segment files directly.)
+
+- `compact [--table T]` flushes the memtable into segment files, then merges, per
+  partition, the segments whose versions became known (on the table's default clock) in
+  the same period of the partition granularity — e.g. a day partition keeps one segment
+  per arrival day, which lets reads bounded by knowledge time skip the others. Results
+  never change.
 - `gc [--grace 1h]` deletes segment files no committed state references (left by failed
   writes, or retired by compaction) once they are older than the grace period. It also
   truncates the commit log: it checkpoints the head and removes the entries and
   checkpoints older than the second-newest checkpoint (`spec/FORMAT.md` §3.6).
-- `info` prints tables, series counts, versions, segments, bytes (also of the log), log
-  version, next seq.
+- `info` prints tables, series counts, versions, segments, the memtable, bytes (also of
+  the log), log version, next seq.
 - `verify` replays the log (from the start, or from the oldest usable checkpoint of a
   truncated log; checking every entry and every later checkpoint against the replay, and
   each checkpoint's checksum and entry binding), opens the database with the engine, and

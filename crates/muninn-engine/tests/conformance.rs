@@ -1,6 +1,7 @@
 //! The JSON scenario corpus (`spec/scenarios`) against the engine: on `MemoryStore`, on
-//! `LocalFsStore`, reopening the engine before every read step, and compacting everything
-//! before every read step.
+//! `LocalFsStore`, reopening the engine before every read step, flushing and compacting
+//! everything before every read step, writing segment files instead of the memtable, and
+//! flushing the memtable after every write.
 
 use std::sync::{Arc, Mutex};
 
@@ -23,6 +24,28 @@ fn small() -> EngineOptions {
         },
         gc_grace: std::time::Duration::ZERO,
         ..EngineOptions::default()
+    }
+}
+
+/// Writes straight to segment files (no memtable), and the memtable flushed after every
+/// write (decision 0009).
+#[test]
+fn corpus_with_files_and_with_a_flush_per_write() {
+    for o in [
+        EngineOptions {
+            inline_max_rows: 0,
+            ..small()
+        },
+        EngineOptions {
+            flush_rows: 1,
+            background_flush: false,
+            ..small()
+        },
+    ] {
+        let report = run_corpus(&spec_scenarios_dir(), || {
+            Engine::open(MemoryStore::new(), o.clone()).unwrap()
+        });
+        report.assert_ok();
     }
 }
 
@@ -86,6 +109,7 @@ impl Hooked {
             }
             Hook::CompactAll => {
                 let e = self.engine();
+                e.flush().unwrap();
                 e.compact_all().unwrap();
                 e.gc().unwrap();
                 e

@@ -67,7 +67,7 @@ fn entry_1_is_marker(store: &MemoryStore) -> bool {
 }
 
 fn opts() -> EngineOptions {
-    test_options(4, 0, false) // no automatic checkpoints: GC writes them
+    file_options(4, 0, false) // no automatic checkpoints: GC writes them
 }
 
 #[test]
