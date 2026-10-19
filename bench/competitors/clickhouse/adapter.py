@@ -28,7 +28,8 @@ from pathlib import Path
 
 import pyarrow as pa
 
-from ..base import Adapter, SeriesMap, Unavailable, result_fields
+from ..base import (Adapter, SeriesMap, Unavailable, batch_bounds, engine_rows, latency_summary,
+                    result_fields)
 
 TOOLS = Path(__file__).resolve().parents[2] / "tools" / "clickhouse" / "clickhouse-bin"
 
@@ -97,6 +98,11 @@ class ClickHouseAdapter(Adapter):
     name = "clickhouse"
     #: "asof" (default) or "arrayjoin"; see README.md
     grid_strategy = "asof"
+    #: fsync parts on insert (fsync_after_insert, fsync_part_directory); off by default,
+    #: as in ClickHouse
+    fsync = False
+    #: the server is its own process (bench/ingest.py's fsync counters don't see it)
+    out_of_process = True
 
     def __init__(self, workdir, threads=6, memory_limit_mb=4096, **kw):
         super().__init__(workdir, threads, memory_limit_mb)
@@ -110,7 +116,8 @@ class ClickHouseAdapter(Adapter):
         self.client = None
         self.notes = (f"ClickHouse server (official static binary), max_threads={threads}, "
                       f"max_memory_usage={memory_limit_mb}MB, MergeTree, query cache off. "
-                      "Cold = SYSTEM DROP MARK/UNCOMPRESSED/MMAP/QUERY CACHE (OS page cache not dropped).")
+                      "Cold = SYSTEM DROP MARK/UNCOMPRESSED/MMAP/QUERY CACHE (OS page cache not dropped)."
+                      + (" Table setting fsync_after_insert=1, fsync_part_directory=1." if self.fsync else ""))
 
     def version(self):
         out = subprocess.run([self.bin, "--version"], capture_output=True, text=True).stdout
@@ -153,7 +160,7 @@ class ClickHouseAdapter(Adapter):
                                                     query_limit=0, connect_timeout=30,
                                                     send_receive_timeout=3600)
 
-    def load(self, dataset_dir: Path, catalog: dict) -> dict:
+    def _setup(self, catalog: dict):
         self.catalog = catalog
         t = catalog["tables"][0]
         self.table = t["name"]
@@ -165,9 +172,8 @@ class ClickHouseAdapter(Adapter):
             shutil.rmtree(self.workdir)
         self.workdir.mkdir(parents=True)
         self._start()
-        uf = self.workdir / "server" / "user_files" / "versions.parquet"
-        os.symlink((dataset_dir / "versions.parquet").resolve(), uf)
 
+    def _ddl(self) -> str:
         def coldef(c):
             ty = self.col_types[c]
             if ty == "string":
@@ -178,7 +184,10 @@ class ClickHouseAdapter(Adapter):
                 return f"{c} Nullable(Float64) CODEC(ZSTD(3))"
             return f"{c} Nullable({CH_TYPES[ty]}) CODEC(ZSTD(3))"
 
-        ddl = (
+        settings = "index_granularity = 8192"
+        if self.fsync:
+            settings += ", fsync_after_insert = 1, fsync_part_directory = 1"
+        return (
             "CREATE TABLE v (series_id UInt32 CODEC(Delta, ZSTD(3)), "
             "value_time Int64 CODEC(Delta, ZSTD(3)), "
             "published_time Nullable(Int64) CODEC(Delta, ZSTD(3)), "
@@ -187,14 +196,23 @@ class ClickHouseAdapter(Adapter):
             "seq Int64 CODEC(Delta, ZSTD(3)), deleted Bool, "
             + ", ".join(coldef(c) for c in self.columns)
             + ") ENGINE = MergeTree ORDER BY (series_id, value_time, received_time, seq) "
-            "SETTINGS index_granularity = 8192"
+            f"SETTINGS {settings}"
         )
+
+    def _size(self) -> int:
+        return int(self.client.query(
+            "SELECT sum(bytes_on_disk) FROM system.parts WHERE table = 'v' AND active").result_rows[0][0])
+
+    def load(self, dataset_dir: Path, catalog: dict) -> dict:
+        self._setup(catalog)
+        uf = self.workdir / "server" / "user_files" / "versions.parquet"
+        os.symlink((dataset_dir / "versions.parquet").resolve(), uf)
 
         def conv(c):
             return f"toUnixTimestamp64Micro({c})" if self.col_types[c] == "timestamp" else c
 
         t0 = time.perf_counter()
-        self.client.command(ddl)
+        self.client.command(self._ddl())
         self.client.command(
             "INSERT INTO v SELECT series_id, toUnixTimestamp64Micro(value_time), "
             "toUnixTimestamp64Micro(published_time), toUnixTimestamp64Micro(received_time), "
@@ -204,10 +222,56 @@ class ClickHouseAdapter(Adapter):
             settings={"max_insert_threads": self.threads, "max_threads": self.threads})
         self.client.command("OPTIMIZE TABLE v FINAL")
         ingest = time.perf_counter() - t0
-        size = self.client.query(
-            "SELECT sum(bytes_on_disk) FROM system.parts WHERE table = 'v' AND active").result_rows[0][0]
+        size = self._size()
         assert self.client.query("SELECT max(seq) FROM v").result_rows[0][0] < 1 << 62
-        return {"ingest_seconds": ingest, "bytes_on_disk": int(size)}
+        return {"ingest_seconds": ingest, "bytes_on_disk": size}
+
+    def ingest(self, dataset_dir: Path, catalog: dict, mode: str, max_batches: int | None = None) -> dict:
+        """``bulk`` = ``load`` (one INSERT ... SELECT FROM file(Parquet), OPTIMIZE FINAL).
+        ``per-batch``: one synchronous ``INSERT`` (Arrow over HTTP, ``async_insert=0``) per
+        original batch -- each creates a part, background merges run as they would -- then
+        ``OPTIMIZE TABLE v FINAL``. With ``fsync=True`` (system ``clickhouse-fsync``) the
+        table sets ``fsync_after_insert`` and ``fsync_part_directory``; ClickHouse's
+        default does not fsync an insert before acknowledging it."""
+        if mode == "bulk":
+            r = self.load(dataset_dir, catalog)
+            n = catalog["stats"]["versions"]
+            return {"mode": mode, "writes": 1, "rows": n, "batches_total": None, "rows_total": n,
+                    "complete": True, "write_seconds": r["ingest_seconds"], "finalize_seconds": 0.0,
+                    "wall_seconds": r["ingest_seconds"], "write_latency_ms": None,
+                    "bytes_on_disk": r["bytes_on_disk"]}
+        if mode != "per-batch":
+            raise ValueError(mode)
+        self._setup(catalog)
+        rows = engine_rows(dataset_dir, catalog)
+        starts, ends = batch_bounds(rows.column("system_time").to_numpy())
+        n_batches = len(starts)
+        if max_batches is not None:
+            starts, ends = starts[:max_batches], ends[:max_batches]
+        settings = {"async_insert": 0}
+        t0 = time.perf_counter()
+        self.client.command(self._ddl())
+        lats = []
+        for a, b in zip(starts.tolist(), ends.tolist()):
+            t1 = time.perf_counter()
+            self.client.insert_arrow("v", rows.slice(a, b - a), settings=settings)
+            lats.append(time.perf_counter() - t1)
+        t1 = time.perf_counter()
+        parts = int(self.client.query(
+            "SELECT count() FROM system.parts WHERE table = 'v' AND active").result_rows[0][0])
+        t1b = time.perf_counter()
+        self.client.command("OPTIMIZE TABLE v FINAL")
+        t2 = time.perf_counter()
+        nrows = int(ends[-1])
+        loaded = self.client.query("SELECT count(), max(seq) FROM v").result_rows[0]
+        assert loaded[0] == nrows and loaded[1] < 1 << 62, loaded
+        return {"mode": mode, "writes": int(len(starts)), "rows": nrows,
+                "batches_total": int(n_batches), "rows_total": rows.num_rows,
+                "complete": nrows == rows.num_rows,
+                "write_seconds": t1 - t0, "finalize_seconds": t2 - t1b,
+                "wall_seconds": (t1 - t0) + (t2 - t1b),
+                "write_latency_ms": latency_summary(lats), "bytes_on_disk": self._size(),
+                "active_parts_after_writes": parts}
 
     def cold(self):
         for c in ("SYSTEM DROP MARK CACHE", "SYSTEM DROP UNCOMPRESSED CACHE", "SYSTEM DROP MMAP CACHE",

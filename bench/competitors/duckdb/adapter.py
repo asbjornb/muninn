@@ -24,7 +24,8 @@ from pathlib import Path
 import duckdb
 import pyarrow as pa
 
-from ..base import Adapter, SeriesMap, result_fields
+from ..base import (Adapter, SeriesMap, Unavailable, batch_bounds, engine_rows, latency_summary,
+                    result_fields)
 
 K = 1 << 40  # seq < 2^40 (10^12 versions) -- asserted at load
 
@@ -132,6 +133,67 @@ class DuckDBAdapter(Adapter):
         assert max_seq < K
         self._connect(read_only=True)
         return {"ingest_seconds": ingest, "bytes_on_disk": size}
+
+    def ingest(self, dataset_dir: Path, catalog: dict, mode: str, max_batches: int | None = None) -> dict:
+        """``bulk`` = ``load`` (one sorted CREATE TABLE AS + CHECKPOINT). ``per-batch``: a
+        database file, then ``BEGIN; INSERT INTO v SELECT * FROM <batch>; COMMIT`` per
+        original batch (each commit appends to and fsyncs the WAL; DuckDB checkpoints the
+        WAL into the file by itself every 16 MB), then one CHECKPOINT. The table stays in
+        arrival order, not the sorted layout the query runs use."""
+        if self.layout != "native":
+            raise Unavailable(f"{self.name}: ingest modes only for the native layout")
+        if mode == "bulk":
+            r = self.load(dataset_dir, catalog)
+            n = catalog["stats"]["versions"]
+            return {"mode": mode, "writes": 1, "rows": n, "batches_total": None, "rows_total": n,
+                    "complete": True, "write_seconds": r["ingest_seconds"], "finalize_seconds": 0.0,
+                    "wall_seconds": r["ingest_seconds"], "write_latency_ms": None,
+                    "bytes_on_disk": r["bytes_on_disk"]}
+        if mode != "per-batch":
+            raise ValueError(mode)
+        self.catalog = catalog
+        t = catalog["tables"][0]
+        self.table = t["name"]
+        self.columns = [c["name"] for c in t["columns"]]
+        self.col_types = {c["name"]: c["type"] for c in t["columns"]}
+        self.smap = SeriesMap(catalog, self.table)
+        if self.workdir.exists():
+            shutil.rmtree(self.workdir)
+        self.workdir.mkdir(parents=True)
+        self.db_path = self.workdir / "muninn_bench.duckdb"
+        rows = engine_rows(dataset_dir, catalog)
+        starts, ends = batch_bounds(rows.column("system_time").to_numpy())
+        n_batches = len(starts)
+        if max_batches is not None:
+            starts, ends = starts[:max_batches], ends[:max_batches]
+        empty = rows.slice(0, 0)  # noqa: F841  (DuckDB replacement scan)
+        t0 = time.perf_counter()
+        self._connect(read_only=False)
+        self.con.execute("CREATE TABLE v AS SELECT * FROM empty")
+        lats = []
+        for a, b in zip(starts.tolist(), ends.tolist()):
+            t1 = time.perf_counter()
+            self.con.register("b", rows.slice(a, b - a))
+            self.con.execute("BEGIN")
+            self.con.execute("INSERT INTO v SELECT * FROM b")
+            self.con.execute("COMMIT")
+            self.con.unregister("b")
+            lats.append(time.perf_counter() - t1)
+        t1 = time.perf_counter()
+        self.con.execute("CHECKPOINT")
+        t2 = time.perf_counter()
+        loaded = self.con.execute("SELECT count(*), max(seq) FROM v").fetchone()
+        self.con.close()
+        nrows = int(ends[-1])
+        assert loaded[0] == nrows and loaded[1] < K
+        wal = self.db_path.with_name(self.db_path.name + ".wal")
+        size = self.db_path.stat().st_size + (wal.stat().st_size if wal.exists() else 0)
+        self._connect(read_only=True)
+        return {"mode": mode, "writes": int(len(starts)), "rows": nrows,
+                "batches_total": int(n_batches), "rows_total": rows.num_rows,
+                "complete": nrows == rows.num_rows,
+                "write_seconds": t1 - t0, "finalize_seconds": t2 - t1, "wall_seconds": t2 - t0,
+                "write_latency_ms": latency_summary(lats), "bytes_on_disk": size}
 
     def cold(self):
         self.con.close()
