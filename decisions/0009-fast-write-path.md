@@ -148,6 +148,34 @@ and a format-2 reader rejects format 3 (it would not understand inline segments)
   `(previous last, last]` (like `restore`).
 - New kind `flush`: removes inline segments and adds the files holding their rows.
 
+## Results (2026-10-19, `examples/ingest.rs`, same machine, before/after interleaved)
+The disk was shared with another agent's fsync-heavy benchmark during the comparison, so
+an object creation (file + directory fsync) cost ~14 ms instead of the ~1.45 ms measured
+when quiet (the "Context" table above is the quiet before-run). Both builds ran back to
+back per row, 8 s each; two rounds agreed within ~15%. Second round, local disk (btrfs,
+NVMe), writes/s and p50 / p99 latency:
+
+| shape | producers | before | after |
+| --- | ---: | ---: | ---: |
+| 1 × 96 rows | 1 | 33/s, 29 / 43 ms | 68/s, 15 / 20 ms |
+| 1 × 96 rows | 8 | 33/s, 234 / 324 ms | 270/s, 29 / 39 ms |
+| 1 × 96 rows | 64 | 34/s, 1 873 / 1 991 ms | 2 209/s, 28 / 43 ms |
+| 1 × 960 rows | 1 | 6/s, 154 / 222 ms | 70/s, 13 / 20 ms |
+| 1 × 960 rows | 8 | 6/s, 1 220 / 1 391 ms | 290/s, 26 / 61 ms |
+| 1 × 960 rows | 64 | 38/s, 1 471 / 2 504 ms | 949/s, 60 / 97 ms |
+| bulk, 2M rows in 100k-row batches | 1 | 0.66M rows/s | 1.81M rows/s |
+
+In memory (CPU cost alone, no fsync): 96-row writes 4.4k → 9.3k/s (1 producer) and
+3.7k → 12–21k/s (8–64 producers); 960-row writes 505 → 1.1k/s (1) and 440 → 1.1–2.2k/s
+(8–64). With a quiet disk the after-numbers at 1 producer are bounded by one file +
+directory fsync (~1.5 ms, so ~600 writes/s); with many producers by the leader's CPU
+(validation runs in the producers' threads; dedup, seq assignment, encoding and the
+entry are serial, ~50 µs per 96-row batch).
+
+Reads over a full memtable (~1 400–1 800 inline segments, ~140–230k rows, in memory): a
+one-series `latest` 2–3.5 ms vs 1.6–1.7 ms after flushing; a whole-table `latest` (~4M
+rows) +1–10%.
+
 ## Consequences
 - Small writes cost one object creation per *group*: on local disk the write rate is
   bounded by CPU, not fsyncs, once several producers write; on an object store by group
