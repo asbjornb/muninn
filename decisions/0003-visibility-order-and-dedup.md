@@ -31,3 +31,8 @@ received late would override a newer run — wrong **values**. (1) reports sligh
   times); fix by purge + re-backfill, or a future explicit `supersedes`.
 - "Received time = first time we got this content" is not what we store; re-sends create
   versions. A `skip_unchanged` write mode can be added later without changing the spec.
+
+## Review (2026-10-19)
+Confirmed by the owner: keep clock order. Follow-ups are in `notes/07-roadmap.md` §8: an
+explicit correction/anomaly flag, and a later duplicate-dropping write mode that must not
+treat A → B → A sequences as duplicates.

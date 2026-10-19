@@ -55,6 +55,22 @@ Spikes that can run in parallel with step 0 (see `10-ambition.md`):
 
 ## 8. Later
 
+- **Correction / anomaly flags** (from review of decision 0003, 2026-10-19). Versions are
+  ordered by the query clock, so a later correction of a published time doesn't override.
+  Add an explicit way to mark a version as superseded or anomalous (outlier, later
+  corrected), so a reader can choose to see data with or without flagged values, as
+  of a frontier. Flags are versions too: they need to be point-in-time correct themselves.
+- **Duplicate-dropping write mode** (`skip_unchanged`). Today every re-send with a new
+  `received_time` is a new version, the safe default, but duplicates can wreck performance.
+  This is hard to get right: a 5 → 4 → 5 MW forecast sequence has a real second 5, not a
+  duplicate, and without a source `published_time` it can look identical to a plain
+  re-send. A safe rule likely compares to the *latest visible* version of the point (drop
+  only if equal to the current latest), never to any historical version. Decide with real data.
+- **Data strategy: synthetic first.** Don't commit real data in bulk. Pull public data
+  (ENTSO-E, Energinet) locally to learn the shapes: revision patterns, issue cadence,
+  publication delays, re-sends, A-B-A sequences. Turn those into the generators in
+  `bench/datagen`, so tests and benchmarks stay reproducible from a seed. Revisit using
+  real data directly once the generators are calibrated.
 - Derived current-truth views, rollups, server mode (HTTP/Flight), frontier-advancing
   cursor for backtest loops, latency/QA stats.
 - Provably leak-free: noninterference fuzzing, formal spec of visibility, model-checked
