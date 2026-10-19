@@ -238,6 +238,60 @@ fn time<T>(what: &str, reps: u32, mut f: impl FnMut() -> T) -> T {
     out
 }
 
+/// Engine-column decode throughput over every `.seg` file under `$MUNINN_PERF_SEGMENTS`
+/// (e.g. a bench database's `segments/` directory).
+#[test]
+#[ignore]
+fn perf_decode() {
+    let Ok(dir) = std::env::var("MUNINN_PERF_SEGMENTS") else {
+        eprintln!("set MUNINN_PERF_SEGMENTS");
+        return;
+    };
+    fn files(p: &std::path::Path, out: &mut Vec<Vec<u8>>) {
+        for e in std::fs::read_dir(p).unwrap().flatten() {
+            let path = e.path();
+            if path.is_dir() {
+                files(&path, out);
+            } else if path.extension().is_some_and(|x| x == "seg") {
+                out.push(std::fs::read(&path).unwrap());
+            }
+        }
+    }
+    let mut segs = Vec::new();
+    files(std::path::Path::new(&dir), &mut segs);
+    let opened: Vec<muninn_format::SegmentFile<'_>> = segs
+        .iter()
+        .map(|b| muninn_format::SegmentFile::open(b).unwrap())
+        .collect();
+    let rows: u64 = opened.iter().map(|f| f.footer().row_count).sum();
+    let bytes: usize = segs.iter().map(Vec::len).sum();
+    for pass in 0..3 {
+        let t = Instant::now();
+        let mut n = 0;
+        for f in &opened {
+            for b in 0..f.footer().blocks.len() {
+                n += f.engine_block(b).unwrap().len();
+            }
+        }
+        let el = t.elapsed();
+        eprintln!(
+            "pass {pass}: {} segments, {n} rows ({bytes} B): {el:?}, {:.1} ns/row",
+            opened.len(),
+            el.as_nanos() as f64 / rows as f64
+        );
+    }
+    let t = Instant::now();
+    let mut n = 0;
+    for f in &opened {
+        for b in 0..f.footer().blocks.len() {
+            for p in 0..f.footer().columns.len() {
+                n += f.value_chunk(b, p).unwrap().len();
+            }
+        }
+    }
+    eprintln!("value columns: {n} values in {:?}", t.elapsed());
+}
+
 #[test]
 #[ignore]
 fn perf_reads() {

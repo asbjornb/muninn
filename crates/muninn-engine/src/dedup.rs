@@ -27,6 +27,8 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
+use crate::fxhash::FxHashMap;
+
 use muninn_core::types::{SeriesId, TableDef};
 use muninn_core::{Result, Timestamp};
 use muninn_format::Partition;
@@ -43,7 +45,7 @@ struct PartIndex {
     /// Segments whose every row is folded into `points`.
     covered: HashSet<Key>,
     /// Per point `(series, value_time µs)`.
-    points: HashMap<(SeriesId, i64), RtRange>,
+    points: FxHashMap<(SeriesId, i64), RtRange>,
     /// LRU clock of the last use.
     used: u64,
 }
@@ -63,7 +65,7 @@ impl PartIndex {
 /// See the module docs. Only used under the engine's writer lock.
 pub(crate) struct DedupIndex {
     /// Table name → partition index → index.
-    parts: HashMap<String, HashMap<i64, PartIndex>>,
+    parts: HashMap<String, FxHashMap<i64, PartIndex>>,
     /// Evict partitions beyond this many points in total (0 = no index: every row is
     /// checked against the stored versions).
     limit: usize,

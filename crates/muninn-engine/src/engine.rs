@@ -1,7 +1,7 @@
 //! [`Engine`]: open/recovery, commits, writes, catalog changes, compaction and GC.
 
 use std::collections::hash_map::RandomState;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::hash::{BuildHasher, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
@@ -22,6 +22,7 @@ use muninn_store::{Key, PutOutcome, Store, StoreErrorKind};
 
 use crate::EngineOptions;
 use crate::dedup::DedupIndex;
+use crate::fxhash::{FxHashMap, FxHashSet};
 use crate::log::{
     self, CatalogChangeJson, Checkpoint, Hint, LOG_FORMAT, LogEntry, from_json, is_truncated,
     to_json, truncated,
@@ -191,6 +192,15 @@ impl<S: Store> Engine<S> {
                     .map(|s| ((s.table.clone(), s.partition.label()), v.len()))
             })
             .collect()
+    }
+
+    /// [`EngineSnapshot::history_lead`] on the current state.
+    pub fn history_lead(
+        &self,
+        req: &HistoryRequest,
+        lead: &crate::read::LeadFilter,
+    ) -> Result<ReadResult<VersionRow>> {
+        self.retry_missing(|| self.snapshot()?.history_lead(req, lead))
     }
 
     /// Keys of every segment the current state references.
@@ -518,10 +528,10 @@ impl<S: Store> Engine<S> {
     fn load_points(
         &self,
         st: &State,
-        points: &BTreeMap<String, HashMap<SeriesId, BTreeSet<Timestamp>>>,
-        rts: &HashSet<(SeriesId, Timestamp, Timestamp)>,
-    ) -> Result<HashMap<(SeriesId, Timestamp), Vec<Version>>> {
-        let mut out: HashMap<(SeriesId, Timestamp), Vec<Version>> = HashMap::new();
+        points: &BTreeMap<String, FxHashMap<SeriesId, BTreeSet<Timestamp>>>,
+        rts: &FxHashSet<(SeriesId, Timestamp, Timestamp)>,
+    ) -> Result<FxHashMap<(SeriesId, Timestamp), Vec<Version>>> {
+        let mut out: FxHashMap<(SeriesId, Timestamp), Vec<Version>> = FxHashMap::default();
         for (table, pts) in points {
             let table = st.catalog.table(table)?;
             let ids: BTreeSet<SeriesId> = pts.keys().copied().collect();
@@ -548,6 +558,7 @@ impl<S: Store> Engine<S> {
                 tc_hi,
                 system: None,
                 points: Some(pts),
+                keep_segment: None,
             })?;
             cands.retain(|c| rts.contains(&(c.series, c.vt, c.rt)));
             for v in scanner.materialize(table.columns.len(), &cands)? {
@@ -561,9 +572,10 @@ impl<S: Store> Engine<S> {
     // Compaction and GC
     // -----------------------------------------------------------------------------------
 
-    /// Merges every segment of one partition into one (no-op with fewer than two).
-    /// Returns whether anything was compacted. Never changes a query result (SPEC §7.2):
-    /// the new segment holds exactly the same versions.
+    /// Merges the segments of one partition, by compaction group (see
+    /// [`EngineOptions::compact_by_system_time`]): the segments of each group with at
+    /// least two become one. Returns whether anything was compacted. Never changes a
+    /// query result (SPEC §7.2): the new segments hold exactly the same versions.
     pub fn compact(&self, table: &str, partition_label: &str) -> Result<bool> {
         self.retry_missing(|| self.compact_once(table, partition_label))
     }
@@ -574,11 +586,11 @@ impl<S: Store> Engine<S> {
         let t = st.catalog.table(table)?.clone();
         let p = Partition::parse_label(t.partition, partition_label)
             .map_err(|e| Error::new(ErrorKind::InvalidRange, e.message().to_owned()))?;
-        self.compact_locked(&mut w, &st, &t, p)
+        self.compact_locked(&mut w, st, &t, p)
     }
 
-    /// Compacts every partition that has more than one segment; returns how many were
-    /// compacted.
+    /// Compacts every partition that has a compaction group of more than one segment;
+    /// returns how many partitions were compacted.
     pub fn compact_all(&self) -> Result<usize> {
         self.retry_missing(|| self.compact_all_once())
     }
@@ -590,7 +602,17 @@ impl<S: Store> Engine<S> {
             let st = self.fresh(&mut w)?;
             st.partitions
                 .iter()
-                .filter(|(_, v)| v.len() > 1)
+                .filter(|((table, _), v)| {
+                    v.len() > 1
+                        && st.catalog.table(table).is_ok_and(|t| {
+                            let mut groups = BTreeMap::new();
+                            v.iter().any(|s| {
+                                let c = groups.entry(self.compaction_group(t, s)).or_insert(0);
+                                *c += 1;
+                                *c > 1
+                            })
+                        })
+                })
                 .map(|(k, _)| k.clone())
                 .collect()
         };
@@ -601,28 +623,61 @@ impl<S: Store> Engine<S> {
                 granularity: t.partition,
                 index,
             };
-            if self.compact_locked(&mut w, &st, &t, p)? {
+            if self.compact_locked(&mut w, st, &t, p)? {
                 n += 1;
             }
         }
         Ok(n)
     }
 
+    /// The compaction group of a segment: with
+    /// [`EngineOptions::compact_by_system_time`], the period of the table's partition
+    /// granularity (day, month, year) containing its greatest `system_time`; else one
+    /// group per partition.
+    fn compaction_group(&self, t: &TableDef, seg: &SegmentRef) -> i64 {
+        if self.shared.opts.compact_by_system_time {
+            Partition::of(t.partition, seg.system_time.max).index
+        } else {
+            0
+        }
+    }
+
     fn compact_locked(
+        &self,
+        w: &mut Writer,
+        mut st: Arc<State>,
+        t: &TableDef,
+        p: Partition,
+    ) -> Result<bool> {
+        let Some(segs) = st.partitions.get(&(t.name.clone(), p.index)).cloned() else {
+            return Ok(false);
+        };
+        let mut groups: BTreeMap<i64, Vec<Arc<SegmentRef>>> = BTreeMap::new();
+        for seg in segs.iter() {
+            groups
+                .entry(self.compaction_group(t, seg))
+                .or_default()
+                .push(Arc::clone(seg));
+        }
+        let mut any = false;
+        for group in groups.into_values().filter(|g| g.len() > 1) {
+            st = self.merge_segments(w, &st, t, p, &group)?;
+            any = true;
+        }
+        Ok(any)
+    }
+
+    /// Replaces `segs` (of partition `p`, at least two) by one segment with their rows.
+    fn merge_segments(
         &self,
         w: &mut Writer,
         st: &Arc<State>,
         t: &TableDef,
         p: Partition,
-    ) -> Result<bool> {
-        let Some(segs) = st.partitions.get(&(t.name.clone(), p.index)) else {
-            return Ok(false);
-        };
-        if segs.len() < 2 {
-            return Ok(false);
-        }
+        segs: &[Arc<SegmentRef>],
+    ) -> Result<Arc<State>> {
         let mut versions = Vec::new();
-        for seg in segs.iter() {
+        for seg in segs {
             let bytes = self.shared.store.get(&seg.key).map_err(|e| {
                 if e.kind() == StoreErrorKind::NotFound {
                     self.shared.stale.store(true, Ordering::SeqCst);
@@ -653,10 +708,10 @@ impl<S: Store> Engine<S> {
         let mut entry = self.new_entry(st, "compact");
         entry.add.push(new.to_json());
         entry.remove = segs.iter().map(|s| s.key.as_str().to_owned()).collect();
-        self.commit(w, st, entry)?;
+        let next = self.commit(w, st, entry)?;
         let removed: Vec<Key> = segs.iter().map(|s| s.key.clone()).collect();
         lock(&self.dedup).record_compaction(&t.name, p, &removed, &new.key);
-        Ok(true)
+        Ok(next)
     }
 
     /// Deletes segment files that no committed state references: orphans of failed
@@ -1259,8 +1314,9 @@ impl<S: Store> Engine<S> {
         }
         let mut dedup = lock(&self.dedup);
         dedup.prepare(&self.shared, &st, &touched)?;
-        let mut points: BTreeMap<String, HashMap<SeriesId, BTreeSet<Timestamp>>> = BTreeMap::new();
-        let mut rts: HashSet<(SeriesId, Timestamp, Timestamp)> = HashSet::new();
+        let mut points: BTreeMap<String, FxHashMap<SeriesId, BTreeSet<Timestamp>>> =
+            BTreeMap::new();
+        let mut rts: FxHashSet<(SeriesId, Timestamp, Timestamp)> = FxHashSet::default();
         for (v, (table, p)) in candidates.iter().zip(&placed) {
             if dedup.may_have(table, *p, v.series, v.value_time, v.received_time) {
                 points
@@ -1274,7 +1330,7 @@ impl<S: Store> Engine<S> {
         }
         drop(placed);
         let stored = if points.is_empty() {
-            HashMap::new()
+            FxHashMap::default()
         } else {
             self.load_points(&st, &points, &rts)?
         };

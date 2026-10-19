@@ -126,6 +126,13 @@ pub enum Compression {
     Zstd,
 }
 
+thread_local! {
+    /// One zstd decompression context per thread, reused for every chunk (creating one
+    /// per chunk dominated the decoding of small chunks).
+    static DECOMPRESSOR: std::cell::RefCell<Option<zstd::bulk::Decompressor<'static>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 /// Directory entry of one column chunk.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ChunkMeta {
@@ -169,12 +176,27 @@ impl ChunkMeta {
         match self.compression {
             Compression::None => Ok(std::borrow::Cow::Borrowed(stored)),
             Compression::Zstd => {
-                // Stream into a growing buffer (bounded by raw_length + 1) rather than
-                // trusting raw_length for an up-front allocation.
-                use std::io::Read;
-                let mut raw = Vec::new();
-                zstd::stream::read::Decoder::new(stored)
-                    .and_then(|d| d.take(self.raw_length + 1).read_to_end(&mut raw))
+                // Decompress into exactly `raw_length` bytes of capacity (a frame that
+                // inflates to more is an error). A decoded footer bounds raw_length by
+                // what the chunk's encoding can need (`max_raw_length`), so this
+                // allocation is bounded; the cap guards hand-built directories.
+                if self.raw_length > MAX_STRING_CHUNK_RAW {
+                    return Err(Error::corrupt(format!(
+                        "chunk at {} claims {} raw bytes",
+                        self.offset, self.raw_length
+                    )));
+                }
+                let mut raw = Vec::with_capacity(self.raw_length as usize);
+                DECOMPRESSOR
+                    .with(|d| {
+                        let mut d = d.borrow_mut();
+                        if d.is_none() {
+                            *d = Some(zstd::bulk::Decompressor::new()?);
+                        }
+                        d.as_mut()
+                            .expect("just set")
+                            .decompress_to_buffer(stored, &mut raw)
+                    })
                     .map_err(|e| Error::corrupt(format!("zstd chunk at {}: {e}", self.offset)))?;
                 if raw.len() as u64 != self.raw_length {
                     return Err(Error::corrupt(format!(
@@ -455,36 +477,20 @@ impl Footer {
             r.finish()?;
             Ok(v)
         };
-        let to_ts = |v: Vec<i64>, what: &str| -> Result<Vec<Timestamp>> {
-            v.into_iter().map(|x| ts_checked(x, what)).collect()
-        };
 
         let series_raw = ints(C_SERIES, "series chunk")?;
-        let value_time = to_ts(ints(C_VALUE_TIME, "value_time chunk")?, "value_time")?;
-        let received_time = to_ts(ints(C_RECEIVED, "received_time chunk")?, "received_time")?;
-        let system_time = to_ts(ints(C_SYSTEM, "system_time chunk")?, "system_time")?;
-        let seq: Vec<u64> = ints(C_SEQ, "seq chunk")?
-            .into_iter()
-            .map(|x| x as u64)
-            .collect();
-        let published_time = {
+        let value_time = ints(C_VALUE_TIME, "value_time chunk")?;
+        let received_time = ints(C_RECEIVED, "received_time chunk")?;
+        let system_time = ints(C_SYSTEM, "system_time chunk")?;
+        let seq = ints(C_SEQ, "seq chunk")?;
+        let (present, published) = {
             let raw = open(C_PUBLISHED)?;
             let mut r = Reader::new(&raw, "published_time chunk");
             let present = read_validity(n, &mut r)?;
             let k = present.iter().filter(|&&p| p).count();
-            let mut vals = decode_ints(block.chunks[C_PUBLISHED].encoding, k, &mut r)?.into_iter();
+            let vals = decode_ints(block.chunks[C_PUBLISHED].encoding, k, &mut r)?;
             r.finish()?;
-            let mut out = Vec::with_capacity(n);
-            for p in present {
-                out.push(match p {
-                    true => Some(ts_checked(
-                        vals.next().expect("k values"),
-                        "published_time",
-                    )?),
-                    false => None,
-                });
-            }
-            out
+            (present, vals)
         };
         let deleted = {
             let raw = open(C_DELETED)?;
@@ -494,61 +500,106 @@ impl Footer {
             v
         };
 
-        // Series ids must agree with the directory for this block's rows.
+        // Series ids must agree with the directory for this block's rows: one tight
+        // comparison per directory entry overlapping the block (the entries tile the
+        // rows, checked when the footer was decoded).
         let mut series = Vec::with_capacity(n);
+        let end = block.row_start + n as u64;
         let mut e = self
             .series
             .partition_point(|s| s.row_end <= block.row_start);
-        for (i, &raw) in series_raw.iter().enumerate() {
-            let row = block.row_start + i as u64;
-            while e < self.series.len() && self.series[e].row_end <= row {
-                e += 1;
-            }
+        while (series.len() as u64) < n as u64 {
             let entry = self
                 .series
                 .get(e)
                 .ok_or_else(|| Error::corrupt("row beyond the series directory"))?;
-            if raw != i64::from(entry.id.0) {
+            let lo = (entry.row_start.max(block.row_start) - block.row_start) as usize;
+            let hi = (entry.row_end.min(end) - block.row_start) as usize;
+            if lo != series.len() || hi <= lo {
+                return Err(Error::corrupt("series directory does not tile the block"));
+            }
+            let id = i64::from(entry.id.0);
+            if let Some(off) = series_raw[lo..hi].iter().position(|&x| x != id) {
                 return Err(Error::corrupt(format!(
-                    "row {row} has series {raw}, directory says {}",
+                    "row {} has series {}, directory says {}",
+                    block.row_start + (lo + off) as u64,
+                    series_raw[lo + off],
                     entry.id.0
                 )));
             }
-            series.push(entry.id);
+            series.resize(hi, entry.id);
+            e += 1;
         }
 
-        let out = EngineBlock {
-            series,
-            value_time,
-            published_time,
-            received_time,
-            system_time,
-            seq,
-            deleted,
-        };
-        // Sort order (strict: seq is unique) and statistics.
+        // Every row within its block statistics (whose bounds are valid timestamps, so
+        // this also range-checks every value) and in strict sort order (seq is unique).
+        let b_vt = (
+            block.value_time.min.as_micros(),
+            block.value_time.max.as_micros(),
+        );
+        let b_rt = (
+            block.received_time.min.as_micros(),
+            block.received_time.max.as_micros(),
+        );
+        let b_pt = (
+            block.published_time.min.as_micros(),
+            block.published_time.max.as_micros(),
+        );
+        let b_st = (
+            block.system_time.min.as_micros(),
+            block.system_time.max.as_micros(),
+        );
+        let inside = |b: (i64, i64), x: i64| b.0 <= x && x <= b.1;
+        let mut published_time = Vec::with_capacity(n);
+        let mut pv = published.iter();
+        let mut prev: Option<(SeriesId, i64, i64, i64, u64)> = None;
         for i in 0..n {
-            let eff = out.published_time[i].unwrap_or(out.received_time[i]);
-            if !(block.value_time.contains(out.value_time[i])
-                && block.received_time.contains(out.received_time[i])
-                && block.published_time.contains(eff)
-                && block.system_time.contains(out.system_time[i])
-                && (self.stats.seq_min..=self.stats.seq_max).contains(&out.seq[i]))
+            let pt = if present[i] {
+                Some(*pv.next().expect("k values"))
+            } else {
+                None
+            };
+            let (vt, rt, st, sq) = (
+                value_time[i],
+                received_time[i],
+                system_time[i],
+                seq[i] as u64,
+            );
+            if !(inside(b_vt, vt)
+                && inside(b_rt, rt)
+                && inside(b_pt, pt.unwrap_or(rt))
+                && inside(b_st, st)
+                && (self.stats.seq_min..=self.stats.seq_max).contains(&sq))
             {
                 return Err(Error::corrupt(format!(
                     "row {} lies outside its block statistics",
                     block.row_start + i as u64
                 )));
             }
-            if i > 0 && sort_key(&out, i - 1) >= sort_key(&out, i) {
+            let key = (series[i], vt, rt, st, sq);
+            if prev.is_some_and(|p| p >= key) {
                 return Err(Error::corrupt(format!(
                     "rows {} and {} are out of order",
                     block.row_start + i as u64 - 1,
                     block.row_start + i as u64
                 )));
             }
+            prev = Some(key);
+            published_time.push(pt.map(|p| ts_checked(p, "published_time")).transpose()?);
         }
-        Ok(out)
+        let ts = |v: Vec<i64>, what: &str| {
+            Timestamp::from_micros_vec(v)
+                .map_err(|i| Error::corrupt(format!("{what}: row {i} out of range")))
+        };
+        Ok(EngineBlock {
+            series,
+            value_time: ts(value_time, "value_time")?,
+            published_time,
+            received_time: ts(received_time, "received_time")?,
+            system_time: ts(system_time, "system_time")?,
+            seq: seq.into_iter().map(|x| x as u64).collect(),
+            deleted,
+        })
     }
 
     /// Decodes value column at position `pos` (in [`Footer::columns`]) of block `b` from
@@ -614,16 +665,6 @@ impl Footer {
             .map(|p| if p { vals.next() } else { None })
             .collect())
     }
-}
-
-fn sort_key(b: &EngineBlock, i: usize) -> (SeriesId, Timestamp, Timestamp, Timestamp, u64) {
-    (
-        b.series[i],
-        b.value_time[i],
-        b.received_time[i],
-        b.system_time[i],
-        b.seq[i],
-    )
 }
 
 /// The nullable-chunk prefix (FORMAT.md §4.1): mode byte, then a validity bitmap for mode

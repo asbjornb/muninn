@@ -162,6 +162,10 @@ impl AsOf {
 }
 
 fn pick(values: &mut Vec<Option<muninn_core::Value>>, idx: &[usize]) {
+    if idx.iter().enumerate().all(|(k, &i)| k == i) {
+        values.resize(idx.len(), None); // the table's own columns, in order
+        return;
+    }
     *values = idx
         .iter()
         .map(|&i| values.get(i).cloned().flatten())
@@ -297,12 +301,34 @@ fn to_table(py: Python<'_>, batch: RecordBatch) -> PyResult<Py<PyAny>> {
     Ok(t.into_pyarrow(py)?.unbind())
 }
 
+/// A lead-time filter from Python: `(column, min, max)`.
+type LeadArg = (Result<String>, DurInput, DurInput);
+
+fn lead_arg(obj: Option<&Bound<'_, PyAny>>) -> Result<Option<LeadArg>> {
+    let Some(o) = obj.filter(|o| !o.is_none()) else {
+        return Ok(None);
+    };
+    let t = o
+        .cast::<PyTuple>()
+        .map_err(|_| invalid("lead must be a (column, min, max) tuple"))?;
+    if t.len() != 3 {
+        return Err(invalid("lead must be a (column, min, max) tuple"));
+    }
+    let item = |i: usize| t.get_item(i).map_err(|_| invalid("bad lead"));
+    Ok(Some((
+        req_str(&item(0)?, "lead column"),
+        DurInput::from_py(&item(1)?),
+        DurInput::from_py(&item(2)?),
+    )))
+}
+
 fn latest_or_history(
     snap: &Snap,
     c: &Common,
     frontier: &Option<TimeInput>,
     history: bool,
     as_of: &AsOf,
+    lead: Option<&LeadArg>,
 ) -> Result<RecordBatch> {
     let t = c.resolve(snap)?;
     let cols = as_of.project(&t)?;
@@ -319,13 +345,28 @@ fn latest_or_history(
             system,
         },
     };
-    let mut res = if history {
-        snap.history(&req)?
-    } else {
-        snap.latest(&req)?
+    let lead = match lead {
+        None => None,
+        Some((column, lo, hi)) => Some(muninn_engine::LeadFilter {
+            column: column.clone()?,
+            min: lo.resolve("lead min")?,
+            max: hi.resolve("lead max")?,
+        }),
+    };
+    let mut res = match (&lead, history) {
+        (Some(l), true) => snap.history_lead(&req, l)?,
+        (None, true) => snap.history(&req)?,
+        (_, false) => snap.latest(&req)?,
     };
     shape_versions(&mut res, as_of, cols);
     let op = if history { "history" } else { "latest" };
+    let mut request = c.base_request(&range);
+    if let Some(l) = &lead {
+        request.insert(
+            "lead".into(),
+            json!([l.column, dur_json(l.min), dur_json(l.max)]),
+        );
+    }
     let r = receipt(
         snap,
         &t,
@@ -335,7 +376,7 @@ fn latest_or_history(
         c.clock,
         frontier,
         system,
-        Json::Object(c.base_request(&range)),
+        Json::Object(request),
     );
     output::versions_batch(&res, history, r)
 }
@@ -609,12 +650,12 @@ impl Snapshot {
         let c = Common::extract(table, series, clock, value_from, value_to, system).or_py(py)?;
         let f = input::opt_time(frontier);
         let b = py
-            .detach(|| latest_or_history(&self.snap, &c, &f, false, &as_of))
+            .detach(|| latest_or_history(&self.snap, &c, &f, false, &as_of, None))
             .or_py(py)?;
         to_table(py, b)
     }
 
-    #[pyo3(signature = (table, series, value_from, value_to, clock, frontier, system, *, as_of_columns=None, empty=false))]
+    #[pyo3(signature = (table, series, value_from, value_to, clock, frontier, system, *, as_of_columns=None, empty=false, lead=None))]
     #[allow(clippy::too_many_arguments)]
     fn history(
         &self,
@@ -628,6 +669,7 @@ impl Snapshot {
         system: Option<&Bound<'_, PyAny>>,
         as_of_columns: Option<Vec<String>>,
         empty: bool,
+        lead: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Py<PyAny>> {
         let as_of = AsOf {
             columns: as_of_columns,
@@ -635,8 +677,9 @@ impl Snapshot {
         };
         let c = Common::extract(table, series, clock, value_from, value_to, system).or_py(py)?;
         let f = input::opt_time(frontier);
+        let lead = lead_arg(lead).or_py(py)?;
         let b = py
-            .detach(|| latest_or_history(&self.snap, &c, &f, true, &as_of))
+            .detach(|| latest_or_history(&self.snap, &c, &f, true, &as_of, lead.as_ref()))
             .or_py(py)?;
         to_table(py, b)
     }

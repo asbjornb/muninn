@@ -54,6 +54,9 @@ class MuninnAdapter(Adapter):
     compact_every = 500
     #: series are created with create_series_batch, this many per commit
     series_batch = 50_000
+    #: lead-time filters are passed to the engine (history(lead=...)) instead of being
+    #: applied to the full history on the client
+    lead_pushdown = True
 
     def __init__(self, workdir, threads=6, memory_limit_mb=4096, **kw):
         super().__init__(workdir, threads, memory_limit_mb)
@@ -150,11 +153,15 @@ class MuninnAdapter(Adapter):
         db, op, tbl = self.db, q["op"], q["table"]
         series = q.get("series") or None
         if op in ("latest", "history"):
+            lf = q.get("lead_filter")
+            kw = {}
+            if lf and op == "history" and self.lead_pushdown:
+                # min <= value_time - column < max, nulls excluded: evaluated by the engine
+                kw["lead"] = (lf["column"], int(lf["min"]), int(lf["max"]))
             res = getattr(db, op)(tbl, series=series, value_from=q.get("value_from"),
                                   value_to=q.get("value_to"), clock=q.get("clock"),
-                                  frontier=q.get("frontier"), system=q.get("system"))
-            lf = q.get("lead_filter")
-            if lf:
+                                  frontier=q.get("frontier"), system=q.get("system"), **kw)
+            if lf and not kw:
                 c = lf["column"]
                 lead = pc.subtract(res.column("value_time").cast(pa.int64()), res.column(c).cast(pa.int64()))
                 keep = pc.and_(pc.greater_equal(lead, lf["min"]), pc.less(lead, lf["max"]))

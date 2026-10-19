@@ -103,13 +103,12 @@ fn version_fields(
         out.push("deleted", DataType::Boolean, false, Arc::new(d.finish()));
     }
     for (ci, c) in columns.iter().enumerate() {
-        let cell = |r: &Option<&VersionRow>| r.and_then(|r| r.values.get(ci).cloned().flatten());
         let (ty, a): (DataType, ArrayRef) = match c.ty {
             ColumnType::F64 => {
                 let mut b = Float64Builder::with_capacity(rows.len());
                 for r in rows {
-                    b.append_option(match cell(r) {
-                        Some(Value::F64(x)) => Some(x),
+                    b.append_option(match value_at(*r, ci) {
+                        Some(Value::F64(x)) => Some(*x),
                         _ => None,
                     });
                 }
@@ -118,8 +117,8 @@ fn version_fields(
             ColumnType::I64 => {
                 let mut b = Int64Builder::with_capacity(rows.len());
                 for r in rows {
-                    b.append_option(match cell(r) {
-                        Some(Value::I64(x)) => Some(x),
+                    b.append_option(match value_at(*r, ci) {
+                        Some(Value::I64(x)) => Some(*x),
                         _ => None,
                     });
                 }
@@ -128,8 +127,8 @@ fn version_fields(
             ColumnType::Bool => {
                 let mut b = BooleanBuilder::with_capacity(rows.len());
                 for r in rows {
-                    b.append_option(match cell(r) {
-                        Some(Value::Bool(x)) => Some(x),
+                    b.append_option(match value_at(*r, ci) {
+                        Some(Value::Bool(x)) => Some(*x),
                         _ => None,
                     });
                 }
@@ -138,7 +137,7 @@ fn version_fields(
             ColumnType::String => {
                 let mut b = StringBuilder::new();
                 for r in rows {
-                    match cell(r) {
+                    match value_at(*r, ci) {
                         Some(Value::String(s)) => b.append_value(s),
                         _ => b.append_null(),
                     }
@@ -148,7 +147,7 @@ fn version_fields(
             ColumnType::Timestamp => {
                 let mut b = ts_builder(rows.len());
                 for r in rows {
-                    b.append_option(match cell(r) {
+                    b.append_option(match value_at(*r, ci) {
                         Some(Value::Timestamp(t)) => Some(t.as_micros()),
                         _ => None,
                     });
@@ -158,6 +157,11 @@ fn version_fields(
         };
         out.push(&c.name, ty, true, a);
     }
+}
+
+/// Value column `ci` of a row (`None` for null or a missing row).
+fn value_at(r: Option<&VersionRow>, ci: usize) -> Option<&Value> {
+    r.and_then(|r| r.values.get(ci)).and_then(Option::as_ref)
 }
 
 fn has_column(columns: &[ColumnDef], name: &str) -> bool {

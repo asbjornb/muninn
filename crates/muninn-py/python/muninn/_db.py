@@ -158,9 +158,23 @@ class _Reads:
         frontier: TimeLike | None = None,
         system: TimeLike | None = None,
         _as_of: dict | None = None,
+        *,
+        lead: tuple[str, DurationLike, DurationLike] | None = None,
     ) -> pa.Table:
         """Every version visible at ``(clock, frontier, system)`` (SPEC §6.2), tombstones
-        included (``deleted`` column), ordered by ``(series, value_time, knowledge order)``."""
+        included (``deleted`` column), ordered by ``(series, value_time, knowledge order)``.
+
+        ``lead=(column, min, max)`` keeps only the versions whose ``timestamp`` column
+        ``column`` (e.g. a forecast's issue time) is non-null and satisfies
+        ``min <= value_time - column < max`` — exactly the rows a client-side filter of the
+        full history would keep, but the engine skips segments by their column statistics
+        and never decodes the rest. The filter is part of the receipt."""
+        kw = dict(_as_of or {})
+        if lead is not None:
+            if isinstance(lead, (str, bytes, dict)) or not hasattr(lead, "__len__") \
+                    or len(lead) != 3:
+                raise InvalidArgumentError(f"lead must be (column, min, max), not {lead!r}")
+            kw["lead"] = (lead[0], cv.dur_arg(lead[1]), cv.dur_arg(lead[2]))
         return self._snap().history(
             table,
             cv.series_arg(series),
@@ -169,7 +183,7 @@ class _Reads:
             clock,
             cv.read_time(frontier),
             cv.read_time(system),
-            **(_as_of or {}),
+            **kw,
         )
 
     def replay(
@@ -556,7 +570,9 @@ def replay_receipt(db: Database | Snapshot, rcpt: Any, *, left: Any = None) -> p
     as_of = {"as_of_columns": list(r["columns"]), "empty": empty}
     common = dict(series=q.get("series") or None, clock=clock, system=system, _as_of=as_of)
     rng = dict(value_from=q.get("value_from"), value_to=q.get("value_to"))
-    if op in ("latest", "history"):
+    if op == "history" and q.get("lead") is not None:
+        res = db.history(table, **common, **rng, frontier=r["frontier"], lead=tuple(q["lead"]))
+    elif op in ("latest", "history"):
         res = getattr(db, op)(table, **common, **rng, frontier=r["frontier"])
     elif op == "replay":
         res = db.replay(table, q.get("from"), q.get("to"), **common, **rng)

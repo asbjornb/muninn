@@ -31,6 +31,36 @@ pub fn put_ivarint(out: &mut Vec<u8>, v: i64) {
     put_uvarint(out, zigzag(v));
 }
 
+/// Decodes a canonical varint of at most 8 bytes from the first 8 bytes of `buf` in a
+/// few word operations: `None` if fewer than 8 bytes are available, the varint is longer,
+/// or it is not canonical (callers fall back to the byte-wise decoder, which reports
+/// errors).
+#[inline(always)]
+fn varint_word(buf: &[u8]) -> Option<(u64, usize)> {
+    let w = u64::from_le_bytes(*buf.first_chunk::<8>()?);
+    // Bit 7 of byte k is clear where the varint ends.
+    let stops = !w & 0x8080_8080_8080_8080;
+    if stops == 0 {
+        return None;
+    }
+    let len = (stops.trailing_zeros() as usize >> 3) + 1;
+    let w = if len == 8 {
+        w
+    } else {
+        w & ((1u64 << (8 * len)) - 1)
+    };
+    // Canonical: a multi-byte varint does not end in a zero byte.
+    if len > 1 && w >> (8 * (len - 1)) == 0 {
+        return None;
+    }
+    // Squeeze the 7-bit groups together (8 x 7 = 56 bits, no overflow possible).
+    let x = w & 0x7f7f_7f7f_7f7f_7f7f;
+    let x = ((x & 0x7f00_7f00_7f00_7f00) >> 1) | (x & 0x007f_007f_007f_007f);
+    let x = ((x & 0x3fff_0000_3fff_0000) >> 2) | (x & 0x0000_3fff_0000_3fff);
+    let x = ((x & 0x0fff_ffff_0000_0000) >> 4) | (x & 0x0000_0000_0fff_ffff);
+    Some((x, len))
+}
+
 /// A bounds-checked cursor over a byte slice.
 #[derive(Clone, Debug)]
 pub struct Reader<'a> {
@@ -126,6 +156,29 @@ impl<'a> Reader<'a> {
         Ok(unzigzag(self.uvarint()?))
     }
 
+    /// [`Reader::uvarint`] with a fast path: the same values accepted and the same
+    /// inputs rejected, but without a bounds check per byte while at least 10 bytes
+    /// remain (the longest varint). Used by the column decoders.
+    #[inline]
+    pub fn uvarint_fast(&mut self) -> Result<u64> {
+        let rest = &self.buf[self.pos..];
+        if let Some(&b0) = rest.first()
+            && b0 < 0x80
+        {
+            self.pos += 1;
+            return Ok(u64::from(b0));
+        }
+        match varint_word(rest) {
+            Some((v, len)) => {
+                self.pos += len;
+                Ok(v)
+            }
+            // Fewer than 8 bytes left, longer than 8 bytes, or non-canonical: the
+            // byte-wise path decodes or reports it.
+            None => self.uvarint(),
+        }
+    }
+
     /// A varint that must fit in `usize` and be at most `max`.
     pub fn count(&mut self, max: usize, what: &str) -> Result<usize> {
         let v = self.uvarint()?;
@@ -210,6 +263,32 @@ impl Encoding {
     }
 }
 
+/// Decodes `n` zigzag varints, passing each to `sink`: the column decoders' inner loop.
+/// Works on the slice directly (word-at-a-time, see `varint_word`) and falls back to the
+/// checked byte-wise decoder near the end of the buffer and for long or non-canonical
+/// varints, so it accepts and rejects exactly what [`Reader::ivarint`] does.
+#[inline]
+fn zigzags(r: &mut Reader<'_>, n: usize, mut sink: impl FnMut(i64)) -> Result<()> {
+    let buf = r.buf;
+    let mut pos = r.pos;
+    for _ in 0..n {
+        match varint_word(&buf[pos..]) {
+            Some((v, len)) => {
+                pos += len;
+                sink(unzigzag(v));
+            }
+            None => {
+                r.pos = pos;
+                let v = r.uvarint()?;
+                pos = r.pos;
+                sink(unzigzag(v));
+            }
+        }
+    }
+    r.pos = pos;
+    Ok(())
+}
+
 /// Encodes 64-bit integers with an integer encoding.
 pub fn encode_ints(enc: Encoding, values: &[i64], out: &mut Vec<u8>) {
     match enc {
@@ -266,8 +345,8 @@ pub fn decode_ints(enc: Encoding, n: usize, r: &mut Reader<'_>) -> Result<Vec<i6
     match enc {
         Encoding::RunLength => {
             while out.len() < n {
-                let v = r.uvarint()? as i64;
-                let run = r.uvarint()?;
+                let v = r.uvarint_fast()? as i64;
+                let run = r.uvarint_fast()?;
                 if run == 0 || run > (n - out.len()) as u64 {
                     return Err(r.err(format!("bad run length {run}")));
                 }
@@ -276,30 +355,25 @@ pub fn decode_ints(enc: Encoding, n: usize, r: &mut Reader<'_>) -> Result<Vec<i6
         }
         Encoding::Delta => {
             let mut prev = 0i64;
-            for _ in 0..n {
-                prev = prev.wrapping_add(r.ivarint()?);
+            zigzags(r, n, |x| {
+                prev = prev.wrapping_add(x);
                 out.push(prev);
-            }
+            })?;
         }
         Encoding::DeltaOfDelta => {
-            let (mut prev, mut prev_d) = (0i64, 0i64);
-            for i in 0..n {
-                let x = r.ivarint()?;
-                if i == 0 {
+            let (mut prev, mut prev_d, mut first) = (0i64, 0i64, true);
+            zigzags(r, n, |x| {
+                if first {
                     prev = x;
+                    first = false;
                 } else {
-                    let d = prev_d.wrapping_add(x);
-                    prev = prev.wrapping_add(d);
-                    prev_d = d;
+                    prev_d = prev_d.wrapping_add(x);
+                    prev = prev.wrapping_add(prev_d);
                 }
                 out.push(prev);
-            }
+            })?;
         }
-        Encoding::Zigzag => {
-            for _ in 0..n {
-                out.push(r.ivarint()?);
-            }
-        }
+        Encoding::Zigzag => zigzags(r, n, |x| out.push(x))?,
         _ => return Err(r.err(format!("{enc:?} is not an integer encoding"))),
     }
     Ok(out)
@@ -323,7 +397,14 @@ pub fn decode_bitmap(n: usize, r: &mut Reader<'_>) -> Result<Vec<bool>> {
     if n % 8 != 0 && bytes[n / 8] >> (n % 8) != 0 {
         return Err(r.err("bitmap padding bits are not zero"));
     }
-    Ok((0..n).map(|i| bytes[i / 8] & (1 << (i % 8)) != 0).collect())
+    let mut out = Vec::with_capacity(n);
+    for &b in bytes {
+        for k in 0..8 {
+            out.push(b & (1 << k) != 0);
+        }
+    }
+    out.truncate(n);
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -357,7 +438,90 @@ mod tests {
         }
     }
 
+    /// The fast varint path accepts and rejects exactly what the plain one does, at every
+    /// position relative to the end of the buffer.
+    #[test]
+    fn fast_varint_matches_plain() {
+        let mut cases: Vec<Vec<u8>> = vec![
+            vec![0x80, 0x00],
+            vec![0xff; 11],
+            vec![0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x02],
+            vec![0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01],
+            vec![0x80; 10],
+            vec![0x81, 0x80, 0x00],
+        ];
+        for v in [0u64, 1, 127, 128, 300, 1 << 35, u64::MAX] {
+            let mut b = Vec::new();
+            put_uvarint(&mut b, v);
+            cases.push(b);
+        }
+        for c in cases {
+            for pad in 0..12 {
+                let mut buf = c.clone();
+                buf.extend(std::iter::repeat_n(0x05u8, pad));
+                let (mut a, mut b) = (Reader::new(&buf, "t"), Reader::new(&buf, "t"));
+                let (x, y) = (a.uvarint(), b.uvarint_fast());
+                assert_eq!(x.is_ok(), y.is_ok(), "{buf:?}");
+                if let (Ok(x), Ok(y)) = (x, y) {
+                    assert_eq!(x, y);
+                    assert_eq!(a.remaining(), b.remaining());
+                }
+            }
+        }
+    }
+
+    /// Decoder speed on forecast-like columns (`cargo test --release -p muninn-format
+    /// --lib -- --ignored --nocapture decode_speed`).
+    #[test]
+    #[ignore]
+    fn decode_speed() {
+        let n = 16_384;
+        // Received times: hourly runs (3.6e9 µs steps) with jumps back between points.
+        let rt: Vec<i64> = (0..n as i64)
+            .map(|i| 1_700_000_000_000_000 + (i % 230) * 3_600_000_000 + (i % 7) * 1_000_000)
+            .collect();
+        let seq: Vec<i64> = (0..n as i64)
+            .map(|i| 1000 + (i % 230) * 4000 + i / 230)
+            .collect();
+        for (name, enc, vals) in [
+            ("delta rt", Encoding::Delta, &rt),
+            ("delta seq", Encoding::Delta, &seq),
+            ("dod rt", Encoding::DeltaOfDelta, &rt),
+        ] {
+            let mut b = Vec::new();
+            encode_ints(enc, vals, &mut b);
+            let t = std::time::Instant::now();
+            let reps = 200;
+            for _ in 0..reps {
+                let mut r = Reader::new(&b, "t");
+                let v = decode_ints(enc, n, &mut r).unwrap();
+                assert_eq!(v.len(), n);
+            }
+            let ns = t.elapsed().as_nanos() as f64 / (reps * n) as f64;
+            eprintln!(
+                "{name}: {:.2} B/value, {ns:.2} ns/value",
+                b.len() as f64 / n as f64
+            );
+        }
+    }
+
     proptest! {
+        #[test]
+        fn fast_varint_matches_plain_random(bytes in prop::collection::vec(any::<u8>(), 0..24)) {
+            let (mut a, mut b) = (Reader::new(&bytes, "t"), Reader::new(&bytes, "t"));
+            loop {
+                let (x, y) = (a.uvarint(), b.uvarint_fast());
+                prop_assert_eq!(x.is_ok(), y.is_ok());
+                match (x, y) {
+                    (Ok(x), Ok(y)) => {
+                        prop_assert_eq!(x, y);
+                        prop_assert_eq!(a.remaining(), b.remaining());
+                    }
+                    _ => break,
+                }
+            }
+        }
+
         #[test]
         fn ints_round_trip(values in prop::collection::vec(any::<i64>(), 0..50), small in prop::collection::vec(-3i64..3, 0..50)) {
             for enc in [Encoding::RunLength, Encoding::Delta, Encoding::DeltaOfDelta, Encoding::Zigzag] {

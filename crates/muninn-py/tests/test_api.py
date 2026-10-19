@@ -624,6 +624,45 @@ def test_create_series_batch_is_atomic(db):
     assert db.create_series_batch([]) == []
 
 
+def test_history_lead_filter_matches_client_side_filter():
+    d = muninn.memory()
+    d.create_table("fc", columns={"mw": "f64", "issue": "timestamp"})
+    d.create_series_batch(["a", "b"], table="fc")
+    rows = []
+    for run in range(8):  # every 6 h, for the next 48 h
+        issued = T0 + run * 6 * H
+        for k in range(48):
+            for s in ("a", "b"):
+                rows.append({"series": s, "value_time": issued + k * H, "received_time": issued,
+                             "mw": float(run * 100 + k), "issue": issued})
+        d.write(rows, clock=issued)
+        rows = []
+    d.write([{"series": "a", "value_time": T0 + 50 * H, "received_time": T0 + 49 * H,
+              "mw": 1.0}], clock=T0 + 49 * H)  # null issue time: never matches
+    d.compact()
+    full = d.history("fc")
+    for lo, hi in [("24h", "25h"), ("0h", "48h"), ("30h", "30h"), ("-5h", "1h")]:
+        got = d.history("fc", lead=("issue", lo, hi))
+        lo_us, hi_us = (muninn._db._parse_duration(x) for x in (lo, hi))
+        lead = pa.compute.subtract(full.column("value_time").cast(pa.int64()),
+                                   full.column("issue").cast(pa.int64()))
+        keep = pa.compute.fill_null(pa.compute.and_(pa.compute.greater_equal(lead, lo_us),
+                                                    pa.compute.less(lead, hi_us)), False)
+        want = full.filter(keep)
+        assert got.drop_columns([]).equals(want.drop_columns([])), (lo, hi)
+        r = muninn.receipt(got)
+        assert r["request"]["lead"][0] == "issue"
+        assert muninn.replay_receipt(d, got).equals(got)
+    with pytest.raises(muninn.UnknownColumnError):
+        d.history("fc", lead=("nope", "0h", "1h"))
+    with pytest.raises(muninn.TypeMismatchError):
+        d.history("fc", lead=("mw", "0h", "1h"))
+    with pytest.raises(muninn.InvalidRangeError):
+        d.history("fc", lead=("issue", "2h", "1h"))
+    with pytest.raises(muninn.InvalidArgumentError):
+        d.history("fc", lead="issue")
+
+
 def test_gc_truncates_the_log(tmp_path):
     d = muninn.open(tmp_path / "db", create=True)
     d.create_table("t", columns={"x": "f64"})

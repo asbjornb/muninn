@@ -135,6 +135,18 @@ impl Timestamp {
         }
     }
 
+    /// [`Timestamp::from_micros`] for a whole vector (reusing its allocation): `Err(i)`
+    /// with the index of the first out-of-range value.
+    pub fn from_micros_vec(v: Vec<i64>) -> Result<Vec<Timestamp>, usize> {
+        if let Some(i) = v
+            .iter()
+            .position(|x| !(Self::MIN.0..=Self::MAX.0).contains(x))
+        {
+            return Err(i);
+        }
+        Ok(v.into_iter().map(Timestamp).collect())
+    }
+
     /// Like [`Timestamp::from_micros`] but with an error suitable for `?`.
     pub fn try_from_micros(micros: i64) -> Result<Timestamp, ParseTimestampError> {
         Self::from_micros(micros).ok_or_else(|| {

@@ -183,6 +183,24 @@ impl<S: Store> Shared<S> {
             .map_err(|e| format_err(&seg.key, e))
     }
 
+    /// Decodes table column `id` of block `b`; `None` when the segment predates it.
+    pub fn value_column(
+        &self,
+        seg: &SegmentRef,
+        f: &Footer,
+        b: usize,
+        id: usize,
+    ) -> Result<Option<Vec<Option<Value>>>> {
+        let Some(p) = f.column_position(id as u32) else {
+            return Ok(None);
+        };
+        let r = f.blocks[b].chunks[ENGINE_COLUMNS + p].range();
+        let bytes = self.read_chunks(&seg.key, &[r])?;
+        f.decode_value_chunk(b, p, &bytes[0])
+            .map(Some)
+            .map_err(|e| format_err(&seg.key, e))
+    }
+
     /// Decodes the value columns of block `b` for table columns `0..ncols`: entry `i` is
     /// `None` when the segment predates column `i` (every row reads null).
     pub fn value_columns(
