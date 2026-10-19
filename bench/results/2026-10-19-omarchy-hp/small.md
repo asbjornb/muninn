@@ -14,45 +14,48 @@
 
 ## Ingest and size on disk
 
-| dataset | duckdb-native ingest s | duckdb-native size (B/version) | duckdb-parquet ingest s | duckdb-parquet size (B/version) | clickhouse ingest s | clickhouse size (B/version) |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| da_prices | 0.1 | 4.8 MB (11.02) | 0.1 | 2.2 MB (5.2) | 0.1 | 1.5 MB (3.55) |
-| forecasts | 0.6 | 67.5 MB (25.82) | 0.5 | 9.5 MB (3.63) | 1.1 | 8.0 MB (3.06) |
-| settlement | 0.3 | 25.5 MB (27.87) | 0.3 | 4.8 MB (5.26) | 0.5 | 3.2 MB (3.48) |
-| sparse | 0.2 | 15.3 MB (36.86) | 0.2 | 13.3 MB (32.11) | 0.6 | 12.8 MB (30.98) |
-| backfill | 0.2 | 8.3 MB (18.83) | 0.1 | 5.7 MB (13.07) | 0.2 | 3.4 MB (7.76) |
+| dataset | muninn ingest s | muninn size (B/version) | duckdb-native ingest s | duckdb-native size (B/version) | duckdb-parquet ingest s | duckdb-parquet size (B/version) | clickhouse ingest s | clickhouse size (B/version) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| da_prices | 33.1 | 14.6 MB (33.82) | 0.1 | 4.8 MB (11.02) | 0.1 | 2.2 MB (5.2) | 0.2 | 1.5 MB (3.55) |
+| forecasts | 252.7 | 56.6 MB (21.65) | 0.6 | 67.5 MB (25.82) | 0.5 | 9.5 MB (3.63) | 1.1 | 8.0 MB (3.06) |
+| settlement | 56.6 | 20.3 MB (22.21) | 0.4 | 25.5 MB (27.87) | 0.3 | 4.8 MB (5.26) | 0.3 | 3.2 MB (3.48) |
+| sparse | 351.1 | 347.1 MB (838.28) | 0.2 | 15.3 MB (36.86) | 0.2 | 13.3 MB (32.19) | 0.4 | 12.9 MB (31.07) |
+| backfill | 3.2 | 3.7 MB (8.32) | 0.2 | 8.3 MB (18.83) | 0.1 | 5.7 MB (13.07) | 0.2 | 3.4 MB (7.76) |
 
 ## Query latency (ms): p50 / p99 warm, cold
 
-| query | rows | duckdb-native | duckdb-parquet | clickhouse |
-| --- | ---: | ---: | ---: | ---: |
-| `fc_asof_single` | 96 | 4.82 / 7.15, 8.94 | 8.49 / 12, 12 | 8.50 / 9.32, 10 |
-| `da_asof_published` | 57 | 1.89 / 3.48, 34 | 6.09 / 7.87, 10 | 4.15 / 5.49, 7.05 |
-| `st_asof_system` | 96 | 2.31 / 4.62, 5.68 | 7.69 / 11, 9.99 | 7.98 / 17, 8.26 |
-| `sp_asof_single` | 6 | 1.82 / 5.08, 5.41 | 13 / 16, 13 | 8.40 / 20, 9.55 |
-| `bf_asof_single` | 24 | 1.84 / 3.17, 5.30 | 7.96 / 17, 8.33 | 5.31 / 7.46, 7.96 |
-| `fc_grid_365` | 8,496 | 181 / 186, 225 | 202 / 206, 232 | 631 / 663, 649 |
-| `fc_grid_365_all` | 16,992 | 410 / 421, 446 | 431 / 449, 462 | 1457 / 2006, 1737 |
-| `da_grid_365` | 658,080 | 271 / 282, 303 | 282 / 283, 307 | 624 / 631, 628 |
-| `st_grid_365` | 37,795 | 38 / 41, 53 | 44 / 47, 54 | 221 / 288, 245 |
-| `bf_grid_365` | 17,156 | 13 / 15, 19 | 18 / 21, 24 | 22 / 40, 25 |
-| `fc_history_day` | 21,360 | 3.82 / 6.54, 8.96 | 8.39 / 13, 14 | 13 / 17, 18 |
-| `st_history_month` | 8,198 | 2.48 / 5.48, 6.65 | 7.90 / 11, 13 | 9.41 / 14, 14 |
-| `fc_replay_6h` | 11,376 | 4.33 / 8.52, 10 | 14 / 15, 18 | 22 / 30, 26 |
-| `sp_replay_day` | 1,196 | 4.00 / 5.27, 12 | 16 / 20, 21 | 34 / 49, 105 |
-| `fc_lead_24h` | 5,668 | 6.62 / 9.47, 17 | 24 / 29, 29 | 45 / 54, 45 |
-| `st_latest_now` | 6,716 | 4.59 / 5.19, 12 | 19 / 21, 22 | 21 / 38, 39 |
-| `sp_latest_now` | 20,754 | 11 / 12, 19 | 23 / 25, 28 | 51 / 54, 57 |
-| `fc_latest_now` | 1,912 | 14 / 15, 18 | 20 / 22, 23 | 37 / 43, 35 |
-| `da_asof_join_signals` | 10,000 | 52 / 60, 62 | 59 / 65, 70 | 253 / 285, 247 |
-| `fc_asof_join_lead24` | 2,880 | 71 / 79, 88 | 82 / 85, 88 | 479 / 556, 539 |
+| query | rows | muninn | duckdb-native | duckdb-parquet | clickhouse |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `fc_asof_single` | 96 | 4.85 / 5.48, 5.59 | 4.75 / 8.04, 7.52 | 8.80 / 11, 12 | 8.42 / 9.32, 10 |
+| `da_asof_published` | 57 | 1.28 / 2.36, 2.33 | 1.71 / 2.68, 5.22 | 6.02 / 8.23, 10 | 4.20 / 5.51, 6.19 |
+| `st_asof_system` | 96 | 3.27 / 5.34, 5.14 | 2.23 / 3.93, 5.42 | 7.57 / 9.39, 11 | 4.45 / 6.67, 6.46 |
+| `sp_asof_single` | 6 | 6.55 / 34, 4.48 | 1.82 / 3.74, 5.42 | 12 / 15, 13 | 4.76 / 5.71, 6.54 |
+| `bf_asof_single` | 24 | 1.93 / 3.60, 1.34 | 1.76 / 3.00, 4.70 | 7.77 / 9.65, 9.79 | 4.11 / 5.38, 5.70 |
+| `fc_grid_365` | 8,496 | 325 / 358, 332 | 181 / 188, 222 | 201 / 207, 229 | 620 / 663, 656 |
+| `fc_grid_365_all` | 16,992 | 525 / 529, 563 | 409 / 431, 458 | 440 / 445, 473 | 1345 / 1438, 1638 |
+| `da_grid_365` | 658,080 | 736 / 750, 763 | 277 / 284, 337 | 289 / 297, 315 | 608 / 642, 604 |
+| `st_grid_365` | 37,795 | 98 / 99, 73 | 39 / 44, 55 | 44 / 47, 54 | 126 / 132, 123 |
+| `bf_grid_365` | 17,156 | 12 / 13, 12 | 12 / 15, 18 | 18 / 20, 23 | 19 / 30, 20 |
+| `fc_history_day` | 21,360 | 8.81 / 9.62, 10 | 3.63 / 6.71, 8.82 | 8.22 / 13, 13 | 6.59 / 12, 9.66 |
+| `st_history_month` | 8,198 | 9.34 / 15, 14 | 2.50 / 5.30, 7.10 | 7.87 / 12, 13 | 4.85 / 6.36, 6.08 |
+| `fc_replay_6h` | 11,376 | 74 / 76, 77 | 4.21 / 7.82, 10 | 14 / 15, 17 | 14 / 18, 15 |
+| `sp_replay_day` | 1,196 | 20 / 24, 23 | 3.96 / 5.00, 9.79 | 16 / 19, 19 | 30 / 35, 30 |
+| `fc_lead_24h` | 5,668 | 698 / 727, 732 | 6.08 / 9.35, 17 | 26 / 28, 30 | 30 / 33, 31 |
+| `st_latest_now` | 6,716 | 13 / 13, 13 | 4.54 / 5.29, 13 | 18 / 19, 22 | 12 / 13, 14 |
+| `sp_latest_now` | 20,754 | 20 / 21, 20 | 11 / 12, 19 | 24 / 25, 27 | 48 / 51, 53 |
+| `fc_latest_now` | 1,912 | 43 / 44, 44 | 14 / 14, 18 | 20 / 21, 22 | 21 / 22, 26 |
+| `da_asof_join_signals` | 10,000 | 63 / 66, 66 | 53 / 55, 65 | 59 / 61, 70 | 248 / 284, 277 |
+| `fc_asof_join_lead24` | 2,880 | 191 / 197, 181 | 73 / 79, 90 | 82 / 89, 89 | 328 / 389, 355 |
 
 ## Agreement
 
 All systems returned identical results for all 361 (dataset, query, instance) combinations.
 
+Compared on every field except `system_time` (a system loaded them with coalesced batches, see its notes): sparse.
+
 ## Systems
 
+- **muninn** (0.1.0): Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable.
 - **duckdb-native** (1.5.6): DuckDB 1.5.6, threads=6, memory_limit=4096MB, layout=native, latest=argmax, grid=asof. Cold = fresh connection (DuckDB buffer pool and Parquet metadata empty); the OS page cache is not dropped (no root).
 - **duckdb-parquet** (1.5.6): DuckDB 1.5.6, threads=6, memory_limit=4096MB, layout=parquet, latest=argmax, grid=asof. Cold = fresh connection (DuckDB buffer pool and Parquet metadata empty); the OS page cache is not dropped (no root).
 - **clickhouse** (26.7.34.3): ClickHouse server (official static binary), max_threads=6, max_memory_usage=4096MB, MergeTree, query cache off. Cold = SYSTEM DROP MARK/UNCOMPRESSED/MMAP/QUERY CACHE (OS page cache not dropped).

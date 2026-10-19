@@ -127,6 +127,8 @@ class MuninnAdapter(Adapter):
         ingest = time.perf_counter() - t0
         size = sum(p.stat().st_size for p in (self.workdir / "db").rglob("*") if p.is_file())
         nfiles = sum(1 for p in (self.workdir / "db").rglob("*") if p.is_file())
+        seg_bytes = sum(p.stat().st_size for p in (self.workdir / "db" / "segments").rglob("*")
+                        if p.is_file())
         del db
         self._open()
         if self.exact:  # verify the engine assigned exactly the dataset's system_time/seq
@@ -136,7 +138,8 @@ class MuninnAdapter(Adapter):
             assert got.num_rows == len(seq)
             assert (got.column("st").to_numpy() == st).all(), "system_time differs"
         self.notes_load = {"writes": int(len(starts)), "write_seconds": round(write_s, 3),
-                           "files": nfiles, "exact_system_time": self.exact}
+                           "files": nfiles, "segment_bytes": seg_bytes,
+                           "log_bytes": size - seg_bytes, "exact_system_time": self.exact}
         return {"ingest_seconds": ingest, "bytes_on_disk": size, **self.notes_load}
 
     def cold(self):

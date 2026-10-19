@@ -40,7 +40,7 @@ Large data, work directories and the ClickHouse binary live under `bench/data/` 
 | `competitors/reference/` | the oracle: `spec/reference/muninn_ref` behind the same interface |
 | `competitors/duckdb/` | DuckDB native table and over-Parquet layouts ([tuning notes](competitors/duckdb/README.md)) |
 | `competitors/clickhouse/` | ClickHouse MergeTree ([tuning notes](competitors/clickhouse/README.md)) |
-| `competitors/muninn/` | placeholder for the engine; raises `Unavailable` until a binding/CLI exists |
+| `competitors/muninn/` | the Muninn engine via its Python binding (`uv sync --project bench --group muninn`) |
 | `competitors/registry.py` | system name -> adapter factory |
 | `tests/` | correctness against the oracle, write-stream round trip through the reference |
 | `run.py` | the end-to-end runner and report writer |
@@ -159,5 +159,6 @@ irregular intervals beyond `sparse`.
    then `bench/run.py --systems <system>`.
 4. Document schema/tuning choices in `competitors/<system>/README.md`.
 
-The Muninn engine plugs in the same way (`competitors/muninn/adapter.py` describes the
-binding/CLI shape it expects).
+The Muninn engine is plugged in this way (`competitors/muninn/adapter.py`); install its
+binding into the bench environment with `uv sync --project bench --group muninn` (builds the
+Rust extension), otherwise it is skipped.
