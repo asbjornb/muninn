@@ -19,10 +19,12 @@ use proptest::prelude::*;
 
 type Faulty = Arc<FaultyStore<Arc<MemoryStore>>>;
 
-/// Mutations plus compaction and GC (no reads: the store is the subject).
+/// Mutations (single writes, group commits) plus flushes, compaction and GC (no reads:
+/// the store is the subject).
 fn arb_workload(len: usize) -> impl Strategy<Value = Vec<Op>> {
     let op = prop_oneof![
         12 => arb_mutation(),
+        2 => Just(Op::Flush),
         2 => Just(Op::Compact),
         1 => Just(Op::Gc),
     ];
@@ -34,11 +36,7 @@ fn build_model(ops: &[Op]) -> (ModelDb, Vec<Vec<GenRow>>) {
     let model = ModelDb::new();
     let mut history = Vec::new();
     for op in ops {
-        if let Some(Ok(_)) = apply_mutation(&model, op, &history)
-            && let Some((_, rows)) = batch_of(op, &history)
-        {
-            history.push(rows);
-        }
+        apply_and_record(&model, op, &mut history);
     }
     (model, history)
 }
@@ -51,6 +49,7 @@ fn run_engine<S: Store>(
 ) -> Result<Option<String>, muninn_core::Error> {
     match op {
         Op::Compact => engine.compact_all().map(|_| None),
+        Op::Flush => engine.flush().map(|_| None),
         Op::Gc => engine.gc().map(|_| None),
         _ => match apply_mutation(engine, op, history) {
             Some(Ok(s)) => Ok(Some(s)),
@@ -155,7 +154,7 @@ fn crash_run(
 }
 
 /// [`crash_run`] over any (empty) durable store.
-fn crash_run_on<S: Store>(
+fn crash_run_on<S: Store + 'static>(
     inner: Arc<S>,
     ops: &[Op],
     opts: &EngineOptions,

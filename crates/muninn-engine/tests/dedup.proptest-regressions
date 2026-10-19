@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 699dfb2097789513f7c794794cf09cf27c259bb8ecb6845b8cc17e2bfabea20a # shrinks to ops = [Write { clock: 0, batch_id: None, rows: [GenRow { series: 0, vt: Hours(0), pt: None, rt: Hours(0), deleted: true, values: [] }] }, Resend { which: Index(0), clock: 0, batch_id: None }], index = 1, block_rows = 1
+cc a87e9b5b76a1009d46c067c096443fd86dc35e29012e41e22e884eba679c6c48 # shrinks to ops = [WriteMany([Write { clock: 0, batch_id: Some(3), rows: [] }, Write { clock: 0, batch_id: Some(3), rows: [GenRow { series: 1, vt: Hours(0), pt: None, rt: Hours(0), deleted: false, values: [(5, Value(F64(0.0)))] }] }])], index = 1, block_rows = 1

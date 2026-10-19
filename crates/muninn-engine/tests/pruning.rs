@@ -109,7 +109,7 @@ fn forecast(e: &impl Database) {
 fn opts(by_system_time: bool) -> EngineOptions {
     EngineOptions {
         compact_by_period: by_system_time,
-        ..test_options(16, 0, true)
+        ..file_options(16, 0, true)
     }
 }
 

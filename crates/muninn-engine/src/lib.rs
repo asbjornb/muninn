@@ -3,7 +3,7 @@
 //! The Muninn storage engine: an implementation of [`muninn_core::Database`] over any
 //! [`muninn_store::Store`] (memory, local filesystem, later object stores).
 //!
-//! ## Architecture (decisions 0004–0008)
+//! ## Architecture (decisions 0004–0009)
 //!
 //! - **Commit log.** `log/<20-digit version>.json`, one entry per committed change (catalog
 //!   change, write batch, compaction, GC), written with `put_if_absent`. The entry *is* the
@@ -12,9 +12,20 @@
 //!   names the newest one (a hint only: recovery verifies it and falls back to listing).
 //!   GC truncates the log below the older of the two newest checkpoints (decision 0007).
 //!   See [`log`].
-//! - **Segments.** A write encodes its new versions as one immutable segment file per
-//!   touched `(table, partition)` (`muninn-format`), writes them, then commits the log
-//!   entry. A crash before the commit leaves orphan files that [`Engine::gc`] removes.
+//! - **Writes go into the log** (decision 0009). Concurrent writes are committed together
+//!   (group commit): one log entry holds every queued batch, each with its own
+//!   `system_time` and seqs, and its new versions *inline* — one small segment per touched
+//!   `(table, partition)`, embedded in the entry. So a commit is one store write (one PUT,
+//!   or one file creation on local disk), and each call returns once it is durable. Large
+//!   groups (bulk loads) write segment files first instead.
+//! - **Memtable.** The live inline segments are part of the state and are read exactly
+//!   like segment files, from memory. A flush (background thread, threshold, or
+//!   [`Engine::flush`]) merges them into segment files per partition and commits a
+//!   `flush` entry that swaps them in atomically; results never change.
+//! - **Segments.** Immutable segment files (`muninn-format`), one table partition each,
+//!   written by flushes, bulk writes, compaction and restore before the entry that
+//!   references them. A crash before the commit leaves orphan files that [`Engine::gc`]
+//!   removes.
 //! - **State.** The committed state is an immutable value ([`state::State`]) — catalog,
 //!   batch ids, high-water marks, live segments with their statistics — derived from the
 //!   log by one `apply` function used both when committing and when recovering.
@@ -35,6 +46,7 @@
 
 #![forbid(unsafe_code)]
 
+mod b64;
 mod dedup;
 mod engine;
 mod fxhash;
@@ -45,7 +57,7 @@ pub mod state;
 
 use std::sync::Arc;
 
-pub use engine::{Engine, GcReport};
+pub use engine::{Engine, GcReport, MemtableStats};
 pub use muninn_format::WriteOptions;
 pub use read::{EngineSnapshot, LeadFilter};
 
@@ -88,6 +100,29 @@ pub struct EngineOptions {
     /// and rebuilt from their segments when written again. 0 disables the index (every
     /// write then reads the stored versions of every point it touches).
     pub dedup_index_points: usize,
+    /// A commit group storing at most this many rows keeps them inline in its log entry
+    /// (the memtable, decision 0009); a larger one (a bulk load) writes segment files
+    /// first. 0 = never inline (every write writes segment files, as before 0009).
+    pub inline_max_rows: usize,
+    /// Most candidate rows one group commit takes off the queue (at least one batch).
+    pub group_max_rows: usize,
+    /// Flush the memtable once it holds this many rows ...
+    pub flush_rows: u64,
+    /// ... or this many inline segments ...
+    pub flush_segments: usize,
+    /// ... or its oldest segment is this old (by the wall clock; checked by the
+    /// background flusher only).
+    pub flush_age: std::time::Duration,
+    /// Writers flush synchronously (back-pressure) while the memtable holds more rows
+    /// than this.
+    pub memtable_limit_rows: u64,
+    /// Run a background thread that flushes at the thresholds above. Without it, a
+    /// writer whose write leaves the memtable at a row or segment threshold flushes
+    /// before its call returns (the other writers of its group are not delayed), and
+    /// `flush_age` is not checked.
+    pub background_flush: bool,
+    /// Threads that write segment files in parallel (flushes and bulk writes).
+    pub io_threads: usize,
 }
 
 impl Default for EngineOptions {
@@ -102,6 +137,14 @@ impl Default for EngineOptions {
             footer_cache_entries: 4096,
             tail_read: 64 * 1024,
             dedup_index_points: 2_000_000,
+            inline_max_rows: 100_000,
+            group_max_rows: 1_000_000,
+            flush_rows: 200_000,
+            flush_segments: 2048,
+            flush_age: std::time::Duration::from_secs(60),
+            memtable_limit_rows: 1_000_000,
+            background_flush: true,
+            io_threads: 8,
         }
     }
 }
@@ -117,6 +160,14 @@ impl std::fmt::Debug for EngineOptions {
             .field("footer_cache_entries", &self.footer_cache_entries)
             .field("tail_read", &self.tail_read)
             .field("dedup_index_points", &self.dedup_index_points)
+            .field("inline_max_rows", &self.inline_max_rows)
+            .field("group_max_rows", &self.group_max_rows)
+            .field("flush_rows", &self.flush_rows)
+            .field("flush_segments", &self.flush_segments)
+            .field("flush_age", &self.flush_age)
+            .field("memtable_limit_rows", &self.memtable_limit_rows)
+            .field("background_flush", &self.background_flush)
+            .field("io_threads", &self.io_threads)
             .finish_non_exhaustive()
     }
 }

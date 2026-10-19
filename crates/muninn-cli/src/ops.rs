@@ -17,6 +17,10 @@ use crate::{CliError, FormatArg, Res};
 /// `compact`.
 pub fn compact(ctx: &Context, table: Option<&str>) -> Res<()> {
     let db = ctx.open()?;
+    // The memtable (rows still in the log, decision 0009) goes to segment files first.
+    let flushed = db.memtable().rows;
+    db.flush()?;
+    output::line(&format!("flushed {flushed} row(s) from the memtable"))?;
     let done = match table {
         None => db.compact_all()?,
         Some(t) => {
@@ -87,6 +91,8 @@ pub fn info(ctx: &Context, f: FormatArg) -> Res<()> {
             n(st.segments().map(|x| x.size).sum::<u64>()),
         ),
         ("retired_segments", n(st.retired.len())),
+        ("memtable_segments", n(st.memtable.len())),
+        ("memtable_rows", n(st.memtable_rows())),
         ("store_bytes", n(total_bytes)),
         ("log_bytes", n(log_bytes)),
         ("next_seq", n(st.next_seq)),
@@ -198,7 +204,12 @@ fn check_segment<S: Store>(
 ) -> u64 {
     let key = seg.key.as_str();
     let mut bad = |m: String| problems.push(format!("segment {key}: {m}"));
-    let bytes = match store.get(&seg.key) {
+    // An inline (memtable) segment's bytes are in its log entry, not in a file.
+    let read = match &seg.inline {
+        Some(d) => Ok(d.bytes.clone()),
+        None => store.get(&seg.key),
+    };
+    let bytes = match read {
         Ok(b) => b,
         Err(e) => {
             bad(format!("cannot read: {e}"));

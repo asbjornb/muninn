@@ -1,5 +1,6 @@
 //! Segment I/O: footers (one ranged tail read, cached), engine blocks and value chunks
-//! (ranged reads of only the chunks a query needs).
+//! (ranged reads of only the chunks a query needs). Inline (memtable) segments are read
+//! the same way, from the bytes the state holds instead of the store.
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -12,7 +13,7 @@ use muninn_format::{ENGINE_COLUMNS, EngineBlock, Footer, Tail, parse_tail};
 use muninn_store::{Key, Store, StoreError, StoreErrorKind};
 
 use crate::EngineOptions;
-use crate::state::SegmentRef;
+use crate::state::{SegmentRef, footer_matches};
 
 pub(crate) fn store_err(what: &str, e: StoreError) -> Error {
     Error::new(ErrorKind::Io, format!("{what}: {e}"))
@@ -78,7 +79,16 @@ impl<S: Store> Shared<S> {
         }
     }
 
-    fn get_range(&self, key: &Key, r: Range<u64>) -> Result<Vec<u8>> {
+    fn get_range(&self, seg: &SegmentRef, r: Range<u64>) -> Result<Vec<u8>> {
+        let key = &seg.key;
+        if let Some(d) = &seg.inline {
+            return usize::try_from(r.start)
+                .ok()
+                .zip(usize::try_from(r.end).ok())
+                .and_then(|(a, b)| d.bytes.get(a..b))
+                .map(<[u8]>::to_vec)
+                .ok_or_else(|| Error::new(ErrorKind::Io, format!("short read of {key}")));
+        }
         self.store.get_range(key, r).map_err(|e| {
             if e.kind() == StoreErrorKind::NotFound {
                 self.stale.store(true, Ordering::SeqCst);
@@ -107,9 +117,10 @@ impl<S: Store> Shared<S> {
             .unwrap_or_else(PoisonError::into_inner)
             .get(&seg.key)
             .cloned();
-        let footer = match cached {
-            Some(f) => f,
-            None => self.read_footer(seg)?,
+        let footer = match (&seg.inline, cached) {
+            (Some(d), _) => Arc::clone(&d.footer),
+            (None, Some(f)) => f,
+            (None, None) => self.read_footer(seg)?,
         };
         check_columns(&seg.key, &footer, table)?;
         Ok(footer)
@@ -118,11 +129,11 @@ impl<S: Store> Shared<S> {
     fn read_footer(&self, seg: &SegmentRef) -> Result<Arc<Footer>> {
         let size = seg.size;
         let first = self.opts.tail_read.min(size);
-        let tail = self.get_range(&seg.key, size - first..size)?;
+        let tail = self.get_range(seg, size - first..size)?;
         let footer = match parse_tail(&tail, size).map_err(|e| format_err(&seg.key, e))? {
             Tail::Footer(f) => f,
             Tail::NeedBytes(n) => {
-                let tail = self.get_range(&seg.key, size - n.min(size)..size)?;
+                let tail = self.get_range(seg, size - n.min(size)..size)?;
                 match parse_tail(&tail, size).map_err(|e| format_err(&seg.key, e))? {
                     Tail::Footer(f) => f,
                     Tail::NeedBytes(_) => {
@@ -135,18 +146,7 @@ impl<S: Store> Shared<S> {
             }
         };
         // The footer must agree with what the log says about the segment.
-        let st = &footer.stats;
-        if footer.row_count != seg.rows
-            || footer.partition != seg.partition
-            || footer.table != seg.table
-            || (st.seq_min, st.seq_max) != seg.seq
-            || st.value_time != seg.value_time
-            || st.received_time != seg.received_time
-            || st.published_time != seg.published_time
-            || st.system_time != seg.system_time
-            || footer.series.first().map(|s| s.id) != Some(seg.series.0)
-            || footer.series.last().map(|s| s.id) != Some(seg.series.1)
-        {
+        if !footer_matches(seg, &footer) {
             return Err(Error::new(
                 ErrorKind::Io,
                 format!("corrupt segment {}: footer disagrees with the log", seg.key),
@@ -159,7 +159,8 @@ impl<S: Store> Shared<S> {
 
     /// Reads the chunks at `ranges` of one file, coalescing adjacent ranges into one read
     /// and without copying the chunks out of it.
-    fn read_spans(&self, key: &Key, ranges: &[Range<u64>]) -> Result<Spans> {
+    fn read_spans(&self, seg: &SegmentRef, ranges: &[Range<u64>]) -> Result<Spans> {
+        let key = &seg.key;
         let mut out = Spans {
             bytes: Vec::new(),
             parts: Vec::with_capacity(ranges.len()),
@@ -171,7 +172,7 @@ impl<S: Store> Shared<S> {
                 j += 1;
             }
             let span = ranges[i].start..ranges[j - 1].end;
-            let bytes = self.get_range(key, span.clone())?;
+            let bytes = self.get_range(seg, span.clone())?;
             if bytes.len() as u64 != span.end - span.start {
                 return Err(Error::new(ErrorKind::Io, format!("short read of {key}")));
             }
@@ -189,7 +190,8 @@ impl<S: Store> Shared<S> {
     }
 
     /// Reads the chunks at `ranges` of one file, coalescing ranges that are adjacent.
-    fn read_chunks(&self, key: &Key, ranges: &[Range<u64>]) -> Result<Vec<Vec<u8>>> {
+    fn read_chunks(&self, seg: &SegmentRef, ranges: &[Range<u64>]) -> Result<Vec<Vec<u8>>> {
+        let key = &seg.key;
         let mut out = Vec::with_capacity(ranges.len());
         let mut i = 0;
         while i < ranges.len() {
@@ -198,7 +200,7 @@ impl<S: Store> Shared<S> {
                 j += 1;
             }
             let span = ranges[i].start..ranges[j - 1].end;
-            let bytes = self.get_range(key, span.clone())?;
+            let bytes = self.get_range(seg, span.clone())?;
             if bytes.len() as u64 != span.end - span.start {
                 return Err(Error::new(ErrorKind::Io, format!("short read of {key}")));
             }
@@ -221,7 +223,7 @@ impl<S: Store> Shared<S> {
         out: &mut EngineBlock,
     ) -> Result<()> {
         let ranges = f.engine_chunk_ranges(b);
-        let spans = self.read_spans(&seg.key, &ranges)?;
+        let spans = self.read_spans(seg, &ranges)?;
         let refs: Vec<&[u8]> = spans
             .parts
             .iter()
@@ -244,7 +246,7 @@ impl<S: Store> Shared<S> {
             return Ok(None);
         };
         let r = f.blocks[b].chunks[ENGINE_COLUMNS + p].range();
-        let bytes = self.read_chunks(&seg.key, &[r])?;
+        let bytes = self.read_chunks(seg, &[r])?;
         f.decode_int_column(b, p, &bytes[0])
             .map(Some)
             .map_err(|e| format_err(&seg.key, e))
@@ -268,7 +270,7 @@ impl<S: Store> Shared<S> {
             .iter()
             .map(|&(_, p)| f.blocks[b].chunks[ENGINE_COLUMNS + p].range())
             .collect();
-        let chunks = self.read_chunks(&seg.key, &ranges)?;
+        let chunks = self.read_chunks(seg, &ranges)?;
         let mut out: Vec<Option<Vec<Option<Value>>>> = vec![None; ncols];
         for ((id, p), bytes) in present.into_iter().zip(chunks) {
             out[id] = Some(

@@ -9,6 +9,11 @@
 //!
 //! Version 0 is the empty database; the first commit is version 1. The log is the only
 //! source of truth: a segment file that no committed entry references is an orphan.
+//!
+//! Since log format 3 (decision 0009) a write entry may carry its rows *inline*: segment
+//! records with a `data` field hold a whole segment file (base64), keyed
+//! `inline/<20-digit version>/<index>`. They are the memtable until a `flush` entry
+//! replaces them by segment files.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -22,13 +27,27 @@ use muninn_store::Key;
 use serde::{Deserialize, Serialize};
 
 /// Format version of the log entries and checkpoints this engine writes. Format 2
-/// (decision 0007) allows the log to be truncated below a checkpoint; entries and
-/// checkpoints of format 1 are read unchanged.
-pub const LOG_FORMAT: u32 = 2;
+/// (decision 0007) allows the log to be truncated below a checkpoint; format 3 (decision
+/// 0009) adds inline segments, `batch_ids`, multi-batch `write` entries and `flush`
+/// entries. Entries and checkpoints of formats 1 and 2 are read unchanged.
+pub const LOG_FORMAT: u32 = 3;
 
 /// Is `format` a log format this engine reads?
 pub fn format_supported(format: u32) -> bool {
-    format == 1 || format == 2
+    (1..=3).contains(&format)
+}
+
+/// Prefix of the keys of inline segments (they are not objects in the store).
+pub const INLINE_PREFIX: &str = "inline/";
+
+/// Key of inline segment `index` (its position in `add`) of entry `version`.
+pub fn inline_key(version: u64, index: usize) -> Key {
+    Key::new(format!("{INLINE_PREFIX}{version:020}/{index}")).expect("valid key")
+}
+
+/// Is `key` the key of an inline segment?
+pub fn is_inline_key(key: &str) -> bool {
+    key.starts_with(INLINE_PREFIX)
 }
 
 /// `kind` of the marker that replaces entry 1 once the log is truncated (FORMAT.md §3.6).
@@ -121,6 +140,7 @@ impl LogEntry {
             wall_time,
             catalog: Vec::new(),
             batch_id: None,
+            batch_ids: Vec::new(),
             add: Vec::new(),
             remove: Vec::new(),
             purged: Vec::new(),
@@ -143,17 +163,21 @@ pub struct LogEntry {
     pub format: u32,
     /// This entry's version (= the previous version + 1).
     pub version: u64,
-    /// What kind of change: `catalog`, `write`, `restore`, `compact`, `gc` (or the
-    /// truncation marker, `truncated`, which is not an applicable entry).
+    /// What kind of change: `catalog`, `write`, `restore`, `compact`, `flush`, `gc` (or
+    /// the truncation marker, `truncated`, which is not an applicable entry).
     pub kind: String,
     /// The committing writer's wall clock (µs since the epoch); used for GC grace periods.
     pub wall_time: i64,
     /// Catalog changes (SPEC §2.3), applied in order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub catalog: Vec<CatalogChangeJson>,
-    /// The batch id recorded by this write (SPEC §4.4).
+    /// The batch id recorded by this write (SPEC §4.4); log formats 1 and 2.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub batch_id: Option<String>,
+    /// The batch ids recorded by this entry, in commit order (log format 3: a group
+    /// commit records one per batch that has one).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub batch_ids: Vec<String>,
     /// Segments added.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub add: Vec<SegmentJson>,
@@ -199,6 +223,10 @@ pub struct SegmentJson {
     pub series: [u32; 2],
     /// Wall clock at creation (µs).
     pub created: i64,
+    /// For an inline segment (log format 3): the segment file itself, base64
+    /// (RFC 4648, padded). Absent for a segment file in the store.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<String>,
 }
 
 /// A catalog change as recorded in the log.

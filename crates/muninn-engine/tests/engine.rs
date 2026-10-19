@@ -42,7 +42,7 @@ fn all(table: &str) -> LatestRequest {
 }
 
 fn opts() -> EngineOptions {
-    test_options(4, 5, true)
+    file_options(4, 5, true)
 }
 
 #[test]
@@ -398,35 +398,40 @@ fn snapshots_are_stable_under_concurrent_writes_compaction_and_gc() {
 #[test]
 fn ambiguous_commit_is_visible_after_reload() {
     // A commit that took effect but reported failure: the engine must reload (not reuse
-    // the seq range) and the retry is a harmless duplicate.
-    let inner: Mem = Arc::new(MemoryStore::new());
-    let store = Arc::new(FaultyStore::new(Arc::clone(&inner), 7));
-    // A grace period, so the commit needs no head probe (the previous commit confirmed
-    // the head, decision 0007).
-    let opts = EngineOptions {
-        gc_grace: std::time::Duration::from_secs(3600),
-        ..test_options(4, 0, false)
-    };
-    let e = Engine::open(Arc::clone(&store), opts).unwrap();
-    e.create_table(&CreateTable::new(
-        "t",
-        vec![ColumnDef::new("value", ColumnType::F64)],
-    ))
-    .unwrap();
-    e.create_series(&CreateSeries::new("a", "t")).unwrap();
-    // The write does: segment put_if_absent, then the log put_if_absent. Crash after the
-    // log put took effect.
-    let at = store.op_count() + 1;
-    store.set_crash_at(at, true);
-    let batch = WriteBatch::new(h(1), vec![WriteRow::new("a", h(0), h(0))]);
-    assert_eq!(e.write(&batch).unwrap_err().kind(), ErrorKind::Io);
-    store.restart();
-    let r = e.write(&batch).unwrap();
-    assert_eq!((r.stored, r.duplicates), (0, 1));
-    let r = e
-        .write(&WriteBatch::new(h(1), vec![WriteRow::new("a", h(1), h(0))]))
+    // the seq range) and the retry is a harmless duplicate. Inline (the write is one log
+    // put_if_absent) and with segment files (segment put_if_absent, then the log's).
+    for (base, log_op) in [
+        (test_options(4, 0, false), 0),
+        (file_options(4, 0, false), 1),
+    ] {
+        let inner: Mem = Arc::new(MemoryStore::new());
+        let store = Arc::new(FaultyStore::new(Arc::clone(&inner), 7));
+        // A grace period, so the commit needs no head probe (the previous commit
+        // confirmed the head, decision 0007).
+        let opts = EngineOptions {
+            gc_grace: std::time::Duration::from_secs(3600),
+            ..base
+        };
+        let e = Engine::open(Arc::clone(&store), opts).unwrap();
+        e.create_table(&CreateTable::new(
+            "t",
+            vec![ColumnDef::new("value", ColumnType::F64)],
+        ))
         .unwrap();
-    assert_eq!(r.first_seq, Some(2));
+        e.create_series(&CreateSeries::new("a", "t")).unwrap();
+        // Crash after the log put took effect.
+        let at = store.op_count() + log_op;
+        store.set_crash_at(at, true);
+        let batch = WriteBatch::new(h(1), vec![WriteRow::new("a", h(0), h(0))]);
+        assert_eq!(e.write(&batch).unwrap_err().kind(), ErrorKind::Io);
+        store.restart();
+        let r = e.write(&batch).unwrap();
+        assert_eq!((r.stored, r.duplicates), (0, 1));
+        let r = e
+            .write(&WriteBatch::new(h(1), vec![WriteRow::new("a", h(1), h(0))]))
+            .unwrap();
+        assert_eq!(r.first_seq, Some(2));
+    }
 }
 
 /// Rough timings on a forecast-like workload (`cargo test --release -- --ignored
@@ -596,7 +601,7 @@ fn inconsistent_log_entries_are_rejected() {
 fn footer_column_types_are_checked_against_the_catalog() {
     use muninn_format::{Partition, ValueColumn, write_segment};
     let store: Mem = Arc::new(MemoryStore::new());
-    let e = Engine::open(Arc::clone(&store), test_options(4, 0, false)).unwrap();
+    let e = Engine::open(Arc::clone(&store), file_options(4, 0, false)).unwrap();
     setup(&e);
     write(&e, 1, vec![WriteRow::new("a", h(0), h(0))]);
     let key = e.live_segment_keys().into_iter().next().unwrap();
@@ -619,7 +624,7 @@ fn footer_column_types_are_checked_against_the_catalog() {
     rewrite_entry(&store, e.version(), |j| {
         j["add"][0]["size"] = serde_json::json!(bytes.len())
     });
-    let fresh = Engine::open(Arc::clone(&store), test_options(4, 0, false)).unwrap();
+    let fresh = Engine::open(Arc::clone(&store), file_options(4, 0, false)).unwrap();
     let err = fresh.latest(&all("t")).unwrap_err();
     assert!(err.message().contains("is not a column of table"), "{err}");
 }
@@ -662,7 +667,7 @@ fn stalled_writer_does_not_commit_old_segments() {
     let inner: Mem = Arc::new(MemoryStore::new());
     let o = EngineOptions {
         gc_grace: std::time::Duration::from_millis(40),
-        ..test_options(4, 0, false)
+        ..file_options(4, 0, false)
     };
     let e = Engine::open(
         SlowSegments(Arc::clone(&inner), std::time::Duration::from_millis(30)),

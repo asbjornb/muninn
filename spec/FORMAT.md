@@ -1,4 +1,4 @@
-# Muninn storage format (segment formats 1–2, log formats 1–2)
+# Muninn storage format (segment formats 1–2, log formats 1–3)
 
 This document specifies the bytes a Muninn database leaves on a store, precisely enough
 for a third party to write an independent reader. It complements `SPEC.md`, which defines
@@ -11,6 +11,11 @@ or a bucket prefix). Keys are `/`-separated. There are two kinds of object:
 
 - the **commit log** (`log/…`, JSON): the single source of truth;
 - **segments** (`segments/…`, binary): immutable column files holding versions.
+
+Since log format 3 the log may also hold versions itself: a write entry can carry its
+new versions as *inline segments* — whole segment files embedded in the entry (§3.3).
+They are the *memtable*: recent writes that a later `flush` entry moves into segment
+files (decision 0009).
 
 ## 1. Conventions
 
@@ -69,6 +74,10 @@ Segment names written by the reference engine are
 `<creation wall time µs, 20 digits>-<64-bit nonce, 16 lowercase hex>.seg`. Readers MUST
 NOT depend on the name; it is used only by the garbage collector.
 
+Inline segments (log format 3, §3.3) are not objects: their key
+`inline/<20-digit version>/<index>` names the entry that holds them and their position in
+its `add`. No object key starts with `inline/`.
+
 ### 3.1 Commit entries
 
 `log/<v>.json` is one JSON object. Unknown fields MUST be rejected (format evolution
@@ -76,12 +85,13 @@ bumps `format`).
 
 | field | type | meaning |
 | --- | --- | --- |
-| `format` | int | `1` or `2` (written by engines that may truncate the log, §3.6; the fields are the same) |
+| `format` | int | `1`, `2` (written by engines that may truncate the log, §3.6; the fields are the same) or `3` (adds inline segments, `batch_ids`, multi-batch writes and `flush`) |
 | `version` | int | `v` (must equal the key's number) |
-| `kind` | string | `catalog`, `write`, `restore`, `compact`, `gc` (constrains `add`/`remove`, below), or `truncated` for the marker of §3.6, which is not an applicable entry. Readers MUST reject other kinds |
+| `kind` | string | `catalog`, `write`, `restore`, `compact`, `flush` (format 3), `gc` (constrains `add`/`remove`, below), or `truncated` for the marker of §3.6, which is not an applicable entry. Readers MUST reject other kinds |
 | `wall_time` | int | writer wall clock, µs (used by GC only) |
 | `catalog` | array, optional | catalog changes, applied in order (§3.2) |
-| `batch_id` | string, optional | batch id recorded by this write (SPEC §4.4) |
+| `batch_id` | string, optional | batch id recorded by this write (SPEC §4.4); formats 1–2 |
+| `batch_ids` | array of string, optional | batch ids recorded by this entry, in commit order (format 3; one per batch of a group commit that has one). Format-3 writers use this instead of `batch_id`; readers MUST accept both and record every id of either |
 | `add` | array, optional | segments added (§3.3) |
 | `remove` | array of string, optional | keys of segments removed (compaction) |
 | `purged` | array of string, optional | removed segment keys whose files were deleted |
@@ -89,18 +99,23 @@ bumps `format`).
 | `last_system_time` | int or null | greatest `system_time` of any stored version (SPEC §4.2) |
 
 Applying an entry to state `S` (which MUST have version `v - 1`): apply the catalog
-changes; record the batch id (it MUST not be recorded already); set the high-water marks
-(they MUST NOT decrease); for each key in `remove`, drop that live segment (it MUST be
-live) and remember it as *retired* with `wall_time`; add each segment of `add` (its key
-MUST be new); forget retired keys listed in `purged`. The `kind` constrains `add` and
-`remove`:
+changes; record the batch ids (each MUST NOT be recorded already, nor repeat within the
+entry); set the high-water marks (they MUST NOT decrease); for each key in `remove`, drop
+that live segment (it MUST be live) and — unless it is an inline segment — remember it as
+*retired* with `wall_time`; add each segment of `add` (its key MUST be new); forget
+retired keys listed in `purged`. The `kind` constrains `add` and `remove`:
 
 - `write`: nothing removed; every added segment's seq range lies in
   `[S.next_seq, next_seq)` and the added row counts sum to `next_seq - S.next_seq` (each
-  new seq is stored exactly once, so no two segments of the entry share a seq). If rows
-  are added, they all carry one `system_time`, which equals `last_system_time` and is
-  strictly greater than `S.last_system_time` (SPEC §4.2); with no rows,
-  `last_system_time` is unchanged;
+  new seq is stored exactly once, so no two segments of the entry share a seq). In
+  formats 1–2, if rows are added, they all carry one `system_time`, which equals
+  `last_system_time` and is strictly greater than `S.last_system_time` (SPEC §4.2). A
+  format-3 write may hold several batches (a group commit): its added segments' system
+  time ranges lie in `(S.last_system_time, last_system_time]` and the greatest of them is
+  `last_system_time` (each batch has its own `system_time`, strictly increasing in seq
+  order, as for `restore`). With no rows, `last_system_time` is unchanged. Only a
+  format-3 write may add inline segments, and the `i`-th element of its `add` (counting
+  from 0), if inline, MUST have the key `inline/<v, 20 digits>/<i>`;
 - `restore` (dump/restore, `spec/DUMP.md`; it imports one or more *whole* original
   batches with their original `system_time` and `seq`): the same seq rules as `write`
   (contiguous, each new seq exactly once — no gaps) and at least one row; every added
@@ -108,8 +123,16 @@ MUST be new); forget retired keys listed in `purged`. The `kind` constrains `add
   greatest of them equals `last_system_time`. Rows of one entry may have several
   `system_time`s (one per original batch);
 - `compact`: exactly one segment added, at least two removed, all of the added segment's
-  table and partition; the row counts are equal, the seq range of the added segment is the
-  hull of the removed ones, and the high-water marks are unchanged;
+  table and partition and none of them inline; the row counts are equal, the seq range of
+  the added segment is the hull of the removed ones, and the high-water marks are
+  unchanged;
+- `flush` (format 3): at least one segment removed, each a live inline segment (no key
+  twice), and at least one segment added, none inline; no catalog changes or batch ids;
+  the high-water marks unchanged. Per `(table, partition)`, the added segments hold as
+  many rows as the removed ones, and the hull of their seq ranges equals that of the
+  removed ones; every added segment's partition has removed segments and vice versa (the
+  reference engine adds one segment file per partition and knowledge-time period, holding
+  exactly the rows of the inline segments it removes);
 - `catalog`, `gc`: nothing added or removed.
 
 A reader that finds an entry violating these rules MUST treat the database as corrupt.
@@ -152,12 +175,24 @@ can prune without opening it:
 `segments/<table>/<partition>/`. These values MUST equal the segment footer's (§5);
 a reader SHOULD verify that when it opens the footer.
 
+**Inline segments** (log format 3). A record with a `data` field is an inline segment:
+`data` is the standard base64 encoding (RFC 4648 §4, with `=` padding, no line breaks) of
+a complete segment file (§4), and that segment exists nowhere else. Its key is
+`inline/<20-digit version>/<index>` (§3.1), `size` is the decoded length, and every
+statistic MUST equal the embedded footer's, as for a file. A record without `data` MUST
+NOT have an `inline/` key, and one with `data` MUST have one. Readers MUST reject data
+that is not canonical base64 or not a valid segment, and SHOULD check the statistics when
+they read the entry. An inline segment is read exactly like a segment file (ranged reads
+are slices of the decoded bytes) and is part of the state's live segments until a
+`flush` entry removes it; it is never retired or garbage-collected (there is no file).
+The reference engine writes inline segments uncompressed and keeps them in memory.
+
 ### 3.4 Checkpoints and the hint
 
 `log/<v>.checkpoint.json` holds the state after entry `v`:
 
 ```jsonc
-{"format": 2, "version": v,                   // 1 or 2, as for entries
+{"format": 3, "version": v,                   // 1 to 3, as for entries
  "catalog": [<catalog change>, ...],   // the whole catalog change log, in order
  "batch_ids": ["..."], "segments": [<segment record>, ...],
  "retired": [["<key>", <removal wall time>], ...],
@@ -170,8 +205,9 @@ The checksum is computed over the compact JSON serialisation with fields in the 
 above and no whitespace (what the reference writer emits); readers recompute it the same
 way.
 
-Loading checkpoint `v` and then applying entries `v+1, …` MUST give the same state as
-applying `1, …` from scratch. **The log is authoritative; a checkpoint is a cache.** A
+A checkpoint's `segments` include the live inline segments, with their `data` (format
+3): the entries that added them may be truncated (§3.6). Loading checkpoint `v` and then
+applying entries `v+1, …` MUST give the same state as applying `1, …` from scratch. **The log is authoritative; a checkpoint is a cache.** A
 reader MUST skip a checkpoint that is unparsable, fails its checksum, whose `version`
 differs from its key, whose `entry_crc32c` does not match `log/<v>.json` (or that entry is
 missing), or after which the later entries do not apply — and then try the next older
@@ -186,6 +222,8 @@ reference engine writes one when at least `checkpoint_interval` entries (default
 *and* at least `checkpoint_size_factor` (default 1) times the previous checkpoint's
 bytes of entries were committed since it — so checkpoint bytes stay proportional to
 entry bytes rather than to entries × state size — and GC writes one of the head (§3.6).
+With a background flusher it writes them off the commit path, flushing first when the
+memtable is large (so checkpoints rarely copy many memtable rows).
 
 ### 3.5 Garbage collection and the commit window
 
@@ -203,7 +241,9 @@ this safe with several writers and lagging readers:
    orphans).
 
 Hence a segment is committed within `G / 2` of being written, while GC can delete it at
-the earliest `G` after first seeing it — which is after it was written. Assumptions: the
+the earliest `G` after first seeing it — which is after it was written. (A flush writes
+its segment files before it commits, like any writer; the reference engine also never
+runs GC during its own flush, so `G = 0` stays safe within one process.) Assumptions: the
 store call that commits the entry completes within `G / 2`, and the writer's and GC's
 clocks advance at comparable rates (no synchronisation is needed). A reader in another
 process that holds a state no longer at the head can read its segments for at least `G`
@@ -223,11 +263,12 @@ with every commit forever. The rules (decision 0007), with `G` the grace period 
 2. Removable are the entries `< T` and the checkpoints `< T`. GC removes each only after
    it has itself observed it removable for at least `G` (its own clock).
 3. Entry 1 is not deleted but overwritten with the **truncation marker**
-   `{"format": 2, "version": 1, "kind": "truncated", "wall_time": t, "next_seq": 1,
-   "last_system_time": null}`. Entry 1 therefore always exists once written: nobody can
-   create it again, and a reader that replays from the start fails on the marker instead
-   of seeing an empty database. The other removable entries and checkpoints are deleted
-   in any order (a crash may leave any subset of them; GC removes the rest later).
+   `{"format": f, "version": 1, "kind": "truncated", "wall_time": t, "next_seq": 1,
+   "last_system_time": null}` (`f` the writer's log format, 2 or 3). Entry 1 therefore
+   always exists once written: nobody can create it again, and a reader that replays from
+   the start fails on the marker instead of seeing an empty database. The other removable
+   entries and checkpoints are deleted in any order (a crash may leave any subset of them;
+   GC removes the rest later).
    Entry `T` and every entry above it are never removed by this truncation.
 4. **Readers** detect a truncation as follows: having found entry `v+1` absent, they list
    `log/`. If an entry greater than `v+1` is present, `v+1` was removed (or written and
@@ -434,8 +475,11 @@ predicates (value range, series filter, `t_clock` bounds, `system_time ≤ S`).
 
 The segment format (header version = footer format byte) and the log `format` field are
 independent integers. This document specifies segment formats `1` and `2` (format 2 adds
-encoding 8, §4.2) and log formats `1` and `2` (§3.6; format 2 entries and checkpoints have
-the same fields, and a format-2 writer may truncate the log). Readers of this document
-MUST accept segment formats 1 and 2 and log formats 1 and 2, and MUST reject versions they
-do not know. A database may mix segment formats (compaction rewrites segments in the
-writer's format).
+encoding 8, §4.2) and log formats `1`, `2` (§3.6; format 2 entries and checkpoints have
+the same fields, and a format-2 writer may truncate the log) and `3` (inline segments
+and the memtable, `batch_ids`, multi-batch writes, `flush` entries; §3.1, §3.3, §3.4).
+Readers of this document MUST accept segment formats 1 and 2 and log formats 1 to 3, and
+MUST reject versions they do not know. A log may mix entry formats (an engine appends
+format-3 entries to a log of format-2 ones); a format-2 reader rejects the format-3
+entries and checkpoints rather than misreading them. A database may mix segment formats
+(compaction rewrites segments in the writer's format).

@@ -29,7 +29,7 @@ use muninn_core::{Error, ErrorKind, Result, Timestamp};
 use muninn_format::Partition;
 use muninn_store::Store;
 
-use super::{Engine, lock};
+use super::{Core, lock};
 use crate::read::EngineSnapshot;
 
 /// The non-version state a dump needs, read from the *same* pinned state as the
@@ -57,7 +57,7 @@ fn invalid(msg: String) -> Error {
     Error::new(ErrorKind::InvalidArgument, msg)
 }
 
-impl<S: Store> Engine<S> {
+impl<S: Store> Core<S> {
     /// Imports `versions` (in seq order) with their `system_time` and `seq` exactly as
     /// given, atomically, optionally recording `batch_id` (SPEC §4.4) in the same commit.
     ///
@@ -165,7 +165,7 @@ impl<S: Store> Engine<S> {
                 "restore"
             },
         );
-        entry.batch_id = batch_id.map(str::to_owned);
+        entry.batch_ids = batch_id.map(str::to_owned).into_iter().collect();
         let mut written = Vec::with_capacity(groups.len());
         for ((table, partition), vs) in &groups {
             let t = st.catalog.table(table)?;
