@@ -106,6 +106,11 @@ pub(crate) enum Scanned {
     PartitionEnd,
 }
 
+/// A per-block row predicate of [`ScanSpec::row_mask`]: given a block's decoded engine
+/// columns, which of its rows may qualify (by block-relative row).
+pub(crate) type RowMask<'a> =
+    dyn Fn(&SegmentRef, &Footer, usize, &muninn_format::EngineBlock) -> Result<Vec<bool>> + 'a;
+
 /// A segment predicate of [`ScanSpec::keep_segment`].
 pub(crate) type SegmentFilter<'a> = dyn Fn(&SegmentRef, &Footer) -> bool + 'a;
 
@@ -126,6 +131,9 @@ pub(crate) struct ScanSpec<'a> {
     /// Skip segments for which this returns `false` (it may only return `false` when no
     /// row of the segment can be part of the result).
     pub keep_segment: Option<&'a SegmentFilter<'a>>,
+    /// Skip the rows of a block for which this mask is `false` (it may only be `false`
+    /// for rows that cannot be part of the result).
+    pub row_mask: Option<&'a RowMask<'a>>,
 }
 
 /// Runs scans against one state and later materialises their candidates.
@@ -174,6 +182,9 @@ impl<'a, S: Store> Scanner<'a, S> {
         };
         let s_max = spec.system.map_or(i64::MAX, Timestamp::as_micros);
         let name = spec.table.name.clone();
+        // One decoded block buffer for the whole scan (reused: see `Scratch` in
+        // muninn-format).
+        let mut eb = muninn_format::EngineBlock::default();
         let tc_ok = |min: Timestamp, max: Timestamp| {
             min.as_micros() <= spec.tc_hi && max.as_micros() >= spec.tc_lo
         };
@@ -233,10 +244,14 @@ impl<'a, S: Store> Scanner<'a, S> {
                     {
                         continue;
                     }
-                    let eb = self.shared.engine_block(seg, &footer, b)?;
+                    self.shared.engine_block_into(seg, &footer, b, &mut eb)?;
+                    let mask = spec.row_mask.map(|m| m(seg, &footer, b, &eb)).transpose()?;
                     for (lo, hi) in slices {
                         for row in lo..hi {
                             let i = (row - bm.row_start) as usize;
+                            if mask.as_ref().is_some_and(|m| !m[i]) {
+                                continue;
+                            }
                             let vt = eb.value_time[i];
                             if !spec.range.contains(vt) {
                                 continue;
@@ -278,25 +293,58 @@ impl<'a, S: Store> Scanner<'a, S> {
 
     /// Full versions (values for table columns `0..ncols`) for `cands`, in order.
     pub fn materialize(&self, ncols: usize, cands: &[Cand]) -> Result<Vec<Version>> {
-        type Cols = Vec<Option<Vec<Option<Value>>>>;
-        let mut cache: HashMap<(u32, u32), Cols> = HashMap::default();
-        let mut out = Vec::with_capacity(cands.len());
-        for c in cands {
-            let cols = match cache.entry((c.seg, c.block)) {
-                std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
-                std::collections::hash_map::Entry::Vacant(e) => {
-                    let (seg, footer) = &self.segs[c.seg as usize];
-                    e.insert(
-                        self.shared
-                            .value_columns(seg, footer, c.block as usize, ncols)?,
-                    )
-                }
-            };
-            let values = cols
-                .iter()
-                .map(|col| col.as_ref().and_then(|v| v[c.row as usize].clone()))
-                .collect();
-            out.push(Version {
+        // Visit the candidates block by block (decoding each block's value chunks once,
+        // only for its candidate rows), then return them in the given order.
+        // Group by block (a counting sort over hash-assigned block numbers), and by row
+        // within each block.
+        let mut block_no: HashMap<(u32, u32), u32> = HashMap::default();
+        let groups: Vec<u32> = cands
+            .iter()
+            .map(|c| {
+                let next = block_no.len() as u32;
+                *block_no.entry((c.seg, c.block)).or_insert(next)
+            })
+            .collect();
+        let mut start = vec![0usize; block_no.len() + 1];
+        for &g in &groups {
+            start[g as usize + 1] += 1;
+        }
+        for i in 1..start.len() {
+            start[i] += start[i - 1];
+        }
+        let mut at = start.clone();
+        let mut order = vec![0u32; cands.len()];
+        for (i, &g) in groups.iter().enumerate() {
+            order[at[g as usize]] = i as u32;
+            at[g as usize] += 1;
+        }
+        for w in start.windows(2) {
+            order[w[0]..w[1]].sort_unstable_by_key(|&i| cands[i as usize].row);
+        }
+        let mut values: Vec<Vec<Option<Value>>> = vec![Vec::new(); cands.len()];
+        let mut rows = Vec::new();
+        for group in order.chunk_by(|&a, &b| {
+            let (x, y) = (&cands[a as usize], &cands[b as usize]);
+            (x.seg, x.block) == (y.seg, y.block)
+        }) {
+            let c0 = &cands[group[0] as usize];
+            let (seg, footer) = &self.segs[c0.seg as usize];
+            rows.clear();
+            rows.extend(group.iter().map(|&i| cands[i as usize].row));
+            let cols = self
+                .shared
+                .value_columns(seg, footer, c0.block as usize, ncols, &rows)?;
+            for (k, &i) in group.iter().enumerate() {
+                values[i as usize] = cols
+                    .iter()
+                    .map(|col| col.as_ref().and_then(|v| v[k].clone()))
+                    .collect();
+            }
+        }
+        Ok(cands
+            .iter()
+            .zip(values)
+            .map(|(c, values)| Version {
                 series: c.series,
                 value_time: c.vt,
                 published_time: c.pt,
@@ -305,9 +353,8 @@ impl<'a, S: Store> Scanner<'a, S> {
                 values,
                 system_time: c.st,
                 seq: c.seq,
-            });
-        }
-        Ok(out)
+            })
+            .collect())
     }
 }
 
@@ -575,6 +622,7 @@ impl<S: Store> EngineSnapshot<S> {
                 system: vis.system,
                 points: None,
                 keep_segment: None,
+                row_mask: None,
             },
             |c| red.push(c),
         )?;
@@ -687,8 +735,30 @@ impl<S: Store> EngineSnapshot<S> {
                 None => f.column_stats[pos].null_count < f.row_count && lo < hi,
             }
         };
+        // Per block: decode the filter column (as integers) and drop failing rows before
+        // anything else is done with them; values are decoded for the survivors only.
+        let mask = |seg: &SegmentRef,
+                    f: &Footer,
+                    b: usize,
+                    eb: &muninn_format::EngineBlock|
+         -> Result<Vec<bool>> {
+            let col = self.shared.int_column(seg, f, b, ci)?;
+            Ok(match col {
+                None => vec![false; eb.len()],
+                Some(col) => col
+                    .iter()
+                    .zip(&eb.value_time)
+                    .map(|(c, vt)| {
+                        c.is_some_and(|c| {
+                            let lead = i128::from(vt.as_micros()) - i128::from(c);
+                            lo <= lead && lead < hi
+                        })
+                    })
+                    .collect(),
+            })
+        };
         let mut scanner = Scanner::new(&self.shared, &self.state);
-        let cands = if lo < hi {
+        let mut kept = if lo < hi {
             scanner.scan(&ScanSpec {
                 table: p.table,
                 ids: &p.ids,
@@ -699,31 +769,11 @@ impl<S: Store> EngineSnapshot<S> {
                 system: p.vis.system,
                 points: None,
                 keep_segment: Some(&keep),
+                row_mask: Some(&mask),
             })?
         } else {
             Vec::new()
         };
-        // Decode only the filter column of the candidates' blocks, then everything else
-        // only for the survivors.
-        let mut cols: HashMap<(u32, u32), Option<Vec<Option<Value>>>> = HashMap::default();
-        let mut kept = Vec::with_capacity(cands.len() / 8);
-        for c in cands {
-            let col = match cols.entry((c.seg, c.block)) {
-                std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
-                std::collections::hash_map::Entry::Vacant(e) => {
-                    let (seg, footer) = &scanner.segs[c.seg as usize];
-                    e.insert(
-                        self.shared
-                            .value_column(seg, footer, c.block as usize, ci)?,
-                    )
-                }
-            };
-            let v = col.as_ref().and_then(|v| v[c.row as usize].as_ref());
-            if lead.accepts(c.vt, v) {
-                kept.push(c);
-            }
-        }
-        drop(cols);
         kept.sort_unstable_by_key(|c| (c.series, c.vt, c.key()));
         let rows = self.rows(&scanner, p.table, &kept)?;
         Ok(ReadResult {
@@ -772,8 +822,10 @@ impl<S: Store> Reader for EngineSnapshot<S> {
             system: p.vis.system,
             points: None,
             keep_segment: None,
+            row_mask: None,
         })?;
-        cands.sort_by_key(|c| (c.series, c.vt, c.key()));
+        // Keys are unique (seq is), so an unstable sort is exact.
+        cands.sort_unstable_by_key(|c| (c.series, c.vt, c.key()));
         let rows = self.rows(&scanner, p.table, &cands)?;
         Ok(ReadResult {
             columns: p.table.columns.clone(),
@@ -800,8 +852,9 @@ impl<S: Store> Reader for EngineSnapshot<S> {
             system: p.vis.system,
             points: None,
             keep_segment: None,
+            row_mask: None,
         })?;
-        cands.sort_by_key(Cand::key);
+        cands.sort_unstable_by_key(Cand::key); // unique keys
         let rows = self.rows(&scanner, p.table, &cands)?;
         Ok(ReadResult {
             columns: p.table.columns.clone(),
@@ -863,6 +916,7 @@ impl<S: Store> Reader for EngineSnapshot<S> {
                 system: p.system,
                 points: None,
                 keep_segment: None,
+                row_mask: None,
             },
             |c| red.push(c),
         )?;
@@ -926,6 +980,7 @@ impl<S: Store> Reader for EngineSnapshot<S> {
                 system: p.system,
                 points: Some(&points),
                 keep_segment: None,
+                row_mask: None,
             })?;
             found = chains(cands);
         }

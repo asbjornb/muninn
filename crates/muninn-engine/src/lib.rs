@@ -26,10 +26,10 @@
 //!   operation is a pruned scan (partition by value range; segment and block skipping by
 //!   series, value time, `t_clock` and system time; per-series row slices) followed by a
 //!   reduction under core's knowledge order. `grid` resolves all frontiers in one pass.
-//! - **Compaction** merges the segments of a partition that were committed in the same
-//!   system-time period into one (so segments keep narrow knowledge-time ranges for
-//!   pruning), committed as a log entry that adds the new segment and retires the old
-//!   ones; results never change.
+//! - **Compaction** merges the segments of a partition whose versions became known (on the
+//!   table's default clock) in the same period into one, so segments keep narrow
+//!   knowledge-time ranges for pruning; committed as a log entry that adds the new segment
+//!   and retires the old ones; results never change.
 
 #![forbid(unsafe_code)]
 
@@ -64,12 +64,14 @@ pub struct EngineOptions {
     pub checkpoint_size_factor: f64,
     /// Segment writer settings (block size, compression).
     pub segment: WriteOptions,
-    /// Compaction merges only segments committed in the same system-time period (the
-    /// table's partition granularity: day, month or year) instead of every segment of a
-    /// partition. A compacted segment then covers a narrow range of knowledge times, so
-    /// reads bounded by `t_clock` or `system_time` (replay, frontiers, system bounds) skip
-    /// the others; a partition keeps one segment per period that wrote into it.
-    pub compact_by_system_time: bool,
+    /// Compaction merges only segments whose versions became known in the same period
+    /// — of the table's partition granularity (day, month, year), on the table's
+    /// default clock (latest received, published or system time) — instead of every
+    /// segment of a partition. A compacted segment then covers a narrow range of
+    /// knowledge times, so reads bounded by `t_clock` or `system_time` (replay,
+    /// frontiers, system bounds, lead filters) skip the others; a partition keeps about
+    /// one segment per period in which its versions arrived.
+    pub compact_by_period: bool,
     /// GC deletes an unreferenced segment only when it is at least this old.
     pub gc_grace: std::time::Duration,
     /// Wall clock for segment names and GC.
@@ -92,7 +94,7 @@ impl Default for EngineOptions {
             checkpoint_interval: 100,
             checkpoint_size_factor: 1.0,
             segment: WriteOptions::default(),
-            compact_by_system_time: true,
+            compact_by_period: true,
             gc_grace: std::time::Duration::from_secs(3600),
             wall_clock: Arc::new(system_wall_clock),
             footer_cache_entries: 4096,
@@ -108,7 +110,7 @@ impl std::fmt::Debug for EngineOptions {
             .field("checkpoint_interval", &self.checkpoint_interval)
             .field("checkpoint_size_factor", &self.checkpoint_size_factor)
             .field("segment", &self.segment)
-            .field("compact_by_system_time", &self.compact_by_system_time)
+            .field("compact_by_period", &self.compact_by_period)
             .field("gc_grace", &self.gc_grace)
             .field("footer_cache_entries", &self.footer_cache_entries)
             .field("tail_read", &self.tail_read)

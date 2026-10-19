@@ -118,8 +118,9 @@ impl DedupIndex {
                     continue;
                 }
                 let footer = shared.footer(seg, def)?;
+                let mut eb = muninn_format::EngineBlock::default();
                 for b in 0..footer.blocks.len() {
-                    let eb = shared.engine_block(seg, &footer, b)?;
+                    shared.engine_block_into(seg, &footer, b, &mut eb)?;
                     for i in 0..eb.len() {
                         part.fold(
                             eb.series[i],

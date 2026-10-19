@@ -131,8 +131,12 @@ fn sorted(mut v: Vec<Version>) -> Vec<Version> {
 fn opts(block_rows: usize, compress: bool) -> WriteOptions {
     WriteOptions {
         block_rows,
+        // Also cut blocks at series boundaries (sometimes), as the default writer does.
+        series_block_rows: block_rows / 2,
         compress,
         zstd_level: 1,
+        // Format 1 for odd block sizes, so both formats are round-tripped.
+        format_version: if block_rows % 2 == 1 { 1 } else { 2 },
     }
 }
 
@@ -149,6 +153,12 @@ proptest! {
         let seg = SegmentFile::open(&file).unwrap();
         let got = seg.versions().unwrap();
         prop_assert!(bit_identical(&got, &sorted(versions.clone())));
+        // The same versions in the other format decode identically.
+        let other = WriteOptions { format_version: 3 - opts(block_rows, compress).format_version, ..opts(block_rows, compress) };
+        let file2 = write_segment("t", partition(), &columns(), &versions, &other).unwrap();
+        let seg2 = SegmentFile::open(&file2).unwrap();
+        prop_assert_eq!(u16::from(seg2.footer().format), other.format_version);
+        prop_assert!(bit_identical(&seg2.versions().unwrap(), &got));
 
         // Footer statistics are exact.
         let f = seg.footer();
@@ -202,6 +212,41 @@ proptest! {
                 prop_assert_eq!(&*f2, f);
             }
             Tail::Footer(_) => prop_assert!(false, "footer cannot fit in the tail"),
+        }
+    }
+
+    /// Row-selective value decoding returns exactly the picked rows of the full decode,
+    /// and block decoding into a reused buffer equals a fresh decode.
+    #[test]
+    fn value_rows_and_reused_blocks_equal_full_decodes(
+        versions in arb_versions(),
+        block_rows in 1usize..20,
+        compress in any::<bool>(),
+        picks in prop::collection::vec(any::<prop::sample::Index>(), 0..12),
+    ) {
+        let file = write_segment("t", partition(), &columns(), &versions, &opts(block_rows, compress)).unwrap();
+        let seg = SegmentFile::open(&file).unwrap();
+        let f = seg.footer();
+        let mut reused = muninn_format::EngineBlock::default();
+        for (b, bm) in f.blocks.iter().enumerate() {
+            seg.engine_block_into(b, &mut reused).unwrap();
+            prop_assert_eq!(&reused, &seg.engine_block(b).unwrap());
+            let mut rows: Vec<u32> = picks.iter().map(|i| i.index(bm.row_count as usize) as u32).collect();
+            rows.sort_unstable();
+            for p in 0..f.columns.len() {
+                let chunk = &file[bm.chunks[muninn_format::ENGINE_COLUMNS + p].range().start as usize
+                    ..bm.chunks[muninn_format::ENGINE_COLUMNS + p].range().end as usize];
+                let all = f.decode_value_chunk(b, p, chunk).unwrap();
+                let some = f.decode_value_rows(b, p, chunk, &rows).unwrap();
+                let want: Vec<Option<Value>> = rows.iter().map(|&r| all[r as usize].clone()).collect();
+                prop_assert_eq!(format!("{some:?}"), format!("{want:?}"));
+                // A damaged chunk is an error for both, never a value.
+                if !chunk.is_empty() {
+                    let mut bad = chunk.to_vec();
+                    bad[0] ^= 1;
+                    prop_assert!(f.decode_value_rows(b, p, &bad, &rows).is_err());
+                }
+            }
         }
     }
 

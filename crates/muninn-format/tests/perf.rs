@@ -77,9 +77,11 @@ fn perf_decode_breakdown() {
     let z = t.elapsed();
     let t = Instant::now();
     let mut n = 0;
+    let mut eb = muninn_format::EngineBlock::default();
     for f in &opened {
         for b in 0..f.footer().blocks.len() {
-            n += f.engine_block(b).unwrap().len();
+            f.engine_block_into(b, &mut eb).unwrap();
+            n += eb.len();
         }
     }
     let full = t.elapsed();

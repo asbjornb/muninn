@@ -559,6 +559,7 @@ impl<S: Store> Engine<S> {
                 system: None,
                 points: Some(pts),
                 keep_segment: None,
+                row_mask: None,
             })?;
             cands.retain(|c| rts.contains(&(c.series, c.vt, c.rt)));
             for v in scanner.materialize(table.columns.len(), &cands)? {
@@ -573,7 +574,7 @@ impl<S: Store> Engine<S> {
     // -----------------------------------------------------------------------------------
 
     /// Merges the segments of one partition, by compaction group (see
-    /// [`EngineOptions::compact_by_system_time`]): the segments of each group with at
+    /// [`EngineOptions::compact_by_period`]): the segments of each group with at
     /// least two become one. Returns whether anything was compacted. Never changes a
     /// query result (SPEC §7.2): the new segments hold exactly the same versions.
     pub fn compact(&self, table: &str, partition_label: &str) -> Result<bool> {
@@ -630,13 +631,13 @@ impl<S: Store> Engine<S> {
         Ok(n)
     }
 
-    /// The compaction group of a segment: with
-    /// [`EngineOptions::compact_by_system_time`], the period of the table's partition
-    /// granularity (day, month, year) containing its greatest `system_time`; else one
-    /// group per partition.
+    /// The compaction group of a segment: with [`EngineOptions::compact_by_period`],
+    /// the period of the table's partition granularity (day, month, year) containing
+    /// its greatest `t_clock` under the table's default clock; else one group per
+    /// partition.
     fn compaction_group(&self, t: &TableDef, seg: &SegmentRef) -> i64 {
-        if self.shared.opts.compact_by_system_time {
-            Partition::of(t.partition, seg.system_time.max).index
+        if self.shared.opts.compact_by_period {
+            Partition::of(t.partition, seg.t_clock(t.default_clock).max).index
         } else {
             0
         }

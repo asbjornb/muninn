@@ -147,6 +147,19 @@ impl Timestamp {
         Ok(v.into_iter().map(Timestamp).collect())
     }
 
+    /// Appends `src` as timestamps to `dst` (no allocation if `dst` has the capacity):
+    /// `Err(i)` with the index of the first out-of-range value, `dst` unchanged then.
+    pub fn extend_from_micros(dst: &mut Vec<Timestamp>, src: &[i64]) -> Result<(), usize> {
+        if let Some(i) = src
+            .iter()
+            .position(|x| !(Self::MIN.0..=Self::MAX.0).contains(x))
+        {
+            return Err(i);
+        }
+        dst.extend(src.iter().map(|&x| Timestamp(x)));
+        Ok(())
+    }
+
     /// Like [`Timestamp::from_micros`] but with an error suitable for `?`.
     pub fn try_from_micros(micros: i64) -> Result<Timestamp, ParseTimestampError> {
         Self::from_micros(micros).ok_or_else(|| {

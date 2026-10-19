@@ -1,4 +1,4 @@
-# Muninn storage format (segments v1, log format 2)
+# Muninn storage format (segment formats 1–2, log formats 1–2)
 
 This document specifies the bytes a Muninn database leaves on a store, precisely enough
 for a third party to write an independent reader. It complements `SPEC.md`, which defines
@@ -260,9 +260,11 @@ footer_offset       footer (footer_len bytes)
 file_size - 16      tail (16 bytes)
 ```
 
-**Header**: `"MUNINNSG"` (8 bytes ASCII), `u16` format version `1`, `u16` flags `0`,
-`u32` reserved `0`. A reader that reads the header MUST reject other versions or non-zero
-flags (a tail-only reader relies on the footer format byte, §5.1).
+**Header**: `"MUNINNSG"` (8 bytes ASCII), `u16` format version (`1` or `2`), `u16` flags
+`0`, `u32` reserved `0`. A reader that reads the header MUST reject other versions or
+non-zero flags, and a version different from the footer format byte (§5.1); a tail-only
+reader relies on the footer format byte. Format 2 differs from format 1 only in allowing
+encoding 8 (§4.2).
 
 **Tail**: `u32 footer_len`, `u32 footer_crc` (CRC-32C of the footer bytes), `"MUNINNSG"`.
 `footer_offset = file_size - 16 - footer_len`, and MUST be ≥ 16.
@@ -273,8 +275,10 @@ uses 64 KiB, or the whole file if smaller). If `k < footer_len + 16`, read the l
 
 ### 4.1 Rows, blocks and chunks
 
-Rows are grouped into **blocks** of consecutive rows (1 … 1 048 576 rows each; the
-reference writer uses 16 384). Each block stores one **chunk** per column:
+Rows are grouped into **blocks** of consecutive rows (1 … 1 048 576 rows each). Block
+boundaries are the writer's choice; the reference writer ends a block after 16 384 rows,
+or where a new series starts once the block has 1 024 rows (so that a reader of one
+series decodes little of the others). Each block stores one **chunk** per column:
 
 | chunk | column | type | nullable | encodings |
 | --- | --- | --- | --- | --- |
@@ -288,8 +292,9 @@ reference writer uses 16 384). Each block stores one **chunk** per column:
 | 7 + j | value column `j` of the footer's column list | per type | **yes** | per type |
 
 Value chunk encodings by type: `f64` → 5, `i64` → integer, `bool` → 4, `string` → 6,
-`timestamp` → integer. "Integer" means any of encodings 1, 2, 3, 7. Readers MUST reject
-any other combination.
+`timestamp` → integer. "Integer" means any of encodings 1, 2, 3, 7, and in format 2 also
+8. Readers MUST reject any other combination (in particular encoding 8 in a format-1
+file).
 
 A chunk is stored as `stored = compress(raw)`. Its directory entry (§5.5) gives offset,
 stored length, raw length, encoding, compression and the CRC-32C of the **stored** bytes,
@@ -318,10 +323,18 @@ Every raw chunk MUST be consumed exactly.
 | 5 | plain f64 | 8 bytes per value, IEEE-754 binary64 little-endian (bit patterns are preserved, NaN payloads included) |
 | 6 | length-prefixed | per value a `string` (§1) |
 | 7 | zigzag | `ivarint(v)` per value |
+| 8 | nibble delta (format 2) | with `z[i] = zigzag(v[i] - v[i-1])` (`v[-1] = 0`) and `L[i]` its byte count: `ceil(m / 2)` bytes of 4-bit counts (`L[i]` in the low nibble of byte `i / 2` for even `i`, the high nibble for odd `i`; an unused last nibble MUST be zero), then for each `i` the `L[i]` low bytes of `z[i]`, little-endian |
 
 Run-length values are read as `uvarint` and reinterpreted as `i64`. For the `series`
-column values MUST fit in u32. The reference writer uses: series 1, value_time 3,
-published/received/system time and seq 2, i64 values 7, timestamp values 2.
+column values MUST fit in u32. Encoding 8: every `L[i]` MUST be at most 8; writers MUST
+use the fewest bytes (`L[i] = 0` iff `z[i] = 0`), but a larger count denotes the same
+value and readers need not reject it (the chunk CRC guards against corruption). Its
+point is decoding speed: the byte counts are known before the values are read, so no
+varint is parsed per value, while the value bytes stay byte-aligned (they compress like
+varints). The reference writer uses, in format 2: series 1, value_time, published,
+received and system time, seq and timestamp values 8, i64 values 7; in format 1: series
+1, value_time 3, published/received/system time and seq 2, i64 values 7, timestamp
+values 2.
 
 ### 4.3 Values
 
@@ -340,7 +353,7 @@ remain, and the footer MUST be consumed exactly.
 ### 5.1 Header fields
 
 ```
-u8      footer format = 1
+u8      footer format = 1 or 2 (equal to the header's format version)
 string  table name
 u8      partition granularity: 0 = day, 1 = month, 2 = year
 ivarint partition ordinal (§2)
@@ -419,8 +432,10 @@ predicates (value range, series filter, `t_clock` bounds, `system_time ≤ S`).
 
 ## 7. Versioning
 
-The header version, footer format byte and log `format` field are independent integers.
-This document specifies segment header version `1`, footer format `1` and log formats `1`
-and `2` (§3.6; format 2 entries and checkpoints have the same fields, and a format-2
-writer may truncate the log). Readers of this document MUST accept log formats 1 and 2
-and MUST reject versions they do not know.
+The segment format (header version = footer format byte) and the log `format` field are
+independent integers. This document specifies segment formats `1` and `2` (format 2 adds
+encoding 8, §4.2) and log formats `1` and `2` (§3.6; format 2 entries and checkpoints have
+the same fields, and a format-2 writer may truncate the log). Readers of this document
+MUST accept segment formats 1 and 2 and log formats 1 and 2, and MUST reject versions they
+do not know. A database may mix segment formats (compaction rewrites segments in the
+writer's format).

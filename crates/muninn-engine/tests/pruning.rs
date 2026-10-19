@@ -12,7 +12,7 @@ use common::*;
 use muninn_core::api::*;
 use muninn_core::{ColumnDef, ColumnType, Database, Duration, Reader, TimeRange, Value};
 use muninn_engine::{Engine, EngineOptions, LeadFilter};
-use muninn_store::{FaultyStore, MemoryStore, OpKind};
+use muninn_store::{FaultyStore, MemoryStore, OpKind, Store};
 use proptest::prelude::*;
 
 type Mem = Arc<MemoryStore>;
@@ -30,7 +30,7 @@ proptest! {
         block_rows in 1usize..4,
     ) {
         let o = EngineOptions {
-            compact_by_system_time: by_system_time,
+            compact_by_period: by_system_time,
             ..test_options(block_rows, 3, false)
         };
         run_differential(Arc::new(MemoryStore::new()), o, &ops)?;
@@ -108,7 +108,7 @@ fn forecast(e: &impl Database) {
 
 fn opts(by_system_time: bool) -> EngineOptions {
     EngineOptions {
-        compact_by_system_time: by_system_time,
+        compact_by_period: by_system_time,
         ..test_options(16, 0, true)
     }
 }
@@ -120,6 +120,45 @@ fn fetched(store: &FaultyStore<Mem>, since: u64) -> std::collections::BTreeSet<S
         .filter(|r| r.op == OpKind::GetRange)
         .map(|r| r.key.clone())
         .collect()
+}
+
+/// A database written in segment format 1 (before encoding 8) reads unchanged with the
+/// current engine, and compaction rewrites it into format 2 without changing a result.
+#[test]
+fn format_1_segments_are_read_and_rewritten() {
+    let store: Mem = Arc::new(MemoryStore::new());
+    let old = EngineOptions {
+        segment: muninn_engine::WriteOptions {
+            format_version: 1,
+            ..opts(true).segment
+        },
+        ..opts(true)
+    };
+    let e = Engine::open(Arc::clone(&store), old).unwrap();
+    setup(&e);
+    forecast(&e);
+    let expected = fingerprint(&e);
+    let formats = |store: &MemoryStore| -> std::collections::BTreeSet<u16> {
+        store
+            .list("segments/")
+            .unwrap()
+            .iter()
+            .map(|k| {
+                let b = store.get(k).unwrap();
+                u16::from_le_bytes([b[8], b[9]])
+            })
+            .collect()
+    };
+    assert_eq!(formats(&store), [1].into());
+    drop(e);
+    let e = Engine::open(Arc::clone(&store), opts(true)).unwrap();
+    assert_eq!(fingerprint(&e), expected);
+    assert!(e.compact_all().unwrap() > 0);
+    e.gc().unwrap();
+    assert_eq!(formats(&store), [2].into());
+    assert_eq!(fingerprint(&e), expected);
+    let r = Engine::open(Arc::clone(&store), opts(true)).unwrap();
+    assert_eq!(fingerprint(&r), expected);
 }
 
 #[test]

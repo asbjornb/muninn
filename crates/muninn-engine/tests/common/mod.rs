@@ -499,8 +499,10 @@ pub fn test_options(block_rows: usize, checkpoint_interval: u64, compress: bool)
         checkpoint_size_factor: 0.0,
         segment: WriteOptions {
             block_rows,
+            series_block_rows: block_rows / 2,
             compress,
             zstd_level: 1,
+            format_version: muninn_format::FORMAT_VERSION,
         },
         gc_grace: std::time::Duration::ZERO,
         ..EngineOptions::default()

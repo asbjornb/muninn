@@ -16,8 +16,10 @@ fn small() -> EngineOptions {
         checkpoint_interval: 3,
         segment: WriteOptions {
             block_rows: 2,
+            series_block_rows: 1,
             compress: true,
             zstd_level: 1,
+            format_version: 1,
         },
         gc_grace: std::time::Duration::ZERO,
         ..EngineOptions::default()
