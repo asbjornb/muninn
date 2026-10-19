@@ -20,14 +20,15 @@
 //!   series × 1 000 rows); reported in rows/s.
 //!
 //! Throughput and latency are measured on the engine's API; building the rows is not
-//! timed.
+//! timed. After each small-write run the memtable's size is printed with the time of a
+//! `latest` over one series and over the whole table, before and after a flush.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use muninn_core::api::{CreateSeries, CreateTable, WriteBatch, WriteRow};
-use muninn_core::{ColumnDef, ColumnType, Database, Timestamp, Value};
+use muninn_core::api::{CreateSeries, CreateTable, LatestRequest, WriteBatch, WriteRow};
+use muninn_core::{ColumnDef, ColumnType, Database, Reader, Timestamp, Value};
 use muninn_engine::{Engine, EngineOptions};
 use muninn_store::{LocalFsStore, MemoryStore, Store};
 
@@ -174,6 +175,43 @@ fn small_writes<S: Store + 'static>(
         ms(pct(&lat, 0.50)),
         ms(pct(&lat, 0.99)),
         ms(*lat.last().unwrap_or(&Duration::ZERO)),
+    );
+    reads(&engine);
+}
+
+/// Memtable size, and the cost of reads over it (one series, the whole table) before
+/// and after flushing it.
+fn reads<S: Store>(engine: &Engine<S>) {
+    let time = |req: &LatestRequest| {
+        let t = Instant::now();
+        let n = engine.latest(req).expect("latest").rows.len();
+        (n, t.elapsed())
+    };
+    let one = LatestRequest {
+        table: "fc".into(),
+        series: vec!["s7".into()],
+        ..LatestRequest::default()
+    };
+    let all = LatestRequest {
+        table: "fc".into(),
+        ..LatestRequest::default()
+    };
+    let m = engine.memtable();
+    let (n1, t1) = time(&one);
+    let (na, ta) = time(&all);
+    engine.flush().expect("flush");
+    let (n1f, t1f) = time(&one);
+    let (naf, taf) = time(&all);
+    assert_eq!((n1, na), (n1f, naf));
+    println!(
+        "       memtable: {} rows in {} segments ({} flushes so far); latest one series {:.2} ms, all {:.1} ms ({na} rows); after flush {:.2} / {:.1} ms",
+        m.rows,
+        m.segments,
+        m.flushes,
+        ms(t1),
+        ms(ta),
+        ms(t1f),
+        ms(taf),
     );
 }
 

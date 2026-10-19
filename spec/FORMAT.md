@@ -175,17 +175,18 @@ can prune without opening it:
 `segments/<table>/<partition>/`. These values MUST equal the segment footer's (§5);
 a reader SHOULD verify that when it opens the footer.
 
-**Inline segments** (log format 3). A record with a `data` field is an inline segment:
-`data` is the standard base64 encoding (RFC 4648 §4, with `=` padding, no line breaks) of
-a complete segment file (§4), and that segment exists nowhere else. Its key is
-`inline/<20-digit version>/<index>` (§3.1), `size` is the decoded length, and every
-statistic MUST equal the embedded footer's, as for a file. A record without `data` MUST
-NOT have an `inline/` key, and one with `data` MUST have one. Readers MUST reject data
-that is not canonical base64 or not a valid segment, and SHOULD check the statistics when
-they read the entry. An inline segment is read exactly like a segment file (ranged reads
-are slices of the decoded bytes) and is part of the state's live segments until a
-`flush` entry removes it; it is never retired or garbage-collected (there is no file).
-The reference engine writes inline segments uncompressed and keeps them in memory.
+**Inline segments** (log format 3). A record with a `data` field (after `created`, in
+checkpoints too) is an inline segment: `data` is the standard base64 encoding (RFC 4648
+§4, with `=` padding, no line breaks) of a complete segment file (§4), and that segment
+exists nowhere else. Its key is `inline/<20-digit version>/<index>` (§3.1), `size` is the
+decoded length, and every statistic MUST equal the embedded footer's, as for a file. A
+record without `data` MUST NOT have an `inline/` key, and one with `data` MUST have one.
+Readers MUST reject data that is not canonical base64 or not a valid segment, and SHOULD
+check the statistics when they read the entry. An inline segment is read exactly like a
+segment file (ranged reads are slices of the decoded bytes) and is part of the state's
+live segments until a `flush` entry removes it; it is never retired or garbage-collected
+(there is no file). The reference engine writes inline segments uncompressed and keeps
+them in memory.
 
 ### 3.4 Checkpoints and the hint
 
@@ -205,17 +206,18 @@ The checksum is computed over the compact JSON serialisation with fields in the 
 above and no whitespace (what the reference writer emits); readers recompute it the same
 way.
 
-A checkpoint's `segments` include the live inline segments, with their `data` (format
-3): the entries that added them may be truncated (§3.6). Loading checkpoint `v` and then
-applying entries `v+1, …` MUST give the same state as applying `1, …` from scratch. **The log is authoritative; a checkpoint is a cache.** A
-reader MUST skip a checkpoint that is unparsable, fails its checksum, whose `version`
-differs from its key, whose `entry_crc32c` does not match `log/<v>.json` (or that entry is
-missing), or after which the later entries do not apply — and then try the next older
-checkpoint, finally replaying from version 0. (A checkpoint that is internally
-consistent, sealed and bound to the right entry but still wrong is not detectable without
-a full replay; writers never produce one.) `log/_last_checkpoint` (`{"version": v}`)
-names a recent checkpoint. It is only a hint: readers MUST tolerate it being absent,
-stale, unparsable or naming a missing or invalid checkpoint.
+A checkpoint's `segments` include the live inline segments, with their `data` (format 3):
+the entries that added them may be truncated (§3.6). Loading checkpoint `v` and then
+applying entries `v+1, …` MUST give the same state as applying `1, …` from scratch. **The
+log is authoritative; a checkpoint is a cache.** A reader MUST skip a checkpoint that is
+unparsable, fails its checksum, whose `version` differs from its key, whose
+`entry_crc32c` does not match `log/<v>.json` (or that entry is missing), or after which
+the later entries do not apply — and then try the next older checkpoint, finally
+replaying from version 0. (A checkpoint that is internally consistent, sealed and bound
+to the right entry but still wrong is not detectable without a full replay; writers never
+produce one.) `log/_last_checkpoint` (`{"version": v}`) names a recent checkpoint. It is
+only a hint: readers MUST tolerate it being absent, stale, unparsable or naming a missing
+or invalid checkpoint.
 
 When to write a checkpoint is the writer's choice and never changes a state. The
 reference engine writes one when at least `checkpoint_interval` entries (default 100)
