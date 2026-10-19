@@ -7,7 +7,7 @@
 use std::collections::hash_map::RandomState;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::hash::{BuildHasher, Hasher};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, Weak};
 use std::thread::JoinHandle;
 use std::time::Instant;
@@ -130,6 +130,9 @@ pub(crate) struct Core<S: Store> {
     /// A checkpoint the commit path left to the background thread.
     ck_pending: Mutex<Option<Arc<State>>>,
     flushes: AtomicU64,
+    /// This engine committed a write (only a writing engine flushes in the background:
+    /// a process that only reads never commits anything).
+    wrote: AtomicBool,
 }
 
 /// The Muninn storage engine over a [`Store`] (decisions 0004, 0005, 0009).
@@ -472,6 +475,7 @@ impl<S: Store> Core<S> {
             flush_signal: flush::FlushSignal::default(),
             ck_pending: Mutex::new(None),
             flushes: AtomicU64::new(0),
+            wrote: AtomicBool::new(false),
         })
     }
 

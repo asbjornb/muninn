@@ -100,9 +100,10 @@ pub struct EngineOptions {
     /// and rebuilt from their segments when written again. 0 disables the index (every
     /// write then reads the stored versions of every point it touches).
     pub dedup_index_points: usize,
-    /// A commit group storing at most this many rows keeps them inline in its log entry
-    /// (the memtable, decision 0009); a larger one (a bulk load) writes segment files
-    /// first. 0 = never inline (every write writes segment files, as before 0009).
+    /// A batch storing at most this many rows keeps them inline in its log entry (the
+    /// memtable, decision 0009); the rows of a larger one (a bulk load) go to segment
+    /// files written before the entry. 0 = never inline (every write writes segment
+    /// files, as before 0009).
     pub inline_max_rows: usize,
     /// Most candidate rows one group commit takes off the queue (at least one batch).
     pub group_max_rows: usize,
@@ -137,7 +138,7 @@ impl Default for EngineOptions {
             footer_cache_entries: 4096,
             tail_read: 64 * 1024,
             dedup_index_points: 2_000_000,
-            inline_max_rows: 100_000,
+            inline_max_rows: 20_000,
             group_max_rows: 1_000_000,
             flush_rows: 200_000,
             flush_segments: 2048,

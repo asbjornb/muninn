@@ -129,6 +129,9 @@ impl<'a> Placer<'a> {
 /// `[min, max]` received time (µs) of a partition's live segments, `None` if it has none.
 type RtHull = Option<(i64, i64)>;
 
+/// Rows by `(table, partition)`.
+type Groups<'a> = BTreeMap<(&'a str, Partition), Vec<Version>>;
+
 /// What the leader decided for one batch before the commit.
 enum Outcome {
     /// Final whatever happens to the commit (resolved against the committed state only).
@@ -296,6 +299,8 @@ impl<S: Store> Core<S> {
         let mut batch_ids: Vec<String> = Vec::new();
         let mut taken: FxHashSet<String> = FxHashSet::default();
         let mut kept: Vec<Version> = Vec::new();
+        // Ranges of `kept` holding the rows of batches too large to keep inline.
+        let mut bulk: Vec<(u32, u32)> = Vec::new();
         // Ranges of `kept` holding rows of each series. Only a series that an earlier
         // batch of the group kept rows of can make a row an in-group duplicate; batches
         // of different series (the usual case) never build a per-point index.
@@ -392,6 +397,10 @@ impl<S: Store> Core<S> {
                 next_seq += plan.kept.len() as u64;
                 last = Some(system_time);
             }
+            if plan.kept.len() > self.shared.opts.inline_max_rows {
+                let a = kept.len() as u32;
+                bulk.push((a, a + plan.kept.len() as u32));
+            }
             for v in plan.kept {
                 let i = kept.len() as u32;
                 let runs = series_runs.entry(v.series).or_default();
@@ -408,7 +417,7 @@ impl<S: Store> Core<S> {
         let committed = if kept.is_empty() && batch_ids.is_empty() {
             Ok(())
         } else {
-            self.commit_rows(&mut w, &st, kept, batch_ids, next_seq, last)
+            self.commit_rows(&mut w, &st, kept, &bulk, batch_ids, next_seq, last)
         };
         outcomes
             .into_iter()
@@ -497,55 +506,84 @@ impl<S: Store> Core<S> {
         self.load_points(st, &points, &rts)
     }
 
-    /// Commits the kept rows of a group (and its batch ids) as one `write` entry: inline
-    /// segments, one per touched partition, unless there are more than
-    /// [`crate::EngineOptions::inline_max_rows`] rows, in which case segment files are
-    /// written first (in parallel).
+    /// Commits the kept rows of a group (and its batch ids) as one `write` entry: the rows
+    /// of batches with at most [`crate::EngineOptions::inline_max_rows`] rows as inline
+    /// segments, one per touched partition; the rows of larger batches (`bulk`, ranges of
+    /// `kept`) as segment files written first (in parallel), one per partition.
+    #[allow(clippy::too_many_arguments)]
     fn commit_rows(
         &self,
         w: &mut super::Writer,
         st: &State,
         kept: Vec<Version>,
+        bulk: &[(u32, u32)],
         batch_ids: Vec<String>,
         next_seq: u64,
         last: Option<Timestamp>,
     ) -> Result<()> {
-        let mut groups: BTreeMap<(&str, Partition), Vec<Version>> = BTreeMap::new();
-        let rows = kept.len();
+        let mut inline: Groups<'_> = BTreeMap::new();
+        let mut files: Groups<'_> = BTreeMap::new();
+        let mut inline_rows = 0;
         let mut placer = Placer::new(st);
-        let mut last_key: Option<(&str, Partition)> = None;
+        let mut last_key: Option<(bool, &str, Partition)> = None;
         let mut run: Vec<Version> = Vec::new();
-        for v in kept {
+        let mut bulk_at = bulk.iter().peekable();
+        fn flush_run<'a>(
+            key: Option<(bool, &'a str, Partition)>,
+            run: &mut Vec<Version>,
+            inline: &mut Groups<'a>,
+            files: &mut Groups<'a>,
+        ) {
+            if let Some((is_bulk, t, p)) = key {
+                let to = if is_bulk { files } else { inline };
+                to.entry((t, p)).or_default().append(run);
+            }
+        }
+        for (i, v) in kept.into_iter().enumerate() {
+            let i = i as u32;
+            while bulk_at.peek().is_some_and(|r| r.1 <= i) {
+                bulk_at.next();
+            }
+            let is_bulk = bulk_at.peek().is_some_and(|r| r.0 <= i);
+            if !is_bulk {
+                inline_rows += 1;
+            }
             let (t, p) = placer.place(&v)?;
-            let key = (t.name.as_str(), p);
+            let key = (is_bulk, t.name.as_str(), p);
             if last_key != Some(key) {
-                if let Some(k) = last_key {
-                    groups.entry(k).or_default().append(&mut run);
-                }
+                flush_run(last_key, &mut run, &mut inline, &mut files);
                 last_key = Some(key);
             }
             run.push(v);
         }
-        if let Some(k) = last_key {
-            groups.entry(k).or_default().append(&mut run);
-        }
+        flush_run(last_key, &mut run, &mut inline, &mut files);
         let mut entry = self.new_entry(st, "write");
         entry.batch_ids = batch_ids;
         entry.next_seq = next_seq;
         entry.last_system_time = last.map(Timestamp::as_micros);
-        let inline = rows <= self.shared.opts.inline_max_rows;
         let started = Instant::now();
-        let segs: Vec<SegmentRef> = if inline {
-            let opts = inline_options(&self.shared.opts.segment);
-            let created = self.wall();
-            let version = entry.version;
-            let jobs: Vec<_> = groups.iter().collect();
-            // Encoding is CPU work: spread big groups over threads.
-            let threads = if rows >= 2048 {
-                self.shared.opts.io_threads
-            } else {
-                1
-            };
+        // Files first (they must be durable before the entry), then inline segments,
+        // keyed by their position in `add`.
+        let mut segs: Vec<SegmentRef> = if files.is_empty() {
+            Vec::new()
+        } else {
+            let jobs: Vec<_> = files
+                .iter()
+                .map(|((table, p), vs)| Ok((st.catalog.table(table)?, *p, vs.as_slice())))
+                .collect::<Result<_>>()?;
+            self.put_segments(&jobs)?
+        };
+        let opts = inline_options(&self.shared.opts.segment);
+        let created = self.wall();
+        let (version, offset) = (entry.version, segs.len());
+        let jobs: Vec<_> = inline.iter().collect();
+        // Encoding is CPU work: spread big groups over threads.
+        let threads = if inline_rows >= 2048 {
+            self.shared.opts.io_threads
+        } else {
+            1
+        };
+        let encoded: Vec<Result<SegmentRef>> =
             super::parallel_map(&jobs, threads, |i, ((table, p), vs)| {
                 let t = st.catalog.table(table)?;
                 let bytes = write_segment(&t.name, *p, &table_columns(t), vs, &opts)
@@ -556,30 +594,25 @@ impl<S: Store> Core<S> {
                 })?;
                 let footer = Arc::clone(&d.footer);
                 Ok(SegmentRef::from_footer(
-                    inline_key(version, i),
+                    inline_key(version, offset + i),
                     &t.name,
                     &footer,
                     size,
                     created,
                     Some(Arc::new(d)),
                 ))
-            })
-            .into_iter()
-            .collect::<Result<_>>()?
-        } else {
-            let jobs: Vec<_> = groups
-                .iter()
-                .map(|((table, p), vs)| Ok((st.catalog.table(table)?, *p, vs.as_slice())))
-                .collect::<Result<_>>()?;
-            self.put_segments(&jobs)?
-        };
+            });
+        for s in encoded {
+            segs.push(s?);
+        }
         entry.add = segs.iter().map(SegmentRef::to_json).collect();
-        if !inline {
+        if !files.is_empty() {
             self.check_commit_age(started)?;
         }
         self.commit_prepared(w, st, entry, &segs)?;
+        self.wrote.store(true, std::sync::atomic::Ordering::Relaxed);
         let mut dedup = lock(&self.dedup);
-        for (((table, p), vs), seg) in groups.iter().zip(&segs) {
+        for (((table, p), vs), seg) in files.iter().chain(inline.iter()).zip(&segs) {
             dedup.record(
                 table,
                 *p,

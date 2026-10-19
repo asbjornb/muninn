@@ -77,7 +77,6 @@ pub fn info(ctx: &Context, f: FormatArg) -> Res<()> {
             log_bytes += size;
         }
     }
-    let cp = st.to_checkpoint();
     let mut db_rows = Rows::flat(&["key", "value"]);
     let kv: Vec<(&str, Wire)> = vec![
         ("database", s(ctx.dir()?.display().to_string())),
@@ -97,7 +96,7 @@ pub fn info(ctx: &Context, f: FormatArg) -> Res<()> {
         ("log_bytes", n(log_bytes)),
         ("next_seq", n(st.next_seq)),
         ("last_system_time", ots(st.last_system_time)),
-        ("batch_ids", n(cp.batch_ids.len())),
+        ("batch_ids", n(st.batch_ids.iter().count())),
         ("catalog_changes", n(st.catalog_log.len())),
     ];
     for (k, v) in kv {
@@ -479,7 +478,7 @@ pub fn verify(ctx: &Context) -> Res<()> {
         )),
         Ok(db) => {
             // The batch ids the engine serves are exactly those the log records.
-            let mut folded = state.to_checkpoint().batch_ids;
+            let mut folded: Vec<String> = state.batch_ids.iter().cloned().collect();
             folded.sort();
             match muninn_core::Database::snapshot(&db) {
                 Ok(snap) if snap.batch_ids() != folded => problems

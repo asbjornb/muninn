@@ -280,7 +280,8 @@ impl BatchIds {
         }
     }
 
-    fn iter(&self) -> impl Iterator<Item = &String> {
+    /// Every batch id.
+    pub fn iter(&self) -> impl Iterator<Item = &String> {
         self.chunks.iter().flat_map(|c| c.iter())
     }
 }

@@ -42,7 +42,7 @@ impl<S> EngineSnapshot<S> {
 
     /// Every batch id committed as of this snapshot (SPEC §4.4), sorted.
     pub fn batch_ids(&self) -> Vec<String> {
-        let mut ids = self.state.to_checkpoint().batch_ids;
+        let mut ids: Vec<String> = self.state.batch_ids.iter().cloned().collect();
         ids.sort();
         ids
     }

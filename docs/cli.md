@@ -192,7 +192,7 @@ line. Failures print `{"error": "<code>", "message": ...}` and make the exit cod
 Writes go into the commit log first (the *memtable*, decision 0009): each `write` (and
 each chunk of an import) is one durable log entry holding its rows. They are moved into
 segment files by a flush — automatically once enough rows collect, or by `compact`. (A
-write of more than 100 000 rows is written to segment files directly.)
+write storing more than 20 000 rows is written to segment files directly.)
 
 - `compact [--table T]` flushes the memtable into segment files, then merges, per
   partition, the segments whose versions became known (on the table's default clock) in

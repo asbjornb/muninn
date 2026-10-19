@@ -61,9 +61,9 @@ The leader does, per batch in queue order: the batch-id check (committed ids and
 batches of the group), deduplication (against stored versions — files and memtable — and
 the rows kept by earlier batches of the group), `system_time = max(c, last + 1µs)` and
 consecutive seqs, then encodes one inline segment per touched partition for the whole
-group and commits. A group whose stored rows exceed `inline_max_rows` (bulk loads) is
-written as ordinary segment files instead (in parallel threads), in the same one-entry
-commit.
+group and commits. The rows of a batch that stores more than `inline_max_rows` (20 000 by
+default: a bulk load) go to ordinary segment files instead, written in parallel threads
+before the entry, in the same one-entry commit.
 
 ### Memtable = the live inline segments
 The state lists inline segments like file segments (same statistics, same partitions), and
@@ -82,16 +82,23 @@ segments, atomically. The versions are the same before and after, so no query re
 change (SPEC §7.2); the entry is validated like a compaction (per partition: equal row
 counts and seq hull). Flushes run
 
-- in a background thread (default) when the memtable holds `flush_rows` rows or
-  `flush_segments` inline segments, or its oldest segment is `flush_age` old;
+- in a background thread (default) when the memtable holds `flush_rows` rows (200 000)
+  or `flush_segments` inline segments (2 048), or its oldest segment is `flush_age` old
+  (60 s) — only in a process that has written: an engine that only reads never commits
+  anything, so backtest readers cannot conflict with the writer;
 - synchronously in a writer when the memtable exceeds `memtable_limit_rows`
   (back-pressure when flushing cannot keep up), or at the flush thresholds when the
   background thread is off;
-- on `Engine::flush()` (and before CLI compaction).
+- on `Engine::flush()` (and before CLI and Python compaction).
 
 Compaction ignores inline segments. A flush is a commit like any other: if another
 process flushed or compacted meanwhile, it conflicts and retries later; its files become
-orphans for GC.
+orphans for GC. GC does not run during a flush of its own process (the flush's files are
+not referenced until its entry commits; with a zero grace period GC would delete them).
+
+Checkpoints hold the memtable, so the background thread writes them off the commit path
+and flushes first when the memtable is more than half way to `flush_rows`: checkpoints
+then rarely copy many memtable rows.
 
 ### Ingest process and API
 The ingest process is one `Engine` shared by all producer threads (`Arc<Engine>`):

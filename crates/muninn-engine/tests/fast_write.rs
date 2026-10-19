@@ -977,3 +977,55 @@ proptest! {
         run_differential(Arc::new(MemoryStore::new()), o, &ops)?;
     }
 }
+
+/// A process that only reads never flushes (or commits anything else) in the
+/// background, whatever its thresholds: flushing is the writer's job.
+#[test]
+fn reading_engines_do_not_flush() {
+    let store = Arc::new(MemoryStore::new());
+    let writer = Engine::open(
+        Arc::clone(&store),
+        EngineOptions {
+            flush_rows: u64::MAX,
+            flush_segments: usize::MAX,
+            ..test_options(4, 0, false)
+        },
+    )
+    .unwrap();
+    setup(&writer);
+    for k in 0..5 {
+        writer
+            .write(&WriteBatch::new(
+                h(k),
+                vec![WriteRow::new("s0", h(k), h(k))],
+            ))
+            .unwrap();
+    }
+    let reader = Engine::open(
+        Arc::clone(&store),
+        EngineOptions {
+            flush_rows: 1,
+            flush_segments: 1,
+            flush_age: std::time::Duration::ZERO,
+            background_flush: true,
+            ..test_options(4, 0, false)
+        },
+    )
+    .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    assert_eq!(reader.memtable().flushes, 0);
+    assert_eq!(reader.memtable().rows, 5);
+    assert_eq!(reader.refresh().unwrap(), writer.version());
+    // Its first write makes it a writer: then it flushes.
+    reader
+        .write(&WriteBatch::new(
+            h(9),
+            vec![WriteRow::new("s1", h(9), h(9))],
+        ))
+        .unwrap();
+    let t = std::time::Instant::now();
+    while reader.memtable().rows > 0 && t.elapsed() < std::time::Duration::from_secs(10) {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(reader.memtable().rows, 0);
+}

@@ -73,7 +73,7 @@ pub(crate) fn flusher_loop<S: Store>(core: Arc<Core<S>>) {
             c.kick = false;
         }
         core.write_pending_checkpoint();
-        if core.flush_due(true) {
+        if core.wrote.load(Ordering::Relaxed) && core.flush_due(true) {
             // Failures are retried on the next tick (the engine reloads if it must).
             let _ = core.flush();
         }

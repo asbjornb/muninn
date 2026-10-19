@@ -31,6 +31,10 @@ Spikes that can run in parallel with step 0 (see `10-ambition.md`):
 ## 2. Single-writer ingestion
 
 - Append, idempotency, crash recovery, CSV/Parquet bulk import.
+- Done 2026-10-19 (ADR 0009): fast write path for many small writes from many sources —
+  rows in the commit log (one store write per commit), group commit, a memtable served by
+  every read, background flushes. Not done: a network ingest server (HTTP / Flight), a
+  local append-only log sink (one fsync instead of a file + directory sync per commit).
 
 ## 3. Pruning
 
