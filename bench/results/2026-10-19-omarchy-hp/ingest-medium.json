@@ -1,0 +1,3934 @@
+{
+ "scale": "medium",
+ "runs": [
+  {
+   "storage": "btrfs",
+   "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
+   "system": "muninn",
+   "dataset": "da_prices",
+   "mode": "per-batch",
+   "date": "2026-10-19",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "per-batch",
+    "writes": 30960,
+    "rows": 1808140,
+    "batches_total": 30960,
+    "rows_total": 1808140,
+    "complete": true,
+    "setup_seconds": 0.005,
+    "write_seconds": 494.063,
+    "finalize_seconds": 0.154,
+    "wall_seconds": 494.217,
+    "maintenance_seconds": 9.732,
+    "write_latency_ms": {
+     "p50": 15.995,
+     "p99": 28.053,
+     "max": 141.087,
+     "mean": 15.612
+    },
+    "bytes_on_disk": 7006614,
+    "segment_bytes": 6693617,
+    "log_bytes": 312997,
+    "files": 71,
+    "exact_system_time": true,
+    "write_fsync": {
+     "segment file": {
+      "count": 30960,
+      "seconds": 112.7
+     },
+     "segment dir": {
+      "count": 30985,
+      "seconds": 114.077
+     },
+     "log file": {
+      "count": 31332,
+      "seconds": 113.558
+     },
+     "log dir": {
+      "count": 31332,
+      "seconds": 117.642
+     },
+     "other dir": {
+      "count": 1,
+      "seconds": 0.001
+     }
+    },
+    "process_cpu_seconds": 62.398,
+    "fsync": {
+     "segment file": {
+      "count": 31072,
+      "seconds": 113.171
+     },
+     "segment dir": {
+      "count": 31186,
+      "seconds": 115.03
+     },
+     "log file": {
+      "count": 31633,
+      "seconds": 114.723
+     },
+     "log dir": {
+      "count": 31695,
+      "seconds": 119.218
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.002
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 62.66,
+    "rows_per_second": 3659,
+    "bytes_per_version": 3.88
+   }
+  },
+  {
+   "storage": "btrfs",
+   "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
+   "system": "duckdb-native",
+   "dataset": "da_prices",
+   "mode": "per-batch",
+   "date": "2026-10-19",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "per-batch",
+    "writes": 30960,
+    "rows": 1808140,
+    "batches_total": 30960,
+    "rows_total": 1808140,
+    "complete": true,
+    "write_seconds": 188.348,
+    "finalize_seconds": 0.02,
+    "wall_seconds": 188.368,
+    "write_latency_ms": {
+     "p50": 5.78,
+     "p99": 24.125,
+     "max": 90.749,
+     "mean": 6.082
+    },
+    "bytes_on_disk": 16265216,
+    "process_cpu_seconds": 168.627,
+    "fsync": {
+     "other file": {
+      "count": 30983,
+      "seconds": 110.118
+     }
+    },
+    "version": "1.5.6",
+    "notes": "DuckDB 1.5.6, threads=6, memory_limit=4096MB, layout=native, latest=argmax, grid=asof. Cold = fresh connection (DuckDB buffer pool and Parquet metadata empty); the OS page cache is not dropped (no root).",
+    "writes_per_second": 164.38,
+    "rows_per_second": 9599,
+    "bytes_per_version": 9.0
+   }
+  },
+  {
+   "storage": "btrfs",
+   "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
+   "system": "clickhouse",
+   "dataset": "da_prices",
+   "mode": "per-batch",
+   "date": "2026-10-19",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "per-batch",
+    "writes": 30960,
+    "rows": 1808140,
+    "batches_total": 30960,
+    "rows_total": 1808140,
+    "complete": true,
+    "write_seconds": 74.362,
+    "finalize_seconds": 0.32,
+    "wall_seconds": 74.681,
+    "write_latency_ms": {
+     "p50": 2.25,
+     "p99": 4.489,
+     "max": 21.194,
+     "mean": 2.4
+    },
+    "bytes_on_disk": 6337737,
+    "active_parts_after_writes": 9,
+    "process_cpu_seconds": 24.248,
+    "fsync": null,
+    "version": "26.7.34.3",
+    "notes": "ClickHouse server (official static binary), max_threads=6, max_memory_usage=4096MB, MergeTree, query cache off. Cold = SYSTEM DROP MARK/UNCOMPRESSED/MMAP/QUERY CACHE (OS page cache not dropped).",
+    "writes_per_second": 416.34,
+    "rows_per_second": 24212,
+    "bytes_per_version": 3.51
+   }
+  },
+  {
+   "storage": "btrfs",
+   "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
+   "system": "clickhouse-fsync",
+   "dataset": "da_prices",
+   "mode": "per-batch",
+   "date": "2026-10-19",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "per-batch",
+    "writes": 30960,
+    "rows": 1808140,
+    "batches_total": 30960,
+    "rows_total": 1808140,
+    "complete": true,
+    "write_seconds": 766.707,
+    "finalize_seconds": 0.301,
+    "wall_seconds": 767.008,
+    "write_latency_ms": {
+     "p50": 23.723,
+     "p99": 65.253,
+     "max": 526.645,
+     "mean": 24.762
+    },
+    "bytes_on_disk": 6337663,
+    "active_parts_after_writes": 5,
+    "process_cpu_seconds": 37.462,
+    "fsync": null,
+    "version": "26.7.34.3",
+    "notes": "ClickHouse server (official static binary), max_threads=6, max_memory_usage=4096MB, MergeTree, query cache off. Cold = SYSTEM DROP MARK/UNCOMPRESSED/MMAP/QUERY CACHE (OS page cache not dropped). Table setting fsync_after_insert=1, fsync_part_directory=1.",
+    "writes_per_second": 40.38,
+    "rows_per_second": 2357,
+    "bytes_per_version": 3.51
+   }
+  },
+  {
+   "storage": "btrfs",
+   "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
+   "system": "muninn",
+   "dataset": "da_prices",
+   "mode": "bulk",
+   "date": "2026-10-19",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "bulk",
+    "writes": 2,
+    "rows": 1808140,
+    "batches_total": 30960,
+    "rows_total": 1808140,
+    "complete": true,
+    "setup_seconds": 0.012,
+    "write_seconds": 2.964,
+    "finalize_seconds": 0.048,
+    "wall_seconds": 3.012,
+    "maintenance_seconds": 0.0,
+    "write_latency_ms": {
+     "p50": 1475.241,
+     "p99": 1765.852,
+     "max": 1771.783,
+     "mean": 1475.241
+    },
+    "bytes_on_disk": 6484897,
+    "segment_bytes": 6449277,
+    "log_bytes": 35620,
+    "files": 32,
+    "exact_system_time": false,
+    "write_fsync": {
+     "segment file": {
+      "count": 25,
+      "seconds": 0.026
+     },
+     "segment dir": {
+      "count": 50,
+      "seconds": 0.036
+     },
+     "log file": {
+      "count": 2,
+      "seconds": 0.001
+     },
+     "log dir": {
+      "count": 2,
+      "seconds": 0.001
+     },
+     "other dir": {
+      "count": 1,
+      "seconds": 0.001
+     }
+    },
+    "process_cpu_seconds": 3.43,
+    "fsync": {
+     "segment file": {
+      "count": 26,
+      "seconds": 0.027
+     },
+     "segment dir": {
+      "count": 52,
+      "seconds": 0.037
+     },
+     "log file": {
+      "count": 8,
+      "seconds": 0.006
+     },
+     "log dir": {
+      "count": 8,
+      "seconds": 0.005
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.002
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 0.67,
+    "rows_per_second": 600312,
+    "bytes_per_version": 3.59
+   }
+  },
+  {
+   "storage": "btrfs",
+   "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
+   "system": "muninn-100k",
+   "dataset": "da_prices",
+   "mode": "bulk",
+   "date": "2026-10-19",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "bulk",
+    "writes": 19,
+    "rows": 1808140,
+    "batches_total": 30960,
+    "rows_total": 1808140,
+    "complete": true,
+    "setup_seconds": 0.006,
+    "write_seconds": 1.916,
+    "finalize_seconds": 0.526,
+    "wall_seconds": 2.443,
+    "maintenance_seconds": 0.0,
+    "write_latency_ms": {
+     "p50": 104.56,
+     "p99": 113.703,
+     "max": 114.301,
+     "mean": 100.498
+    },
+    "bytes_on_disk": 6518936,
+    "segment_bytes": 6460884,
+    "log_bytes": 58052,
+    "files": 64,
+    "exact_system_time": false,
+    "write_fsync": {
+     "segment file": {
+      "count": 43,
+      "seconds": 0.05
+     },
+     "segment dir": {
+      "count": 68,
+      "seconds": 0.043
+     },
+     "log file": {
+      "count": 19,
+      "seconds": 0.013
+     },
+     "log dir": {
+      "count": 19,
+      "seconds": 0.012
+     },
+     "other dir": {
+      "count": 1,
+      "seconds": 0.001
+     }
+    },
+    "process_cpu_seconds": 2.681,
+    "fsync": {
+     "segment file": {
+      "count": 58,
+      "seconds": 0.066
+     },
+     "segment dir": {
+      "count": 98,
+      "seconds": 0.062
+     },
+     "log file": {
+      "count": 39,
+      "seconds": 0.027
+     },
+     "log dir": {
+      "count": 39,
+      "seconds": 0.025
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.003
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 100,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 9.92,
+    "rows_per_second": 740131,
+    "bytes_per_version": 3.61
+   }
+  },
+  {
+   "storage": "btrfs",
+   "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
+   "system": "duckdb-native",
+   "dataset": "da_prices",
+   "mode": "bulk",
+   "date": "2026-10-19",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "bulk",
+    "writes": 1,
+    "rows": 1808140,
+    "batches_total": null,
+    "rows_total": 1808140,
+    "complete": true,
+    "write_seconds": 0.397,
+    "finalize_seconds": 0.0,
+    "wall_seconds": 0.397,
+    "write_latency_ms": null,
+    "bytes_on_disk": 18362368,
+    "process_cpu_seconds": 1.012,
+    "fsync": {
+     "other file": {
+      "count": 6,
+      "seconds": 0.016
+     }
+    },
+    "version": "1.5.6",
+    "notes": "DuckDB 1.5.6, threads=6, memory_limit=4096MB, layout=native, latest=argmax, grid=asof. Cold = fresh connection (DuckDB buffer pool and Parquet metadata empty); the OS page cache is not dropped (no root).",
+    "writes_per_second": 2.52,
+    "rows_per_second": 4554509,
+    "bytes_per_version": 10.16
+   }
+  },
+  {
+   "storage": "btrfs",
+   "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
+   "system": "clickhouse",
+   "dataset": "da_prices",
+   "mode": "bulk",
+   "date": "2026-10-19",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "bulk",
+    "writes": 1,
+    "rows": 1808140,
+    "batches_total": null,
+    "rows_total": 1808140,
+    "complete": true,
+    "write_seconds": 0.714,
+    "finalize_seconds": 0.0,
+    "wall_seconds": 0.714,
+    "write_latency_ms": null,
+    "bytes_on_disk": 6348253,
+    "process_cpu_seconds": 0.034,
+    "fsync": null,
+    "version": "26.7.34.3",
+    "notes": "ClickHouse server (official static binary), max_threads=6, max_memory_usage=4096MB, MergeTree, query cache off. Cold = SYSTEM DROP MARK/UNCOMPRESSED/MMAP/QUERY CACHE (OS page cache not dropped).",
+    "writes_per_second": 1.4,
+    "rows_per_second": 2532409,
+    "bytes_per_version": 3.51
+   }
+  },
+  {
+   "storage": "btrfs",
+   "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
+   "system": "clickhouse-fsync",
+   "dataset": "da_prices",
+   "mode": "bulk",
+   "date": "2026-10-19",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "bulk",
+    "writes": 1,
+    "rows": 1808140,
+    "batches_total": null,
+    "rows_total": 1808140,
+    "complete": true,
+    "write_seconds": 0.694,
+    "finalize_seconds": 0.0,
+    "wall_seconds": 0.694,
+    "write_latency_ms": null,
+    "bytes_on_disk": 6348253,
+    "process_cpu_seconds": 0.017,
+    "fsync": null,
+    "version": "26.7.34.3",
+    "notes": "ClickHouse server (official static binary), max_threads=6, max_memory_usage=4096MB, MergeTree, query cache off. Cold = SYSTEM DROP MARK/UNCOMPRESSED/MMAP/QUERY CACHE (OS page cache not dropped). Table setting fsync_after_insert=1, fsync_part_directory=1.",
+    "writes_per_second": 1.44,
+    "rows_per_second": 2605389,
+    "bytes_per_version": 3.51
+   }
+  },
+  {
+   "storage": "btrfs",
+   "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
+   "system": "muninn",
+   "dataset": "forecasts",
+   "mode": "per-batch",
+   "date": "2026-10-19",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "per-batch",
+    "writes": 26030,
+    "rows": 24975472,
+    "batches_total": 26030,
+    "rows_total": 24975472,
+    "complete": true,
+    "setup_seconds": 0.014,
+    "write_seconds": 2099.315,
+    "finalize_seconds": 0.143,
+    "wall_seconds": 2099.457,
+    "maintenance_seconds": 114.991,
+    "write_latency_ms": {
+     "p50": 98.081,
+     "p99": 134.885,
+     "max": 429.518,
+     "mean": 76.179
+    },
+    "bytes_on_disk": 78854923,
+    "segment_bytes": 74542139,
+    "log_bytes": 4312784,
+    "files": 4437,
+    "exact_system_time": true,
+    "write_fsync": {
+     "segment file": {
+      "count": 285109,
+      "seconds": 809.6
+     },
+     "segment dir": {
+      "count": 285485,
+      "seconds": 849.499
+     },
+     "log file": {
+      "count": 26190,
+      "seconds": 77.533
+     },
+     "log dir": {
+      "count": 26190,
+      "seconds": 82.325
+     },
+     "other dir": {
+      "count": 1,
+      "seconds": 0.001
+     }
+    },
+    "process_cpu_seconds": 417.379,
+    "fsync": {
+     "segment file": {
+      "count": 289858,
+      "seconds": 826.743
+     },
+     "segment dir": {
+      "count": 291169,
+      "seconds": 871.646
+     },
+     "log file": {
+      "count": 31119,
+      "seconds": 95.631
+     },
+     "log dir": {
+      "count": 31172,
+      "seconds": 102.647
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.01
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 12.4,
+    "rows_per_second": 11896,
+    "bytes_per_version": 3.16
+   }
+  },
+  {
+   "storage": "btrfs",
+   "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
+   "system": "duckdb-native",
+   "dataset": "forecasts",
+   "mode": "per-batch",
+   "date": "2026-10-19",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "per-batch",
+    "writes": 26030,
+    "rows": 24975472,
+    "batches_total": 26030,
+    "rows_total": 24975472,
+    "complete": true,
+    "write_seconds": 161.912,
+    "finalize_seconds": 0.092,
+    "wall_seconds": 162.004,
+    "write_latency_ms": {
+     "p50": 6.584,
+     "p99": 11.787,
+     "max": 111.384,
+     "mean": 6.215
+    },
+    "bytes_on_disk": 217067520,
+    "process_cpu_seconds": 175.606,
+    "fsync": {
+     "other file": {
+      "count": 26308,
+      "seconds": 97.414
+     }
+    },
+    "version": "1.5.6",
+    "notes": "DuckDB 1.5.6, threads=6, memory_limit=4096MB, layout=native, latest=argmax, grid=asof. Cold = fresh connection (DuckDB buffer pool and Parquet metadata empty); the OS page cache is not dropped (no root).",
+    "writes_per_second": 160.77,
+    "rows_per_second": 154166,
+    "bytes_per_version": 8.69
+   }
+  },
+  {
+   "storage": "btrfs",
+   "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
+   "system": "clickhouse",
+   "dataset": "forecasts",
+   "mode": "per-batch",
+   "date": "2026-10-19",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "per-batch",
+    "writes": 26030,
+    "rows": 24975472,
+    "batches_total": 26030,
+    "rows_total": 24975472,
+    "complete": true,
+    "write_seconds": 89.812,
+    "finalize_seconds": 8.692,
+    "wall_seconds": 98.504,
+    "write_latency_ms": {
+     "p50": 3.067,
+     "p99": 8.559,
+     "max": 30.862,
+     "mean": 3.448
+    },
+    "bytes_on_disk": 75962218,
+    "active_parts_after_writes": 12,
+    "process_cpu_seconds": 34.015,
+    "fsync": null,
+    "version": "26.7.34.3",
+    "notes": "ClickHouse server (official static binary), max_threads=6, max_memory_usage=4096MB, MergeTree, query cache off. Cold = SYSTEM DROP MARK/UNCOMPRESSED/MMAP/QUERY CACHE (OS page cache not dropped).",
+    "writes_per_second": 289.83,
+    "rows_per_second": 253548,
+    "bytes_per_version": 3.04
+   }
+  },
+  {
+   "storage": "btrfs",
+   "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
+   "system": "clickhouse-fsync",
+   "dataset": "forecasts",
+   "mode": "per-batch",
+   "date": "2026-10-19",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "per-batch",
+    "writes": 26030,
+    "rows": 24975472,
+    "batches_total": 26030,
+    "rows_total": 24975472,
+    "complete": true,
+    "write_seconds": 641.055,
+    "finalize_seconds": 3.624,
+    "wall_seconds": 644.679,
+    "write_latency_ms": {
+     "p50": 25.92,
+     "p99": 41.313,
+     "max": 178.641,
+     "mean": 24.626
+    },
+    "bytes_on_disk": 75962319,
+    "active_parts_after_writes": 7,
+    "process_cpu_seconds": 35.236,
+    "fsync": null,
+    "version": "26.7.34.3",
+    "notes": "ClickHouse server (official static binary), max_threads=6, max_memory_usage=4096MB, MergeTree, query cache off. Cold = SYSTEM DROP MARK/UNCOMPRESSED/MMAP/QUERY CACHE (OS page cache not dropped). Table setting fsync_after_insert=1, fsync_part_directory=1.",
+    "writes_per_second": 40.6,
+    "rows_per_second": 38741,
+    "bytes_per_version": 3.04
+   }
+  },
+  {
+   "storage": "btrfs",
+   "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
+   "system": "muninn",
+   "dataset": "forecasts",
+   "mode": "bulk",
+   "date": "2026-10-19",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "bulk",
+    "writes": 25,
+    "rows": 24975472,
+    "batches_total": 26030,
+    "rows_total": 24975472,
+    "complete": true,
+    "setup_seconds": 0.008,
+    "write_seconds": 60.428,
+    "finalize_seconds": 0.048,
+    "wall_seconds": 60.475,
+    "maintenance_seconds": 0.0,
+    "write_latency_ms": {
+     "p50": 2394.789,
+     "p99": 2783.856,
+     "max": 2856.38,
+     "mean": 2416.489
+    },
+    "bytes_on_disk": 68281921,
+    "segment_bytes": 67736305,
+    "log_bytes": 545616,
+    "files": 666,
+    "exact_system_time": false,
+    "write_fsync": {
+     "segment file": {
+      "count": 636,
+      "seconds": 0.699
+     },
+     "segment dir": {
+      "count": 1012,
+      "seconds": 0.667
+     },
+     "log file": {
+      "count": 25,
+      "seconds": 0.019
+     },
+     "log dir": {
+      "count": 25,
+      "seconds": 0.015
+     },
+     "other dir": {
+      "count": 1,
+      "seconds": 0.001
+     }
+    },
+    "process_cpu_seconds": 66.044,
+    "fsync": {
+     "segment file": {
+      "count": 637,
+      "seconds": 0.7
+     },
+     "segment dir": {
+      "count": 1014,
+      "seconds": 0.669
+     },
+     "log file": {
+      "count": 31,
+      "seconds": 0.025
+     },
+     "log dir": {
+      "count": 31,
+      "seconds": 0.019
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.002
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 0.41,
+    "rows_per_second": 412988,
+    "bytes_per_version": 2.73
+   }
+  },
+  {
+   "storage": "btrfs",
+   "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
+   "system": "muninn-100k",
+   "dataset": "forecasts",
+   "mode": "bulk",
+   "date": "2026-10-19",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "bulk",
+    "writes": 250,
+    "rows": 24975472,
+    "batches_total": 26030,
+    "rows_total": 24975472,
+    "complete": true,
+    "setup_seconds": 0.005,
+    "write_seconds": 35.713,
+    "finalize_seconds": 0.089,
+    "wall_seconds": 35.802,
+    "maintenance_seconds": 0.0,
+    "write_latency_ms": {
+     "p50": 142.983,
+     "p99": 153.669,
+     "max": 161.359,
+     "mean": 142.777
+    },
+    "bytes_on_disk": 73176386,
+    "segment_bytes": 70534999,
+    "log_bytes": 2641387,
+    "files": 3159,
+    "exact_system_time": false,
+    "write_fsync": {
+     "segment file": {
+      "count": 3101,
+      "seconds": 2.611
+     },
+     "segment dir": {
+      "count": 3477,
+      "seconds": 2.234
+     },
+     "log file": {
+      "count": 254,
+      "seconds": 0.205
+     },
+     "log dir": {
+      "count": 254,
+      "seconds": 0.184
+     },
+     "other dir": {
+      "count": 1,
+      "seconds": 0.001
+     }
+    },
+    "process_cpu_seconds": 36.93,
+    "fsync": {
+     "segment file": {
+      "count": 3107,
+      "seconds": 2.621
+     },
+     "segment dir": {
+      "count": 3489,
+      "seconds": 2.244
+     },
+     "log file": {
+      "count": 266,
+      "seconds": 0.215
+     },
+     "log dir": {
+      "count": 267,
+      "seconds": 0.196
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.002
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 100,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 7.0,
+    "rows_per_second": 697600,
+    "bytes_per_version": 2.93
+   }
+  },
+  {
+   "storage": "btrfs",
+   "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
+   "system": "duckdb-native",
+   "dataset": "forecasts",
+   "mode": "bulk",
+   "date": "2026-10-19",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "bulk",
+    "writes": 1,
+    "rows": 24975472,
+    "batches_total": null,
+    "rows_total": 24975472,
+    "complete": true,
+    "write_seconds": 4.865,
+    "finalize_seconds": 0.0,
+    "wall_seconds": 4.865,
+    "write_latency_ms": null,
+    "bytes_on_disk": 595603456,
+    "process_cpu_seconds": 25.902,
+    "fsync": {
+     "other file": {
+      "count": 6,
+      "seconds": 0.034
+     }
+    },
+    "version": "1.5.6",
+    "notes": "DuckDB 1.5.6, threads=6, memory_limit=4096MB, layout=native, latest=argmax, grid=asof. Cold = fresh connection (DuckDB buffer pool and Parquet metadata empty); the OS page cache is not dropped (no root).",
+    "writes_per_second": 0.21,
+    "rows_per_second": 5133704,
+    "bytes_per_version": 23.85
+   }
+  },
+  {
+   "storage": "btrfs",
+   "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
+   "system": "clickhouse",
+   "dataset": "forecasts",
+   "mode": "bulk",
+   "date": "2026-10-19",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "bulk",
+    "writes": 1,
+    "rows": 24975472,
+    "batches_total": null,
+    "rows_total": 24975472,
+    "complete": true,
+    "write_seconds": 9.182,
+    "finalize_seconds": 0.0,
+    "wall_seconds": 9.182,
+    "write_latency_ms": null,
+    "bytes_on_disk": 74636527,
+    "process_cpu_seconds": 0.035,
+    "fsync": null,
+    "version": "26.7.34.3",
+    "notes": "ClickHouse server (official static binary), max_threads=6, max_memory_usage=4096MB, MergeTree, query cache off. Cold = SYSTEM DROP MARK/UNCOMPRESSED/MMAP/QUERY CACHE (OS page cache not dropped).",
+    "writes_per_second": 0.11,
+    "rows_per_second": 2720047,
+    "bytes_per_version": 2.99
+   }
+  },
+  {
+   "storage": "btrfs",
+   "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
+   "system": "clickhouse-fsync",
+   "dataset": "forecasts",
+   "mode": "bulk",
+   "date": "2026-10-19",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "bulk",
+    "writes": 1,
+    "rows": 24975472,
+    "batches_total": null,
+    "rows_total": 24975472,
+    "complete": true,
+    "write_seconds": 9.423,
+    "finalize_seconds": 0.0,
+    "wall_seconds": 9.423,
+    "write_latency_ms": null,
+    "bytes_on_disk": 74636523,
+    "process_cpu_seconds": 0.018,
+    "fsync": null,
+    "version": "26.7.34.3",
+    "notes": "ClickHouse server (official static binary), max_threads=6, max_memory_usage=4096MB, MergeTree, query cache off. Cold = SYSTEM DROP MARK/UNCOMPRESSED/MMAP/QUERY CACHE (OS page cache not dropped). Table setting fsync_after_insert=1, fsync_part_directory=1.",
+    "writes_per_second": 0.11,
+    "rows_per_second": 2650480,
+    "bytes_per_version": 2.99
+   }
+  },
+  {
+   "storage": "btrfs",
+   "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
+   "system": "muninn",
+   "dataset": "settlement",
+   "mode": "per-batch",
+   "date": "2026-10-19",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "per-batch",
+    "writes": 40000,
+    "rows": 3840000,
+    "batches_total": 40000,
+    "rows_total": 3840000,
+    "complete": true,
+    "setup_seconds": 0.006,
+    "write_seconds": 579.473,
+    "finalize_seconds": 0.001,
+    "wall_seconds": 579.474,
+    "maintenance_seconds": 14.906,
+    "write_latency_ms": {
+     "p50": 15.534,
+     "p99": 22.434,
+     "max": 43.272,
+     "mean": 14.091
+    },
+    "bytes_on_disk": 14211457,
+    "segment_bytes": 13876068,
+    "log_bytes": 335389,
+    "files": 125,
+    "exact_system_time": true,
+    "write_fsync": {
+     "segment file": {
+      "count": 40000,
+      "seconds": 129.734
+     },
+     "segment dir": {
+      "count": 40013,
+      "seconds": 131.864
+     },
+     "log file": {
+      "count": 40480,
+      "seconds": 130.737
+     },
+     "log dir": {
+      "count": 40480,
+      "seconds": 136.297
+     },
+     "other dir": {
+      "count": 1,
+      "seconds": 0.001
+     }
+    },
+    "process_cpu_seconds": 89.626,
+    "fsync": {
+     "segment file": {
+      "count": 40127,
+      "seconds": 130.219
+     },
+     "segment dir": {
+      "count": 40256,
+      "seconds": 132.896
+     },
+     "log file": {
+      "count": 40850,
+      "seconds": 131.98
+     },
+     "log dir": {
+      "count": 40930,
+      "seconds": 138.047
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.003
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 69.03,
+    "rows_per_second": 6627,
+    "bytes_per_version": 3.7
+   }
+  },
+  {
+   "storage": "btrfs",
+   "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
+   "system": "duckdb-native",
+   "dataset": "settlement",
+   "mode": "per-batch",
+   "date": "2026-10-19",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "per-batch",
+    "writes": 40000,
+    "rows": 3840000,
+    "batches_total": 40000,
+    "rows_total": 3840000,
+    "complete": true,
+    "write_seconds": 196.076,
+    "finalize_seconds": 0.074,
+    "wall_seconds": 196.15,
+    "write_latency_ms": {
+     "p50": 5.66,
+     "p99": 7.276,
+     "max": 133.698,
+     "mean": 4.9
+    },
+    "bytes_on_disk": 36974592,
+    "process_cpu_seconds": 192.968,
+    "fsync": {
+     "other file": {
+      "count": 40044,
+      "seconds": 119.366
+     }
+    },
+    "version": "1.5.6",
+    "notes": "DuckDB 1.5.6, threads=6, memory_limit=4096MB, layout=native, latest=argmax, grid=asof. Cold = fresh connection (DuckDB buffer pool and Parquet metadata empty); the OS page cache is not dropped (no root).",
+    "writes_per_second": 204.0,
+    "rows_per_second": 19577,
+    "bytes_per_version": 9.63
+   }
+  },
+  {
+   "storage": "btrfs",
+   "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
+   "system": "clickhouse",
+   "dataset": "settlement",
+   "mode": "per-batch",
+   "date": "2026-10-19",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "per-batch",
+    "writes": 40000,
+    "rows": 3840000,
+    "batches_total": 40000,
+    "rows_total": 3840000,
+    "complete": true,
+    "write_seconds": 102.159,
+    "finalize_seconds": 0.818,
+    "wall_seconds": 102.977,
+    "write_latency_ms": {
+     "p50": 2.384,
+     "p99": 5.088,
+     "max": 18.684,
+     "mean": 2.553
+    },
+    "bytes_on_disk": 13269493,
+    "active_parts_after_writes": 6,
+    "process_cpu_seconds": 32.115,
+    "fsync": null,
+    "version": "26.7.34.3",
+    "notes": "ClickHouse server (official static binary), max_threads=6, max_memory_usage=4096MB, MergeTree, query cache off. Cold = SYSTEM DROP MARK/UNCOMPRESSED/MMAP/QUERY CACHE (OS page cache not dropped).",
+    "writes_per_second": 391.55,
+    "rows_per_second": 37290,
+    "bytes_per_version": 3.46
+   }
+  },
+  {
+   "storage": "btrfs",
+   "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
+   "system": "clickhouse-fsync",
+   "dataset": "settlement",
+   "mode": "per-batch",
+   "date": "2026-10-19",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "per-batch",
+    "writes": 40000,
+    "rows": 3840000,
+    "batches_total": 40000,
+    "rows_total": 3840000,
+    "complete": true,
+    "write_seconds": 889.132,
+    "finalize_seconds": 0.843,
+    "wall_seconds": 889.974,
+    "write_latency_ms": {
+     "p50": 22.457,
+     "p99": 41.104,
+     "max": 353.159,
+     "mean": 22.227
+    },
+    "bytes_on_disk": 13263979,
+    "active_parts_after_writes": 6,
+    "process_cpu_seconds": 44.552,
+    "fsync": null,
+    "version": "26.7.34.3",
+    "notes": "ClickHouse server (official static binary), max_threads=6, max_memory_usage=4096MB, MergeTree, query cache off. Cold = SYSTEM DROP MARK/UNCOMPRESSED/MMAP/QUERY CACHE (OS page cache not dropped). Table setting fsync_after_insert=1, fsync_part_directory=1.",
+    "writes_per_second": 44.99,
+    "rows_per_second": 4315,
+    "bytes_per_version": 3.45
+   }
+  },
+  {
+   "storage": "btrfs",
+   "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
+   "system": "muninn",
+   "dataset": "settlement",
+   "mode": "bulk",
+   "date": "2026-10-19",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "bulk",
+    "writes": 4,
+    "rows": 3840000,
+    "batches_total": 40000,
+    "rows_total": 3840000,
+    "complete": true,
+    "setup_seconds": 0.037,
+    "write_seconds": 5.709,
+    "finalize_seconds": 0.144,
+    "wall_seconds": 5.853,
+    "maintenance_seconds": 0.0,
+    "write_latency_ms": {
+     "p50": 1403.297,
+     "p99": 1674.197,
+     "max": 1682.343,
+     "mean": 1417.942
+    },
+    "bytes_on_disk": 13247293,
+    "segment_bytes": 13212569,
+    "log_bytes": 34724,
+    "files": 31,
+    "exact_system_time": false,
+    "write_fsync": {
+     "segment file": {
+      "count": 22,
+      "seconds": 0.138
+     },
+     "segment dir": {
+      "count": 35,
+      "seconds": 0.14
+     },
+     "log file": {
+      "count": 4,
+      "seconds": 0.016
+     },
+     "log dir": {
+      "count": 4,
+      "seconds": 0.016
+     },
+     "other dir": {
+      "count": 1,
+      "seconds": 0.01
+     }
+    },
+    "process_cpu_seconds": 6.326,
+    "fsync": {
+     "segment file": {
+      "count": 23,
+      "seconds": 0.149
+     },
+     "segment dir": {
+      "count": 37,
+      "seconds": 0.148
+     },
+     "log file": {
+      "count": 10,
+      "seconds": 0.041
+     },
+     "log dir": {
+      "count": 10,
+      "seconds": 0.039
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.033
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 0.7,
+    "rows_per_second": 656074,
+    "bytes_per_version": 3.45
+   }
+  },
+  {
+   "storage": "btrfs",
+   "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
+   "system": "muninn-100k",
+   "dataset": "settlement",
+   "mode": "bulk",
+   "date": "2026-10-19",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "bulk",
+    "writes": 39,
+    "rows": 3840000,
+    "batches_total": 40000,
+    "rows_total": 3840000,
+    "complete": true,
+    "setup_seconds": 0.031,
+    "write_seconds": 5.857,
+    "finalize_seconds": 1.611,
+    "wall_seconds": 7.468,
+    "maintenance_seconds": 0.0,
+    "write_latency_ms": {
+     "p50": 153.202,
+     "p99": 160.728,
+     "max": 161.414,
+     "mean": 149.312
+    },
+    "bytes_on_disk": 14022944,
+    "segment_bytes": 13934064,
+    "log_bytes": 88880,
+    "files": 102,
+    "exact_system_time": false,
+    "write_fsync": {
+     "segment file": {
+      "count": 73,
+      "seconds": 0.332
+     },
+     "segment dir": {
+      "count": 86,
+      "seconds": 0.288
+     },
+     "log file": {
+      "count": 39,
+      "seconds": 0.129
+     },
+     "log dir": {
+      "count": 39,
+      "seconds": 0.127
+     },
+     "other dir": {
+      "count": 1,
+      "seconds": 0.004
+     }
+    },
+    "process_cpu_seconds": 7.365,
+    "fsync": {
+     "segment file": {
+      "count": 99,
+      "seconds": 0.372
+     },
+     "segment dir": {
+      "count": 124,
+      "seconds": 0.313
+     },
+     "log file": {
+      "count": 70,
+      "seconds": 0.157
+     },
+     "log dir": {
+      "count": 70,
+      "seconds": 0.152
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.018
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 100,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 6.66,
+    "rows_per_second": 514194,
+    "bytes_per_version": 3.65
+   }
+  },
+  {
+   "storage": "btrfs",
+   "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
+   "system": "duckdb-native",
+   "dataset": "settlement",
+   "mode": "bulk",
+   "date": "2026-10-19",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "bulk",
+    "writes": 1,
+    "rows": 3840000,
+    "batches_total": null,
+    "rows_total": 3840000,
+    "complete": true,
+    "write_seconds": 0.677,
+    "finalize_seconds": 0.0,
+    "wall_seconds": 0.677,
+    "write_latency_ms": null,
+    "bytes_on_disk": 106704896,
+    "process_cpu_seconds": 3.188,
+    "fsync": {
+     "other file": {
+      "count": 6,
+      "seconds": 0.019
+     }
+    },
+    "version": "1.5.6",
+    "notes": "DuckDB 1.5.6, threads=6, memory_limit=4096MB, layout=native, latest=argmax, grid=asof. Cold = fresh connection (DuckDB buffer pool and Parquet metadata empty); the OS page cache is not dropped (no root).",
+    "writes_per_second": 1.48,
+    "rows_per_second": 5672083,
+    "bytes_per_version": 27.79
+   }
+  },
+  {
+   "storage": "btrfs",
+   "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
+   "system": "clickhouse",
+   "dataset": "settlement",
+   "mode": "bulk",
+   "date": "2026-10-19",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "bulk",
+    "writes": 1,
+    "rows": 3840000,
+    "batches_total": null,
+    "rows_total": 3840000,
+    "complete": true,
+    "write_seconds": 1.547,
+    "finalize_seconds": 0.0,
+    "wall_seconds": 1.547,
+    "write_latency_ms": null,
+    "bytes_on_disk": 13324514,
+    "process_cpu_seconds": 0.02,
+    "fsync": null,
+    "version": "26.7.34.3",
+    "notes": "ClickHouse server (official static binary), max_threads=6, max_memory_usage=4096MB, MergeTree, query cache off. Cold = SYSTEM DROP MARK/UNCOMPRESSED/MMAP/QUERY CACHE (OS page cache not dropped).",
+    "writes_per_second": 0.65,
+    "rows_per_second": 2482224,
+    "bytes_per_version": 3.47
+   }
+  },
+  {
+   "storage": "btrfs",
+   "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
+   "system": "clickhouse-fsync",
+   "dataset": "settlement",
+   "mode": "bulk",
+   "date": "2026-10-19",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "bulk",
+    "writes": 1,
+    "rows": 3840000,
+    "batches_total": null,
+    "rows_total": 3840000,
+    "complete": true,
+    "write_seconds": 1.579,
+    "finalize_seconds": 0.0,
+    "wall_seconds": 1.579,
+    "write_latency_ms": null,
+    "bytes_on_disk": 13324514,
+    "process_cpu_seconds": 0.017,
+    "fsync": null,
+    "version": "26.7.34.3",
+    "notes": "ClickHouse server (official static binary), max_threads=6, max_memory_usage=4096MB, MergeTree, query cache off. Cold = SYSTEM DROP MARK/UNCOMPRESSED/MMAP/QUERY CACHE (OS page cache not dropped). Table setting fsync_after_insert=1, fsync_part_directory=1.",
+    "writes_per_second": 0.63,
+    "rows_per_second": 2431919,
+    "bytes_per_version": 3.47
+   }
+  },
+  {
+   "storage": "btrfs",
+   "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
+   "system": "muninn",
+   "dataset": "sparse",
+   "mode": "per-batch",
+   "date": "2026-10-19",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "per-batch",
+    "writes": 10000,
+    "rows": 10000,
+    "batches_total": 3246137,
+    "rows_total": 3246139,
+    "complete": false,
+    "setup_seconds": 2.215,
+    "write_seconds": 64.638,
+    "finalize_seconds": 0.63,
+    "wall_seconds": 65.268,
+    "maintenance_seconds": 19.764,
+    "write_latency_ms": {
+     "p50": 3.145,
+     "p99": 17.28,
+     "max": 312.682,
+     "mean": 4.252
+    },
+    "bytes_on_disk": 52830144,
+    "segment_bytes": 328375,
+    "log_bytes": 52501769,
+    "files": 508,
+    "exact_system_time": false,
+    "write_fsync": {
+     "segment file": {
+      "count": 10000,
+      "seconds": 9.063
+     },
+     "segment dir": {
+      "count": 10002,
+      "seconds": 9.528
+     },
+     "log file": {
+      "count": 10002,
+      "seconds": 9.001
+     },
+     "log dir": {
+      "count": 10002,
+      "seconds": 10.189
+     },
+     "other dir": {
+      "count": 1,
+      "seconds": 0.007
+     }
+    },
+    "process_cpu_seconds": 36.008,
+    "fsync": {
+     "segment file": {
+      "count": 10020,
+      "seconds": 9.091
+     },
+     "segment dir": {
+      "count": 10042,
+      "seconds": 9.598
+     },
+     "log file": {
+      "count": 10087,
+      "seconds": 9.271
+     },
+     "log dir": {
+      "count": 10107,
+      "seconds": 10.374
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.014
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 154.71,
+    "rows_per_second": 153,
+    "bytes_per_version": 5283.01
+   }
+  },
+  {
+   "storage": "btrfs",
+   "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
+   "system": "duckdb-native",
+   "dataset": "sparse",
+   "mode": "per-batch",
+   "date": "2026-10-19",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "per-batch",
+    "writes": 10000,
+    "rows": 10000,
+    "batches_total": 3246137,
+    "rows_total": 3246139,
+    "complete": false,
+    "write_seconds": 44.959,
+    "finalize_seconds": 0.019,
+    "wall_seconds": 44.978,
+    "write_latency_ms": {
+     "p50": 5.373,
+     "p99": 8.758,
+     "max": 29.545,
+     "mean": 4.492
+    },
+    "bytes_on_disk": 798720,
+    "process_cpu_seconds": 42.657,
+    "fsync": {
+     "other file": {
+      "count": 10005,
+      "seconds": 27.176
+     }
+    },
+    "version": "1.5.6",
+    "notes": "DuckDB 1.5.6, threads=6, memory_limit=4096MB, layout=native, latest=argmax, grid=asof. Cold = fresh connection (DuckDB buffer pool and Parquet metadata empty); the OS page cache is not dropped (no root).",
+    "writes_per_second": 222.42,
+    "rows_per_second": 222,
+    "bytes_per_version": 79.87
+   }
+  },
+  {
+   "storage": "btrfs",
+   "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
+   "system": "clickhouse",
+   "dataset": "sparse",
+   "mode": "per-batch",
+   "date": "2026-10-19",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "per-batch",
+    "writes": 10000,
+    "rows": 10000,
+    "batches_total": 3246137,
+    "rows_total": 3246139,
+    "complete": false,
+    "write_seconds": 20.507,
+    "finalize_seconds": 0.016,
+    "wall_seconds": 20.522,
+    "write_latency_ms": {
+     "p50": 1.999,
+     "p99": 2.803,
+     "max": 10.901,
+     "mean": 2.049
+    },
+    "bytes_on_disk": 338151,
+    "active_parts_after_writes": 7,
+    "process_cpu_seconds": 7.416,
+    "fsync": null,
+    "version": "26.7.34.3",
+    "notes": "ClickHouse server (official static binary), max_threads=6, max_memory_usage=4096MB, MergeTree, query cache off. Cold = SYSTEM DROP MARK/UNCOMPRESSED/MMAP/QUERY CACHE (OS page cache not dropped).",
+    "writes_per_second": 487.64,
+    "rows_per_second": 487,
+    "bytes_per_version": 33.82
+   }
+  },
+  {
+   "storage": "btrfs",
+   "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
+   "system": "clickhouse-fsync",
+   "dataset": "sparse",
+   "mode": "per-batch",
+   "date": "2026-10-19",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "per-batch",
+    "writes": 10000,
+    "rows": 10000,
+    "batches_total": 3246137,
+    "rows_total": 3246139,
+    "complete": false,
+    "write_seconds": 188.727,
+    "finalize_seconds": 0.012,
+    "wall_seconds": 188.739,
+    "write_latency_ms": {
+     "p50": 21.754,
+     "p99": 35.718,
+     "max": 132.96,
+     "mean": 18.87
+    },
+    "bytes_on_disk": 338151,
+    "active_parts_after_writes": 5,
+    "process_cpu_seconds": 10.401,
+    "fsync": null,
+    "version": "26.7.34.3",
+    "notes": "ClickHouse server (official static binary), max_threads=6, max_memory_usage=4096MB, MergeTree, query cache off. Cold = SYSTEM DROP MARK/UNCOMPRESSED/MMAP/QUERY CACHE (OS page cache not dropped). Table setting fsync_after_insert=1, fsync_part_directory=1.",
+    "writes_per_second": 52.99,
+    "rows_per_second": 53,
+    "bytes_per_version": 33.82
+   }
+  },
+  {
+   "storage": "btrfs",
+   "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
+   "system": "muninn",
+   "dataset": "sparse",
+   "mode": "bulk",
+   "date": "2026-10-19",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "bulk",
+    "writes": 4,
+    "rows": 3246139,
+    "batches_total": 3246137,
+    "rows_total": 3246139,
+    "complete": true,
+    "setup_seconds": 2.332,
+    "write_seconds": 9.027,
+    "finalize_seconds": 0.846,
+    "wall_seconds": 9.873,
+    "maintenance_seconds": 0.0,
+    "write_latency_ms": {
+     "p50": 2008.355,
+     "p99": 2129.302,
+     "max": 2132.68,
+     "mean": 1673.751
+    },
+    "bytes_on_disk": 139394123,
+    "segment_bytes": 87245023,
+    "log_bytes": 52149100,
+    "files": 33,
+    "exact_system_time": false,
+    "write_fsync": {
+     "segment file": {
+      "count": 22,
+      "seconds": 0.09
+     },
+     "segment dir": {
+      "count": 36,
+      "seconds": 0.074
+     },
+     "log file": {
+      "count": 4,
+      "seconds": 0.003
+     },
+     "log dir": {
+      "count": 4,
+      "seconds": 0.002
+     },
+     "other dir": {
+      "count": 1,
+      "seconds": 0.007
+     }
+    },
+    "process_cpu_seconds": 11.35,
+    "fsync": {
+     "segment file": {
+      "count": 25,
+      "seconds": 0.121
+     },
+     "segment dir": {
+      "count": 42,
+      "seconds": 0.078
+     },
+     "log file": {
+      "count": 14,
+      "seconds": 0.041
+     },
+     "log dir": {
+      "count": 14,
+      "seconds": 0.009
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.015
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 0.44,
+    "rows_per_second": 328790,
+    "bytes_per_version": 42.94
+   }
+  },
+  {
+   "storage": "btrfs",
+   "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
+   "system": "muninn-100k",
+   "dataset": "sparse",
+   "mode": "bulk",
+   "date": "2026-10-19",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "bulk",
+    "writes": 33,
+    "rows": 3246139,
+    "batches_total": 3246137,
+    "rows_total": 3246139,
+    "complete": true,
+    "setup_seconds": 2.195,
+    "write_seconds": 10.215,
+    "finalize_seconds": 2.7,
+    "wall_seconds": 12.915,
+    "maintenance_seconds": 0.0,
+    "write_latency_ms": {
+     "p50": 246.239,
+     "p99": 261.289,
+     "max": 261.476,
+     "mean": 242.962
+    },
+    "bytes_on_disk": 140764480,
+    "segment_bytes": 88530502,
+    "log_bytes": 52233978,
+    "files": 124,
+    "exact_system_time": false,
+    "write_fsync": {
+     "segment file": {
+      "count": 111,
+      "seconds": 0.166
+     },
+     "segment dir": {
+      "count": 125,
+      "seconds": 0.077
+     },
+     "log file": {
+      "count": 33,
+      "seconds": 0.023
+     },
+     "log dir": {
+      "count": 33,
+      "seconds": 0.021
+     },
+     "other dir": {
+      "count": 1,
+      "seconds": 0.007
+     }
+    },
+    "process_cpu_seconds": 14.19,
+    "fsync": {
+     "segment file": {
+      "count": 149,
+      "seconds": 0.25
+     },
+     "segment dir": {
+      "count": 176,
+      "seconds": 0.108
+     },
+     "log file": {
+      "count": 78,
+      "seconds": 0.08
+     },
+     "log dir": {
+      "count": 78,
+      "seconds": 0.049
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.014
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 100,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 3.23,
+    "rows_per_second": 251346,
+    "bytes_per_version": 43.36
+   }
+  },
+  {
+   "storage": "btrfs",
+   "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
+   "system": "duckdb-native",
+   "dataset": "sparse",
+   "mode": "bulk",
+   "date": "2026-10-19",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "bulk",
+    "writes": 1,
+    "rows": 3246139,
+    "batches_total": null,
+    "rows_total": 3246139,
+    "complete": true,
+    "write_seconds": 0.857,
+    "finalize_seconds": 0.0,
+    "wall_seconds": 0.857,
+    "write_latency_ms": null,
+    "bytes_on_disk": 118501376,
+    "process_cpu_seconds": 3.729,
+    "fsync": {
+     "other file": {
+      "count": 6,
+      "seconds": 0.036
+     }
+    },
+    "version": "1.5.6",
+    "notes": "DuckDB 1.5.6, threads=6, memory_limit=4096MB, layout=native, latest=argmax, grid=asof. Cold = fresh connection (DuckDB buffer pool and Parquet metadata empty); the OS page cache is not dropped (no root).",
+    "writes_per_second": 1.17,
+    "rows_per_second": 3787793,
+    "bytes_per_version": 36.51
+   }
+  },
+  {
+   "storage": "btrfs",
+   "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
+   "system": "clickhouse",
+   "dataset": "sparse",
+   "mode": "bulk",
+   "date": "2026-10-19",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "bulk",
+    "writes": 1,
+    "rows": 3246139,
+    "batches_total": null,
+    "rows_total": 3246139,
+    "complete": true,
+    "write_seconds": 3.133,
+    "finalize_seconds": 0.0,
+    "wall_seconds": 3.133,
+    "write_latency_ms": null,
+    "bytes_on_disk": 102489642,
+    "process_cpu_seconds": 0.071,
+    "fsync": null,
+    "version": "26.7.34.3",
+    "notes": "ClickHouse server (official static binary), max_threads=6, max_memory_usage=4096MB, MergeTree, query cache off. Cold = SYSTEM DROP MARK/UNCOMPRESSED/MMAP/QUERY CACHE (OS page cache not dropped).",
+    "writes_per_second": 0.32,
+    "rows_per_second": 1036112,
+    "bytes_per_version": 31.57
+   }
+  },
+  {
+   "storage": "btrfs",
+   "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
+   "system": "clickhouse-fsync",
+   "dataset": "sparse",
+   "mode": "bulk",
+   "date": "2026-10-19",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "bulk",
+    "writes": 1,
+    "rows": 3246139,
+    "batches_total": null,
+    "rows_total": 3246139,
+    "complete": true,
+    "write_seconds": 3.231,
+    "finalize_seconds": 0.0,
+    "wall_seconds": 3.231,
+    "write_latency_ms": null,
+    "bytes_on_disk": 102489642,
+    "process_cpu_seconds": 0.07,
+    "fsync": null,
+    "version": "26.7.34.3",
+    "notes": "ClickHouse server (official static binary), max_threads=6, max_memory_usage=4096MB, MergeTree, query cache off. Cold = SYSTEM DROP MARK/UNCOMPRESSED/MMAP/QUERY CACHE (OS page cache not dropped). Table setting fsync_after_insert=1, fsync_part_directory=1.",
+    "writes_per_second": 0.31,
+    "rows_per_second": 1004686,
+    "bytes_per_version": 31.57
+   }
+  },
+  {
+   "storage": "btrfs",
+   "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
+   "system": "muninn",
+   "dataset": "backfill",
+   "mode": "per-batch",
+   "date": "2026-10-19",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "per-batch",
+    "writes": 3660,
+    "rows": 2760303,
+    "batches_total": 3660,
+    "rows_total": 2760303,
+    "complete": true,
+    "setup_seconds": 0.012,
+    "write_seconds": 55.054,
+    "finalize_seconds": 1.238,
+    "wall_seconds": 56.292,
+    "maintenance_seconds": 5.554,
+    "write_latency_ms": {
+     "p50": 16.733,
+     "p99": 64.819,
+     "max": 78.924,
+     "mean": 13.498
+    },
+    "bytes_on_disk": 17364907,
+    "segment_bytes": 17223454,
+    "log_bytes": 141453,
+    "files": 86,
+    "exact_system_time": true,
+    "write_fsync": {
+     "segment file": {
+      "count": 3900,
+      "seconds": 10.452
+     },
+     "segment dir": {
+      "count": 3906,
+      "seconds": 10.346
+     },
+     "log file": {
+      "count": 3704,
+      "seconds": 9.742
+     },
+     "log dir": {
+      "count": 3704,
+      "seconds": 10.158
+     },
+     "other dir": {
+      "count": 1,
+      "seconds": 0.001
+     }
+    },
+    "process_cpu_seconds": 19.513,
+    "fsync": {
+     "segment file": {
+      "count": 3980,
+      "seconds": 10.869
+     },
+     "segment dir": {
+      "count": 4026,
+      "seconds": 10.741
+     },
+     "log file": {
+      "count": 3811,
+      "seconds": 10.081
+     },
+     "log dir": {
+      "count": 3819,
+      "seconds": 10.543
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.008
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 66.48,
+    "rows_per_second": 49035,
+    "bytes_per_version": 6.29
+   }
+  },
+  {
+   "storage": "btrfs",
+   "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
+   "system": "duckdb-native",
+   "dataset": "backfill",
+   "mode": "per-batch",
+   "date": "2026-10-19",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "per-batch",
+    "writes": 3660,
+    "rows": 2760303,
+    "batches_total": 3660,
+    "rows_total": 2760303,
+    "complete": true,
+    "write_seconds": 15.413,
+    "finalize_seconds": 0.036,
+    "wall_seconds": 15.45,
+    "write_latency_ms": {
+     "p50": 3.003,
+     "p99": 7.699,
+     "max": 58.796,
+     "mean": 4.198
+    },
+    "bytes_on_disk": 48246784,
+    "process_cpu_seconds": 17.077,
+    "fsync": {
+     "other file": {
+      "count": 3689,
+      "seconds": 7.802
+     }
+    },
+    "version": "1.5.6",
+    "notes": "DuckDB 1.5.6, threads=6, memory_limit=4096MB, layout=native, latest=argmax, grid=asof. Cold = fresh connection (DuckDB buffer pool and Parquet metadata empty); the OS page cache is not dropped (no root).",
+    "writes_per_second": 237.46,
+    "rows_per_second": 178660,
+    "bytes_per_version": 17.48
+   }
+  },
+  {
+   "storage": "btrfs",
+   "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
+   "system": "clickhouse",
+   "dataset": "backfill",
+   "mode": "per-batch",
+   "date": "2026-10-19",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "per-batch",
+    "writes": 3660,
+    "rows": 2760303,
+    "batches_total": 3660,
+    "rows_total": 2760303,
+    "complete": true,
+    "write_seconds": 9.194,
+    "finalize_seconds": 0.464,
+    "wall_seconds": 9.658,
+    "write_latency_ms": {
+     "p50": 2.425,
+     "p99": 3.867,
+     "max": 7.32,
+     "mean": 2.509
+    },
+    "bytes_on_disk": 21316576,
+    "active_parts_after_writes": 11,
+    "process_cpu_seconds": 3.466,
+    "fsync": null,
+    "version": "26.7.34.3",
+    "notes": "ClickHouse server (official static binary), max_threads=6, max_memory_usage=4096MB, MergeTree, query cache off. Cold = SYSTEM DROP MARK/UNCOMPRESSED/MMAP/QUERY CACHE (OS page cache not dropped).",
+    "writes_per_second": 398.09,
+    "rows_per_second": 285805,
+    "bytes_per_version": 7.72
+   }
+  },
+  {
+   "storage": "btrfs",
+   "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
+   "system": "clickhouse-fsync",
+   "dataset": "backfill",
+   "mode": "per-batch",
+   "date": "2026-10-19",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "per-batch",
+    "writes": 3660,
+    "rows": 2760303,
+    "batches_total": 3660,
+    "rows_total": 2760303,
+    "complete": true,
+    "write_seconds": 83.154,
+    "finalize_seconds": 0.453,
+    "wall_seconds": 83.607,
+    "write_latency_ms": {
+     "p50": 25.931,
+     "p99": 38.824,
+     "max": 134.649,
+     "mean": 22.715
+    },
+    "bytes_on_disk": 21316597,
+    "active_parts_after_writes": 9,
+    "process_cpu_seconds": 4.389,
+    "fsync": null,
+    "version": "26.7.34.3",
+    "notes": "ClickHouse server (official static binary), max_threads=6, max_memory_usage=4096MB, MergeTree, query cache off. Cold = SYSTEM DROP MARK/UNCOMPRESSED/MMAP/QUERY CACHE (OS page cache not dropped). Table setting fsync_after_insert=1, fsync_part_directory=1.",
+    "writes_per_second": 44.01,
+    "rows_per_second": 33015,
+    "bytes_per_version": 7.72
+   }
+  },
+  {
+   "storage": "btrfs",
+   "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
+   "system": "muninn",
+   "dataset": "backfill",
+   "mode": "bulk",
+   "date": "2026-10-19",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "bulk",
+    "writes": 3,
+    "rows": 2760303,
+    "batches_total": 3660,
+    "rows_total": 2760303,
+    "complete": true,
+    "setup_seconds": 0.032,
+    "write_seconds": 3.659,
+    "finalize_seconds": 1.16,
+    "wall_seconds": 4.819,
+    "maintenance_seconds": 0.0,
+    "write_latency_ms": {
+     "p50": 1264.427,
+     "p99": 1417.887,
+     "max": 1421.019,
+     "mean": 1208.986
+    },
+    "bytes_on_disk": 17039037,
+    "segment_bytes": 17000589,
+    "log_bytes": 38448,
+    "files": 18,
+    "exact_system_time": false,
+    "write_fsync": {
+     "segment file": {
+      "count": 15,
+      "seconds": 0.106
+     },
+     "segment dir": {
+      "count": 21,
+      "seconds": 0.089
+     },
+     "log file": {
+      "count": 3,
+      "seconds": 0.016
+     },
+     "log dir": {
+      "count": 3,
+      "seconds": 0.016
+     },
+     "other dir": {
+      "count": 1,
+      "seconds": 0.01
+     }
+    },
+    "process_cpu_seconds": 5.038,
+    "fsync": {
+     "segment file": {
+      "count": 20,
+      "seconds": 0.189
+     },
+     "segment dir": {
+      "count": 31,
+      "seconds": 0.126
+     },
+     "log file": {
+      "count": 13,
+      "seconds": 0.054
+     },
+     "log dir": {
+      "count": 13,
+      "seconds": 0.053
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.024
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 0.82,
+    "rows_per_second": 572796,
+    "bytes_per_version": 6.17
+   }
+  },
+  {
+   "storage": "btrfs",
+   "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
+   "system": "muninn-100k",
+   "dataset": "backfill",
+   "mode": "bulk",
+   "date": "2026-10-19",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "bulk",
+    "writes": 28,
+    "rows": 2760303,
+    "batches_total": 3660,
+    "rows_total": 2760303,
+    "complete": true,
+    "setup_seconds": 0.031,
+    "write_seconds": 4.371,
+    "finalize_seconds": 1.184,
+    "wall_seconds": 5.555,
+    "maintenance_seconds": 0.0,
+    "write_latency_ms": {
+     "p50": 153.542,
+     "p99": 180.305,
+     "max": 185.344,
+     "mean": 154.948
+    },
+    "bytes_on_disk": 17112023,
+    "segment_bytes": 17002199,
+    "log_bytes": 109824,
+    "files": 43,
+    "exact_system_time": false,
+    "write_fsync": {
+     "segment file": {
+      "count": 140,
+      "seconds": 0.596
+     },
+     "segment dir": {
+      "count": 146,
+      "seconds": 0.558
+     },
+     "log file": {
+      "count": 28,
+      "seconds": 0.108
+     },
+     "log dir": {
+      "count": 28,
+      "seconds": 0.115
+     },
+     "other dir": {
+      "count": 1,
+      "seconds": 0.004
+     }
+    },
+    "process_cpu_seconds": 4.701,
+    "fsync": {
+     "segment file": {
+      "count": 145,
+      "seconds": 0.653
+     },
+     "segment dir": {
+      "count": 156,
+      "seconds": 0.602
+     },
+     "log file": {
+      "count": 38,
+      "seconds": 0.148
+     },
+     "log dir": {
+      "count": 38,
+      "seconds": 0.154
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.018
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 100,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 6.41,
+    "rows_per_second": 496904,
+    "bytes_per_version": 6.2
+   }
+  },
+  {
+   "storage": "btrfs",
+   "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
+   "system": "duckdb-native",
+   "dataset": "backfill",
+   "mode": "bulk",
+   "date": "2026-10-19",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "bulk",
+    "writes": 1,
+    "rows": 2760303,
+    "batches_total": null,
+    "rows_total": 2760303,
+    "complete": true,
+    "write_seconds": 0.46,
+    "finalize_seconds": 0.0,
+    "wall_seconds": 0.46,
+    "write_latency_ms": null,
+    "bytes_on_disk": 49295360,
+    "process_cpu_seconds": 1.278,
+    "fsync": {
+     "other file": {
+      "count": 6,
+      "seconds": 0.101
+     }
+    },
+    "version": "1.5.6",
+    "notes": "DuckDB 1.5.6, threads=6, memory_limit=4096MB, layout=native, latest=argmax, grid=asof. Cold = fresh connection (DuckDB buffer pool and Parquet metadata empty); the OS page cache is not dropped (no root).",
+    "writes_per_second": 2.17,
+    "rows_per_second": 6000659,
+    "bytes_per_version": 17.86
+   }
+  },
+  {
+   "storage": "btrfs",
+   "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
+   "system": "clickhouse",
+   "dataset": "backfill",
+   "mode": "bulk",
+   "date": "2026-10-19",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "bulk",
+    "writes": 1,
+    "rows": 2760303,
+    "batches_total": null,
+    "rows_total": 2760303,
+    "complete": true,
+    "write_seconds": 1.095,
+    "finalize_seconds": 0.0,
+    "wall_seconds": 1.095,
+    "write_latency_ms": null,
+    "bytes_on_disk": 21316531,
+    "process_cpu_seconds": 0.018,
+    "fsync": null,
+    "version": "26.7.34.3",
+    "notes": "ClickHouse server (official static binary), max_threads=6, max_memory_usage=4096MB, MergeTree, query cache off. Cold = SYSTEM DROP MARK/UNCOMPRESSED/MMAP/QUERY CACHE (OS page cache not dropped).",
+    "writes_per_second": 0.91,
+    "rows_per_second": 2520825,
+    "bytes_per_version": 7.72
+   }
+  },
+  {
+   "storage": "btrfs",
+   "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work",
+   "system": "clickhouse-fsync",
+   "dataset": "backfill",
+   "mode": "bulk",
+   "date": "2026-10-19",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "bulk",
+    "writes": 1,
+    "rows": 2760303,
+    "batches_total": null,
+    "rows_total": 2760303,
+    "complete": true,
+    "write_seconds": 1.264,
+    "finalize_seconds": 0.0,
+    "wall_seconds": 1.264,
+    "write_latency_ms": null,
+    "bytes_on_disk": 21316530,
+    "process_cpu_seconds": 0.018,
+    "fsync": null,
+    "version": "26.7.34.3",
+    "notes": "ClickHouse server (official static binary), max_threads=6, max_memory_usage=4096MB, MergeTree, query cache off. Cold = SYSTEM DROP MARK/UNCOMPRESSED/MMAP/QUERY CACHE (OS page cache not dropped). Table setting fsync_after_insert=1, fsync_part_directory=1.",
+    "writes_per_second": 0.79,
+    "rows_per_second": 2183784,
+    "bytes_per_version": 7.72
+   }
+  },
+  {
+   "storage": "tmpfs",
+   "workdir": "/dev/shm/muninn-ingest",
+   "system": "muninn",
+   "dataset": "da_prices",
+   "mode": "per-batch",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "per-batch",
+    "writes": 30960,
+    "rows": 1808140,
+    "batches_total": 30960,
+    "rows_total": 1808140,
+    "complete": true,
+    "setup_seconds": 0.001,
+    "write_seconds": 9.508,
+    "finalize_seconds": 0.049,
+    "wall_seconds": 9.557,
+    "maintenance_seconds": 2.032,
+    "write_latency_ms": {
+     "p50": 0.23,
+     "p99": 0.476,
+     "max": 2.885,
+     "mean": 0.23
+    },
+    "bytes_on_disk": 7006615,
+    "segment_bytes": 6693617,
+    "log_bytes": 312998,
+    "files": 71,
+    "exact_system_time": true,
+    "write_fsync": {
+     "segment file": {
+      "count": 30960,
+      "seconds": 0.017
+     },
+     "segment dir": {
+      "count": 30985,
+      "seconds": 0.014
+     },
+     "log file": {
+      "count": 31332,
+      "seconds": 0.015
+     },
+     "log dir": {
+      "count": 31332,
+      "seconds": 0.014
+     },
+     "other dir": {
+      "count": 1,
+      "seconds": 0.0
+     }
+    },
+    "group": 1,
+    "producers": 1,
+    "calls": null,
+    "fast_write_path": false,
+    "process_cpu_seconds": 10.884,
+    "fsync": {
+     "segment file": {
+      "count": 31072,
+      "seconds": 0.017
+     },
+     "segment dir": {
+      "count": 31186,
+      "seconds": 0.014
+     },
+     "log file": {
+      "count": 31633,
+      "seconds": 0.015
+     },
+     "log dir": {
+      "count": 31695,
+      "seconds": 0.014
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.0
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 3256.21,
+    "rows_per_second": 189195,
+    "bytes_per_version": 3.88
+   }
+  },
+  {
+   "storage": "tmpfs",
+   "workdir": "/dev/shm/muninn-ingest",
+   "system": "duckdb-native",
+   "dataset": "da_prices",
+   "mode": "per-batch",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "per-batch",
+    "writes": 30960,
+    "rows": 1808140,
+    "batches_total": 30960,
+    "rows_total": 1808140,
+    "complete": true,
+    "write_seconds": 47.532,
+    "finalize_seconds": 0.006,
+    "wall_seconds": 47.537,
+    "write_latency_ms": {
+     "p50": 1.513,
+     "p99": 1.776,
+     "max": 50.394,
+     "mean": 1.534
+    },
+    "bytes_on_disk": 16265216,
+    "process_cpu_seconds": 72.028,
+    "fsync": {
+     "other file": {
+      "count": 30983,
+      "seconds": 0.021
+     }
+    },
+    "version": "1.5.6",
+    "notes": "DuckDB 1.5.6, threads=6, memory_limit=4096MB, layout=native, latest=argmax, grid=asof. Cold = fresh connection (DuckDB buffer pool and Parquet metadata empty); the OS page cache is not dropped (no root).",
+    "writes_per_second": 651.35,
+    "rows_per_second": 38036,
+    "bytes_per_version": 9.0
+   }
+  },
+  {
+   "storage": "tmpfs",
+   "workdir": "/dev/shm/muninn-ingest",
+   "system": "muninn",
+   "dataset": "da_prices",
+   "mode": "bulk",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "bulk",
+    "writes": 2,
+    "rows": 1808140,
+    "batches_total": 30960,
+    "rows_total": 1808140,
+    "complete": true,
+    "setup_seconds": 0.001,
+    "write_seconds": 2.361,
+    "finalize_seconds": 0.034,
+    "wall_seconds": 2.395,
+    "maintenance_seconds": 0.0,
+    "write_latency_ms": {
+     "p50": 1179.854,
+     "p99": 1444.32,
+     "max": 1449.717,
+     "mean": 1179.854
+    },
+    "bytes_on_disk": 6484897,
+    "segment_bytes": 6449277,
+    "log_bytes": 35620,
+    "files": 32,
+    "exact_system_time": false,
+    "write_fsync": {
+     "segment file": {
+      "count": 25,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 50,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 2,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 2,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 1,
+      "seconds": 0.0
+     }
+    },
+    "group": 1,
+    "producers": 1,
+    "calls": null,
+    "fast_write_path": false,
+    "process_cpu_seconds": 2.736,
+    "fsync": {
+     "segment file": {
+      "count": 26,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 52,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 8,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 8,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.0
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 0.85,
+    "rows_per_second": 754965,
+    "bytes_per_version": 3.59
+   }
+  },
+  {
+   "storage": "tmpfs",
+   "workdir": "/dev/shm/muninn-ingest",
+   "system": "muninn-100k",
+   "dataset": "da_prices",
+   "mode": "bulk",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "bulk",
+    "writes": 19,
+    "rows": 1808140,
+    "batches_total": 30960,
+    "rows_total": 1808140,
+    "complete": true,
+    "setup_seconds": 0.001,
+    "write_seconds": 1.803,
+    "finalize_seconds": 0.442,
+    "wall_seconds": 2.245,
+    "maintenance_seconds": 0.0,
+    "write_latency_ms": {
+     "p50": 99.888,
+     "p99": 102.526,
+     "max": 102.613,
+     "mean": 94.805
+    },
+    "bytes_on_disk": 6518934,
+    "segment_bytes": 6460884,
+    "log_bytes": 58050,
+    "files": 64,
+    "exact_system_time": false,
+    "write_fsync": {
+     "segment file": {
+      "count": 43,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 68,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 19,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 19,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 1,
+      "seconds": 0.0
+     }
+    },
+    "group": 1,
+    "producers": 1,
+    "calls": null,
+    "fast_write_path": false,
+    "process_cpu_seconds": 2.643,
+    "fsync": {
+     "segment file": {
+      "count": 58,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 98,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 39,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 39,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.0
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 100,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 10.54,
+    "rows_per_second": 805408,
+    "bytes_per_version": 3.61
+   }
+  },
+  {
+   "storage": "tmpfs",
+   "workdir": "/dev/shm/muninn-ingest",
+   "system": "duckdb-native",
+   "dataset": "da_prices",
+   "mode": "bulk",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "bulk",
+    "writes": 1,
+    "rows": 1808140,
+    "batches_total": null,
+    "rows_total": 1808140,
+    "complete": true,
+    "write_seconds": 0.329,
+    "finalize_seconds": 0.0,
+    "wall_seconds": 0.329,
+    "write_latency_ms": null,
+    "bytes_on_disk": 18362368,
+    "process_cpu_seconds": 1.085,
+    "fsync": {
+     "other file": {
+      "count": 6,
+      "seconds": 0.0
+     }
+    },
+    "version": "1.5.6",
+    "notes": "DuckDB 1.5.6, threads=6, memory_limit=4096MB, layout=native, latest=argmax, grid=asof. Cold = fresh connection (DuckDB buffer pool and Parquet metadata empty); the OS page cache is not dropped (no root).",
+    "writes_per_second": 3.04,
+    "rows_per_second": 5495866,
+    "bytes_per_version": 10.16
+   }
+  },
+  {
+   "storage": "tmpfs",
+   "workdir": "/dev/shm/muninn-ingest",
+   "system": "muninn",
+   "dataset": "forecasts",
+   "mode": "per-batch",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "per-batch",
+    "writes": 26030,
+    "rows": 24975472,
+    "batches_total": 26030,
+    "rows_total": 24975472,
+    "complete": true,
+    "setup_seconds": 0.0,
+    "write_seconds": 68.678,
+    "finalize_seconds": 0.06,
+    "wall_seconds": 68.738,
+    "maintenance_seconds": 16.363,
+    "write_latency_ms": {
+     "p50": 1.95,
+     "p99": 2.807,
+     "max": 18.155,
+     "mean": 1.997
+    },
+    "bytes_on_disk": 78854924,
+    "segment_bytes": 74542139,
+    "log_bytes": 4312785,
+    "files": 4437,
+    "exact_system_time": true,
+    "write_fsync": {
+     "segment file": {
+      "count": 285109,
+      "seconds": 0.142
+     },
+     "segment dir": {
+      "count": 285485,
+      "seconds": 0.124
+     },
+     "log file": {
+      "count": 26190,
+      "seconds": 0.013
+     },
+     "log dir": {
+      "count": 26190,
+      "seconds": 0.011
+     },
+     "other dir": {
+      "count": 1,
+      "seconds": 0.0
+     }
+    },
+    "group": 1,
+    "producers": 1,
+    "calls": null,
+    "fast_write_path": false,
+    "process_cpu_seconds": 111.904,
+    "fsync": {
+     "segment file": {
+      "count": 289858,
+      "seconds": 0.145
+     },
+     "segment dir": {
+      "count": 291169,
+      "seconds": 0.127
+     },
+     "log file": {
+      "count": 31119,
+      "seconds": 0.015
+     },
+     "log dir": {
+      "count": 31172,
+      "seconds": 0.015
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.0
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 379.02,
+    "rows_per_second": 363343,
+    "bytes_per_version": 3.16
+   }
+  },
+  {
+   "storage": "tmpfs",
+   "workdir": "/dev/shm/muninn-ingest",
+   "system": "duckdb-native",
+   "dataset": "forecasts",
+   "mode": "per-batch",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "per-batch",
+    "writes": 26030,
+    "rows": 24975472,
+    "batches_total": 26030,
+    "rows_total": 24975472,
+    "complete": true,
+    "write_seconds": 56.562,
+    "finalize_seconds": 0.06,
+    "wall_seconds": 56.622,
+    "write_latency_ms": {
+     "p50": 1.974,
+     "p99": 3.084,
+     "max": 83.183,
+     "mean": 2.168
+    },
+    "bytes_on_disk": 217329664,
+    "process_cpu_seconds": 95.257,
+    "fsync": {
+     "other file": {
+      "count": 26308,
+      "seconds": 0.018
+     }
+    },
+    "version": "1.5.6",
+    "notes": "DuckDB 1.5.6, threads=6, memory_limit=4096MB, layout=native, latest=argmax, grid=asof. Cold = fresh connection (DuckDB buffer pool and Parquet metadata empty); the OS page cache is not dropped (no root).",
+    "writes_per_second": 460.2,
+    "rows_per_second": 441091,
+    "bytes_per_version": 8.7
+   }
+  },
+  {
+   "storage": "tmpfs",
+   "workdir": "/dev/shm/muninn-ingest",
+   "system": "muninn",
+   "dataset": "forecasts",
+   "mode": "bulk",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "bulk",
+    "writes": 25,
+    "rows": 24975472,
+    "batches_total": 26030,
+    "rows_total": 24975472,
+    "complete": true,
+    "setup_seconds": 0.001,
+    "write_seconds": 55.945,
+    "finalize_seconds": 0.029,
+    "wall_seconds": 55.974,
+    "maintenance_seconds": 0.0,
+    "write_latency_ms": {
+     "p50": 2225.602,
+     "p99": 2497.278,
+     "max": 2553.965,
+     "mean": 2237.688
+    },
+    "bytes_on_disk": 68281921,
+    "segment_bytes": 67736305,
+    "log_bytes": 545616,
+    "files": 666,
+    "exact_system_time": false,
+    "write_fsync": {
+     "segment file": {
+      "count": 636,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 1012,
+      "seconds": 0.001
+     },
+     "log file": {
+      "count": 25,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 25,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 1,
+      "seconds": 0.0
+     }
+    },
+    "group": 1,
+    "producers": 1,
+    "calls": null,
+    "fast_write_path": false,
+    "process_cpu_seconds": 61.605,
+    "fsync": {
+     "segment file": {
+      "count": 637,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 1014,
+      "seconds": 0.001
+     },
+     "log file": {
+      "count": 31,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 31,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.0
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 0.45,
+    "rows_per_second": 446198,
+    "bytes_per_version": 2.73
+   }
+  },
+  {
+   "storage": "tmpfs",
+   "workdir": "/dev/shm/muninn-ingest",
+   "system": "muninn-100k",
+   "dataset": "forecasts",
+   "mode": "bulk",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "bulk",
+    "writes": 250,
+    "rows": 24975472,
+    "batches_total": 26030,
+    "rows_total": 24975472,
+    "complete": true,
+    "setup_seconds": 0.0,
+    "write_seconds": 29.429,
+    "finalize_seconds": 0.033,
+    "wall_seconds": 29.462,
+    "maintenance_seconds": 0.0,
+    "write_latency_ms": {
+     "p50": 117.318,
+     "p99": 123.699,
+     "max": 138.472,
+     "mean": 117.66
+    },
+    "bytes_on_disk": 73176386,
+    "segment_bytes": 70534999,
+    "log_bytes": 2641387,
+    "files": 3159,
+    "exact_system_time": false,
+    "write_fsync": {
+     "segment file": {
+      "count": 3101,
+      "seconds": 0.002
+     },
+     "segment dir": {
+      "count": 3477,
+      "seconds": 0.002
+     },
+     "log file": {
+      "count": 254,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 254,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 1,
+      "seconds": 0.0
+     }
+    },
+    "group": 1,
+    "producers": 1,
+    "calls": null,
+    "fast_write_path": false,
+    "process_cpu_seconds": 33.935,
+    "fsync": {
+     "segment file": {
+      "count": 3107,
+      "seconds": 0.002
+     },
+     "segment dir": {
+      "count": 3489,
+      "seconds": 0.002
+     },
+     "log file": {
+      "count": 266,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 267,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.0
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 100,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 8.5,
+    "rows_per_second": 847718,
+    "bytes_per_version": 2.93
+   }
+  },
+  {
+   "storage": "tmpfs",
+   "workdir": "/dev/shm/muninn-ingest",
+   "system": "duckdb-native",
+   "dataset": "forecasts",
+   "mode": "bulk",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "bulk",
+    "writes": 1,
+    "rows": 24975472,
+    "batches_total": null,
+    "rows_total": 24975472,
+    "complete": true,
+    "write_seconds": 4.22,
+    "finalize_seconds": 0.0,
+    "wall_seconds": 4.22,
+    "write_latency_ms": null,
+    "bytes_on_disk": 595603456,
+    "process_cpu_seconds": 23.463,
+    "fsync": {
+     "other file": {
+      "count": 6,
+      "seconds": 0.0
+     }
+    },
+    "version": "1.5.6",
+    "notes": "DuckDB 1.5.6, threads=6, memory_limit=4096MB, layout=native, latest=argmax, grid=asof. Cold = fresh connection (DuckDB buffer pool and Parquet metadata empty); the OS page cache is not dropped (no root).",
+    "writes_per_second": 0.24,
+    "rows_per_second": 5918358,
+    "bytes_per_version": 23.85
+   }
+  },
+  {
+   "storage": "tmpfs",
+   "workdir": "/dev/shm/muninn-ingest",
+   "system": "muninn",
+   "dataset": "settlement",
+   "mode": "per-batch",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "per-batch",
+    "writes": 40000,
+    "rows": 3840000,
+    "batches_total": 40000,
+    "rows_total": 3840000,
+    "complete": true,
+    "setup_seconds": 0.001,
+    "write_seconds": 19.126,
+    "finalize_seconds": 0.001,
+    "wall_seconds": 19.126,
+    "maintenance_seconds": 6.306,
+    "write_latency_ms": {
+     "p50": 0.301,
+     "p99": 0.577,
+     "max": 4.748,
+     "mean": 0.309
+    },
+    "bytes_on_disk": 14211454,
+    "segment_bytes": 13876068,
+    "log_bytes": 335386,
+    "files": 125,
+    "exact_system_time": true,
+    "write_fsync": {
+     "segment file": {
+      "count": 40000,
+      "seconds": 0.023
+     },
+     "segment dir": {
+      "count": 40013,
+      "seconds": 0.018
+     },
+     "log file": {
+      "count": 40480,
+      "seconds": 0.019
+     },
+     "log dir": {
+      "count": 40480,
+      "seconds": 0.018
+     },
+     "other dir": {
+      "count": 1,
+      "seconds": 0.0
+     }
+    },
+    "group": 1,
+    "producers": 1,
+    "calls": null,
+    "fast_write_path": false,
+    "process_cpu_seconds": 22.72,
+    "fsync": {
+     "segment file": {
+      "count": 40127,
+      "seconds": 0.023
+     },
+     "segment dir": {
+      "count": 40256,
+      "seconds": 0.018
+     },
+     "log file": {
+      "count": 40850,
+      "seconds": 0.019
+     },
+     "log dir": {
+      "count": 40930,
+      "seconds": 0.018
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.0
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 2091.39,
+    "rows_per_second": 200774,
+    "bytes_per_version": 3.7
+   }
+  },
+  {
+   "storage": "tmpfs",
+   "workdir": "/dev/shm/muninn-ingest",
+   "system": "duckdb-native",
+   "dataset": "settlement",
+   "mode": "per-batch",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "per-batch",
+    "writes": 40000,
+    "rows": 3840000,
+    "batches_total": 40000,
+    "rows_total": 3840000,
+    "complete": true,
+    "write_seconds": 67.594,
+    "finalize_seconds": 0.057,
+    "wall_seconds": 67.652,
+    "write_latency_ms": {
+     "p50": 1.641,
+     "p99": 2.166,
+     "max": 98.848,
+     "mean": 1.689
+    },
+    "bytes_on_disk": 37236736,
+    "process_cpu_seconds": 103.82,
+    "fsync": {
+     "other file": {
+      "count": 40044,
+      "seconds": 0.028
+     }
+    },
+    "version": "1.5.6",
+    "notes": "DuckDB 1.5.6, threads=6, memory_limit=4096MB, layout=native, latest=argmax, grid=asof. Cold = fresh connection (DuckDB buffer pool and Parquet metadata empty); the OS page cache is not dropped (no root).",
+    "writes_per_second": 591.77,
+    "rows_per_second": 56761,
+    "bytes_per_version": 9.7
+   }
+  },
+  {
+   "storage": "tmpfs",
+   "workdir": "/dev/shm/muninn-ingest",
+   "system": "muninn",
+   "dataset": "settlement",
+   "mode": "bulk",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "bulk",
+    "writes": 4,
+    "rows": 3840000,
+    "batches_total": 40000,
+    "rows_total": 3840000,
+    "complete": true,
+    "setup_seconds": 0.001,
+    "write_seconds": 5.045,
+    "finalize_seconds": 0.093,
+    "wall_seconds": 5.138,
+    "maintenance_seconds": 0.0,
+    "write_latency_ms": {
+     "p50": 1299.823,
+     "p99": 1351.427,
+     "max": 1352.746,
+     "mean": 1260.98
+    },
+    "bytes_on_disk": 13247293,
+    "segment_bytes": 13212569,
+    "log_bytes": 34724,
+    "files": 31,
+    "exact_system_time": false,
+    "write_fsync": {
+     "segment file": {
+      "count": 22,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 35,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 4,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 4,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 1,
+      "seconds": 0.0
+     }
+    },
+    "group": 1,
+    "producers": 1,
+    "calls": null,
+    "fast_write_path": false,
+    "process_cpu_seconds": 6.04,
+    "fsync": {
+     "segment file": {
+      "count": 23,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 37,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 10,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 10,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.0
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 0.79,
+    "rows_per_second": 747373,
+    "bytes_per_version": 3.45
+   }
+  },
+  {
+   "storage": "tmpfs",
+   "workdir": "/dev/shm/muninn-ingest",
+   "system": "muninn-100k",
+   "dataset": "settlement",
+   "mode": "bulk",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "bulk",
+    "writes": 39,
+    "rows": 3840000,
+    "batches_total": 40000,
+    "rows_total": 3840000,
+    "complete": true,
+    "setup_seconds": 0.001,
+    "write_seconds": 4.869,
+    "finalize_seconds": 1.483,
+    "wall_seconds": 6.353,
+    "maintenance_seconds": 0.0,
+    "write_latency_ms": {
+     "p50": 125.272,
+     "p99": 135.252,
+     "max": 135.942,
+     "mean": 124.785
+    },
+    "bytes_on_disk": 14022943,
+    "segment_bytes": 13934064,
+    "log_bytes": 88879,
+    "files": 102,
+    "exact_system_time": false,
+    "write_fsync": {
+     "segment file": {
+      "count": 73,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 86,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 39,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 39,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 1,
+      "seconds": 0.0
+     }
+    },
+    "group": 1,
+    "producers": 1,
+    "calls": null,
+    "fast_write_path": false,
+    "process_cpu_seconds": 7.19,
+    "fsync": {
+     "segment file": {
+      "count": 99,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 124,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 70,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 70,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.0
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 100,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 8.01,
+    "rows_per_second": 604439,
+    "bytes_per_version": 3.65
+   }
+  },
+  {
+   "storage": "tmpfs",
+   "workdir": "/dev/shm/muninn-ingest",
+   "system": "duckdb-native",
+   "dataset": "settlement",
+   "mode": "bulk",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "bulk",
+    "writes": 1,
+    "rows": 3840000,
+    "batches_total": null,
+    "rows_total": 3840000,
+    "complete": true,
+    "write_seconds": 0.632,
+    "finalize_seconds": 0.0,
+    "wall_seconds": 0.632,
+    "write_latency_ms": null,
+    "bytes_on_disk": 106704896,
+    "process_cpu_seconds": 3.019,
+    "fsync": {
+     "other file": {
+      "count": 6,
+      "seconds": 0.0
+     }
+    },
+    "version": "1.5.6",
+    "notes": "DuckDB 1.5.6, threads=6, memory_limit=4096MB, layout=native, latest=argmax, grid=asof. Cold = fresh connection (DuckDB buffer pool and Parquet metadata empty); the OS page cache is not dropped (no root).",
+    "writes_per_second": 1.58,
+    "rows_per_second": 6075949,
+    "bytes_per_version": 27.79
+   }
+  },
+  {
+   "storage": "tmpfs",
+   "workdir": "/dev/shm/muninn-ingest",
+   "system": "muninn",
+   "dataset": "sparse",
+   "mode": "per-batch",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "per-batch",
+    "writes": 10000,
+    "rows": 10000,
+    "batches_total": 3246137,
+    "rows_total": 3246139,
+    "complete": false,
+    "setup_seconds": 2.354,
+    "write_seconds": 22.961,
+    "finalize_seconds": 0.627,
+    "wall_seconds": 23.588,
+    "maintenance_seconds": 18.46,
+    "write_latency_ms": {
+     "p50": 0.17,
+     "p99": 0.216,
+     "max": 306.044,
+     "mean": 0.204
+    },
+    "bytes_on_disk": 52830147,
+    "segment_bytes": 328375,
+    "log_bytes": 52501772,
+    "files": 508,
+    "exact_system_time": false,
+    "write_fsync": {
+     "segment file": {
+      "count": 10000,
+      "seconds": 0.006
+     },
+     "segment dir": {
+      "count": 10002,
+      "seconds": 0.004
+     },
+     "log file": {
+      "count": 10002,
+      "seconds": 0.005
+     },
+     "log dir": {
+      "count": 10002,
+      "seconds": 0.004
+     },
+     "other dir": {
+      "count": 1,
+      "seconds": 0.0
+     }
+    },
+    "group": 1,
+    "producers": 1,
+    "calls": null,
+    "fast_write_path": false,
+    "process_cpu_seconds": 25.234,
+    "fsync": {
+     "segment file": {
+      "count": 10020,
+      "seconds": 0.006
+     },
+     "segment dir": {
+      "count": 10042,
+      "seconds": 0.004
+     },
+     "log file": {
+      "count": 10087,
+      "seconds": 0.005
+     },
+     "log dir": {
+      "count": 10107,
+      "seconds": 0.004
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.0
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 435.52,
+    "rows_per_second": 424,
+    "bytes_per_version": 5283.01
+   }
+  },
+  {
+   "storage": "tmpfs",
+   "workdir": "/dev/shm/muninn-ingest",
+   "system": "duckdb-native",
+   "dataset": "sparse",
+   "mode": "per-batch",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "per-batch",
+    "writes": 10000,
+    "rows": 10000,
+    "batches_total": 3246137,
+    "rows_total": 3246139,
+    "complete": false,
+    "write_seconds": 15.519,
+    "finalize_seconds": 0.004,
+    "wall_seconds": 15.524,
+    "write_latency_ms": {
+     "p50": 1.533,
+     "p99": 1.769,
+     "max": 10.44,
+     "mean": 1.549
+    },
+    "bytes_on_disk": 798720,
+    "process_cpu_seconds": 24.186,
+    "fsync": {
+     "other file": {
+      "count": 10005,
+      "seconds": 0.007
+     }
+    },
+    "version": "1.5.6",
+    "notes": "DuckDB 1.5.6, threads=6, memory_limit=4096MB, layout=native, latest=argmax, grid=asof. Cold = fresh connection (DuckDB buffer pool and Parquet metadata empty); the OS page cache is not dropped (no root).",
+    "writes_per_second": 644.37,
+    "rows_per_second": 644,
+    "bytes_per_version": 79.87
+   }
+  },
+  {
+   "storage": "tmpfs",
+   "workdir": "/dev/shm/muninn-ingest",
+   "system": "muninn",
+   "dataset": "sparse",
+   "mode": "bulk",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "bulk",
+    "writes": 4,
+    "rows": 3246139,
+    "batches_total": 3246137,
+    "rows_total": 3246139,
+    "complete": true,
+    "setup_seconds": 2.192,
+    "write_seconds": 8.632,
+    "finalize_seconds": 0.806,
+    "wall_seconds": 9.438,
+    "maintenance_seconds": 0.0,
+    "write_latency_ms": {
+     "p50": 1947.505,
+     "p99": 2011.711,
+     "max": 2013.676,
+     "mean": 1609.959
+    },
+    "bytes_on_disk": 139394123,
+    "segment_bytes": 87245023,
+    "log_bytes": 52149100,
+    "files": 33,
+    "exact_system_time": false,
+    "write_fsync": {
+     "segment file": {
+      "count": 22,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 36,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 4,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 4,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 1,
+      "seconds": 0.0
+     }
+    },
+    "group": 1,
+    "producers": 1,
+    "calls": null,
+    "fast_write_path": false,
+    "process_cpu_seconds": 11.205,
+    "fsync": {
+     "segment file": {
+      "count": 25,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 42,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 14,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 14,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.0
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 0.46,
+    "rows_per_second": 343944,
+    "bytes_per_version": 42.94
+   }
+  },
+  {
+   "storage": "tmpfs",
+   "workdir": "/dev/shm/muninn-ingest",
+   "system": "muninn-100k",
+   "dataset": "sparse",
+   "mode": "bulk",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "bulk",
+    "writes": 33,
+    "rows": 3246139,
+    "batches_total": 3246137,
+    "rows_total": 3246139,
+    "complete": true,
+    "setup_seconds": 2.144,
+    "write_seconds": 9.851,
+    "finalize_seconds": 2.515,
+    "wall_seconds": 12.366,
+    "maintenance_seconds": 0.0,
+    "write_latency_ms": {
+     "p50": 238.266,
+     "p99": 249.365,
+     "max": 250.403,
+     "mean": 233.505
+    },
+    "bytes_on_disk": 140764479,
+    "segment_bytes": 88530502,
+    "log_bytes": 52233977,
+    "files": 124,
+    "exact_system_time": false,
+    "write_fsync": {
+     "segment file": {
+      "count": 111,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 125,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 33,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 33,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 1,
+      "seconds": 0.0
+     }
+    },
+    "group": 1,
+    "producers": 1,
+    "calls": null,
+    "fast_write_path": false,
+    "process_cpu_seconds": 14.04,
+    "fsync": {
+     "segment file": {
+      "count": 149,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 176,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 78,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 78,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.0
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 100,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 3.35,
+    "rows_per_second": 262505,
+    "bytes_per_version": 43.36
+   }
+  },
+  {
+   "storage": "tmpfs",
+   "workdir": "/dev/shm/muninn-ingest",
+   "system": "duckdb-native",
+   "dataset": "sparse",
+   "mode": "bulk",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "bulk",
+    "writes": 1,
+    "rows": 3246139,
+    "batches_total": null,
+    "rows_total": 3246139,
+    "complete": true,
+    "write_seconds": 0.784,
+    "finalize_seconds": 0.0,
+    "wall_seconds": 0.784,
+    "write_latency_ms": null,
+    "bytes_on_disk": 118501376,
+    "process_cpu_seconds": 3.235,
+    "fsync": {
+     "other file": {
+      "count": 6,
+      "seconds": 0.0
+     }
+    },
+    "version": "1.5.6",
+    "notes": "DuckDB 1.5.6, threads=6, memory_limit=4096MB, layout=native, latest=argmax, grid=asof. Cold = fresh connection (DuckDB buffer pool and Parquet metadata empty); the OS page cache is not dropped (no root).",
+    "writes_per_second": 1.28,
+    "rows_per_second": 4140483,
+    "bytes_per_version": 36.51
+   }
+  },
+  {
+   "storage": "tmpfs",
+   "workdir": "/dev/shm/muninn-ingest",
+   "system": "muninn",
+   "dataset": "backfill",
+   "mode": "per-batch",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "per-batch",
+    "writes": 3660,
+    "rows": 2760303,
+    "batches_total": 3660,
+    "rows_total": 2760303,
+    "complete": true,
+    "setup_seconds": 0.001,
+    "write_seconds": 10.368,
+    "finalize_seconds": 0.983,
+    "wall_seconds": 11.351,
+    "maintenance_seconds": 3.923,
+    "write_latency_ms": {
+     "p50": 0.852,
+     "p99": 43.013,
+     "max": 56.53,
+     "mean": 1.747
+    },
+    "bytes_on_disk": 17364906,
+    "segment_bytes": 17223454,
+    "log_bytes": 141452,
+    "files": 86,
+    "exact_system_time": true,
+    "write_fsync": {
+     "segment file": {
+      "count": 3900,
+      "seconds": 0.002
+     },
+     "segment dir": {
+      "count": 3906,
+      "seconds": 0.002
+     },
+     "log file": {
+      "count": 3704,
+      "seconds": 0.002
+     },
+     "log dir": {
+      "count": 3704,
+      "seconds": 0.002
+     },
+     "other dir": {
+      "count": 1,
+      "seconds": 0.0
+     }
+    },
+    "group": 1,
+    "producers": 1,
+    "calls": null,
+    "fast_write_path": false,
+    "process_cpu_seconds": 13.416,
+    "fsync": {
+     "segment file": {
+      "count": 3980,
+      "seconds": 0.002
+     },
+     "segment dir": {
+      "count": 4026,
+      "seconds": 0.002
+     },
+     "log file": {
+      "count": 3811,
+      "seconds": 0.002
+     },
+     "log dir": {
+      "count": 3819,
+      "seconds": 0.002
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.0
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 353.01,
+    "rows_per_second": 243177,
+    "bytes_per_version": 6.29
+   }
+  },
+  {
+   "storage": "tmpfs",
+   "workdir": "/dev/shm/muninn-ingest",
+   "system": "duckdb-native",
+   "dataset": "backfill",
+   "mode": "per-batch",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "per-batch",
+    "writes": 3660,
+    "rows": 2760303,
+    "batches_total": 3660,
+    "rows_total": 2760303,
+    "complete": true,
+    "write_seconds": 6.956,
+    "finalize_seconds": 0.018,
+    "wall_seconds": 6.974,
+    "write_latency_ms": {
+     "p50": 1.831,
+     "p99": 2.326,
+     "max": 27.008,
+     "mean": 1.891
+    },
+    "bytes_on_disk": 48508928,
+    "process_cpu_seconds": 11.333,
+    "fsync": {
+     "other file": {
+      "count": 3689,
+      "seconds": 0.003
+     }
+    },
+    "version": "1.5.6",
+    "notes": "DuckDB 1.5.6, threads=6, memory_limit=4096MB, layout=native, latest=argmax, grid=asof. Cold = fresh connection (DuckDB buffer pool and Parquet metadata empty); the OS page cache is not dropped (no root).",
+    "writes_per_second": 526.16,
+    "rows_per_second": 395799,
+    "bytes_per_version": 17.57
+   }
+  },
+  {
+   "storage": "tmpfs",
+   "workdir": "/dev/shm/muninn-ingest",
+   "system": "muninn",
+   "dataset": "backfill",
+   "mode": "bulk",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "bulk",
+    "writes": 3,
+    "rows": 2760303,
+    "batches_total": 3660,
+    "rows_total": 2760303,
+    "complete": true,
+    "setup_seconds": 0.001,
+    "write_seconds": 3.514,
+    "finalize_seconds": 0.993,
+    "wall_seconds": 4.507,
+    "maintenance_seconds": 0.0,
+    "write_latency_ms": {
+     "p50": 1247.306,
+     "p99": 1330.625,
+     "max": 1332.326,
+     "mean": 1170.983
+    },
+    "bytes_on_disk": 17039035,
+    "segment_bytes": 17000589,
+    "log_bytes": 38446,
+    "files": 18,
+    "exact_system_time": false,
+    "write_fsync": {
+     "segment file": {
+      "count": 15,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 21,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 3,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 3,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 1,
+      "seconds": 0.0
+     }
+    },
+    "group": 1,
+    "producers": 1,
+    "calls": null,
+    "fast_write_path": false,
+    "process_cpu_seconds": 5.176,
+    "fsync": {
+     "segment file": {
+      "count": 20,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 31,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 13,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 13,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.0
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 0.85,
+    "rows_per_second": 612448,
+    "bytes_per_version": 6.17
+   }
+  },
+  {
+   "storage": "tmpfs",
+   "workdir": "/dev/shm/muninn-ingest",
+   "system": "muninn-100k",
+   "dataset": "backfill",
+   "mode": "bulk",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "bulk",
+    "writes": 28,
+    "rows": 2760303,
+    "batches_total": 3660,
+    "rows_total": 2760303,
+    "complete": true,
+    "setup_seconds": 0.001,
+    "write_seconds": 3.029,
+    "finalize_seconds": 1.011,
+    "wall_seconds": 4.04,
+    "maintenance_seconds": 0.0,
+    "write_latency_ms": {
+     "p50": 108.421,
+     "p99": 131.8,
+     "max": 135.866,
+     "mean": 108.076
+    },
+    "bytes_on_disk": 17112025,
+    "segment_bytes": 17002199,
+    "log_bytes": 109826,
+    "files": 43,
+    "exact_system_time": false,
+    "write_fsync": {
+     "segment file": {
+      "count": 140,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 146,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 28,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 28,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 1,
+      "seconds": 0.0
+     }
+    },
+    "group": 1,
+    "producers": 1,
+    "calls": null,
+    "fast_write_path": false,
+    "process_cpu_seconds": 4.674,
+    "fsync": {
+     "segment file": {
+      "count": 145,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 156,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 38,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 38,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.0
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 100,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 9.24,
+    "rows_per_second": 683243,
+    "bytes_per_version": 6.2
+   }
+  },
+  {
+   "storage": "tmpfs",
+   "workdir": "/dev/shm/muninn-ingest",
+   "system": "duckdb-native",
+   "dataset": "backfill",
+   "mode": "bulk",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "bulk",
+    "writes": 1,
+    "rows": 2760303,
+    "batches_total": null,
+    "rows_total": 2760303,
+    "complete": true,
+    "write_seconds": 0.366,
+    "finalize_seconds": 0.0,
+    "wall_seconds": 0.366,
+    "write_latency_ms": null,
+    "bytes_on_disk": 49295360,
+    "process_cpu_seconds": 1.298,
+    "fsync": {
+     "other file": {
+      "count": 6,
+      "seconds": 0.0
+     }
+    },
+    "version": "1.5.6",
+    "notes": "DuckDB 1.5.6, threads=6, memory_limit=4096MB, layout=native, latest=argmax, grid=asof. Cold = fresh connection (DuckDB buffer pool and Parquet metadata empty); the OS page cache is not dropped (no root).",
+    "writes_per_second": 2.73,
+    "rows_per_second": 7541811,
+    "bytes_per_version": 17.86
+   }
+  }
+ ],
+ "machine": {
+  "host": "omarchy-hp",
+  "os": "Linux-7.2.3-arch1-3-x86_64-with-glibc2.44",
+  "python": "3.13.16",
+  "cpus": 12,
+  "cpu": "AMD Ryzen 5 PRO 5650U with Radeon Graphics",
+  "mem_gb": 14.9,
+  "disk": "/dev/mapper/root[/@home] btrfs"
+ }
+}

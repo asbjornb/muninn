@@ -14,9 +14,50 @@
 | sparse | 20,000 | 434,191 | 239,384 | 1.81 / 6 / 16 | 10,761 | 8,704 | 11.9 MB |
 | backfill | 10 | 460,135 | 438,240 | 1.05 / 2 / 2 | 0 | 249,589 | 5.7 MB |
 
-## Ingest and size on disk
+## Ingest
 
-| dataset | muninn ingest s | muninn size (B/version) | duckdb-native ingest s | duckdb-native size (B/version) | duckdb-parquet ingest s | duckdb-parquet size (B/version) | clickhouse ingest s | clickhouse size (B/version) |
+Two modes, so that ingest compares like with like (details, per-write latency and fsync counts: [ingest-small.md](ingest-small.md)):
+
+* **per-batch**: one commit per original write batch in arrival order (Muninn `write`, DuckDB `BEGIN/INSERT/COMMIT` on a file, ClickHouse one `INSERT` per batch; `clickhouse` does not fsync inserts by default, `clickhouse-fsync` does);
+* **bulk**: as few writes as possible (DuckDB/ClickHouse one statement, Muninn 1M-row writes; `muninn-100k`: 100k-row writes).
+
+Cells: wall seconds incl. finalisation (rows/s). *prefix*: only the first N batches, the same N for every system.
+
+Storage: **btrfs**
+
+| dataset | mode | muninn | muninn-100k | duckdb-native | clickhouse | clickhouse-fsync |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| da_prices | per-batch | 69 (6,586) | - | 21 (21k) | 17 (27k) | 133 (3,419) |
+| da_prices | bulk | 0.87 (521k) | 0.87 (523k) | 0.18 (2.50M) | 0.15 (2.96M) | 0.19 (2.34M) |
+| forecasts | per-batch | 188 (15k) | - | 12 (221k) | 9.22 (297k) | 57 (48k) |
+| forecasts | bulk | 8.93 (307k) | 4.43 (619k) | 0.67 (4.07M) | 1.35 (2.03M) | 1.33 (2.07M) |
+| settlement | per-batch | 142 (6,737) | - | 59 (16k) | 36 (27k) | 210 (4,578) |
+| settlement | bulk | 1.88 (510k) | 1.37 (702k) | 0.36 (2.63M) | 0.30 (3.17M) | 0.34 (2.86M) |
+| sparse | per-batch (prefix 10,000 of 434,191) | 111 (90.0) | - | 57 (174) | 26 (387) | 234 (43.0) |
+| sparse | bulk | 0.98 (445k) | 1.05 (412k) | 0.21 (2.03M) | 0.40 (1.10M) | 0.42 (1.04M) |
+| backfill | per-batch | 3.08 (150k) | - | 2.01 (229k) | 1.69 (273k) | 4.91 (94k) |
+| backfill | bulk | 0.58 (791k) | 0.72 (643k) | 0.16 (2.91M) | 0.21 (2.19M) | 0.22 (2.10M) |
+
+Storage: **tmpfs**
+
+| dataset | mode | muninn | muninn-100k | duckdb-native |
+| --- | --- | ---: | ---: | ---: |
+| da_prices | per-batch | 2.33 (194k) | - | 12 (37k) |
+| da_prices | bulk | 0.67 (678k) | 0.50 (901k) | 0.15 (3.04M) |
+| forecasts | per-batch | 10 (274k) | - | 6.91 (397k) |
+| forecasts | bulk | 7.33 (374k) | 3.41 (803k) | 0.57 (4.83M) |
+| settlement | per-batch | 4.03 (238k) | - | 18 (54k) |
+| settlement | bulk | 1.59 (604k) | 1.27 (754k) | 0.36 (2.67M) |
+| sparse | per-batch (prefix 10,000 of 434,191) | 4.55 (2,195) | - | 16 (611) |
+| sparse | bulk | 1.04 (419k) | 0.97 (446k) | 0.21 (2.04M) |
+| backfill | per-batch | 0.84 (545k) | - | 1.30 (354k) |
+| backfill | bulk | 0.81 (571k) | 0.70 (655k) | 0.14 (3.22M) |
+
+## Load for the query runs, and size on disk
+
+How each system was loaded for the query measurements below: Muninn one write per original batch (the per-batch mode, so `system_time` is reproduced exactly), DuckDB and ClickHouse in bulk. **These ingest times are not comparable across systems**; see Ingest for that.
+
+| dataset | muninn load s | muninn size (B/version) | duckdb-native load s | duckdb-native size (B/version) | duckdb-parquet load s | duckdb-parquet size (B/version) | clickhouse load s | clickhouse size (B/version) |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | da_prices | 106.4 | 1.7 MB (4.04) | 0.1 | 4.8 MB (11.02) | 0.1 | 2.2 MB (5.2) | 0.2 | 1.5 MB (3.55) |
 | forecasts | 202.2 | 10.7 MB (4.08) | 0.6 | 67.5 MB (25.82) | 0.5 | 9.5 MB (3.63) | 1.1 | 8.0 MB (3.06) |
