@@ -1,7 +1,7 @@
 //! [`Engine`]: open/recovery, commits, writes, catalog changes, compaction and GC.
 
 use std::collections::hash_map::RandomState;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::hash::{BuildHasher, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
@@ -21,6 +21,7 @@ use muninn_format::{Partition, SegmentFile, ValueColumn, write_segment};
 use muninn_store::{Key, PutOutcome, Store, StoreErrorKind};
 
 use crate::EngineOptions;
+use crate::dedup::DedupIndex;
 use crate::log::{
     self, CatalogChangeJson, Checkpoint, Hint, LOG_FORMAT, LogEntry, from_json, to_json,
 };
@@ -64,6 +65,8 @@ pub struct Engine<S: Store> {
     /// clock). A file is deleted only `gc_grace` after that, so no writer's clock is
     /// trusted.
     unreferenced_since: Mutex<HashMap<Key, i64>>,
+    /// Write-side dedup index (only used under the writer lock).
+    dedup: Mutex<DedupIndex>,
 }
 
 impl<S: Store> std::fmt::Debug for Engine<S> {
@@ -96,9 +99,11 @@ impl<S: Store> Engine<S> {
     /// Recovery: latest checkpoint (found via the hint, else by listing `log/`) plus every
     /// later entry. Segment files no entry references are ignored.
     pub fn open(store: S, opts: EngineOptions) -> Result<Engine<S>> {
+        let dedup = DedupIndex::new(opts.dedup_index_points);
         let shared = Arc::new(Shared::new(store, opts));
         let state = load(&shared)?;
         Ok(Engine {
+            dedup: Mutex::new(dedup),
             shared,
             published: Mutex::new(Published {
                 state: Arc::new(state),
@@ -393,11 +398,13 @@ impl<S: Store> Engine<S> {
         Err(Error::internal("could not find a free segment name"))
     }
 
-    /// Every stored version of the given points (for dedup), keyed by point.
+    /// The stored versions of the given points (for dedup) whose received time is one of
+    /// the given ones (only those can be content-identical to a row), keyed by point.
     fn load_points(
         &self,
         st: &State,
         points: &BTreeMap<String, HashMap<SeriesId, BTreeSet<Timestamp>>>,
+        rts: &HashSet<(SeriesId, Timestamp, Timestamp)>,
     ) -> Result<HashMap<(SeriesId, Timestamp), Vec<Version>>> {
         let mut out: HashMap<(SeriesId, Timestamp), Vec<Version>> = HashMap::new();
         for (table, pts) in points {
@@ -409,17 +416,25 @@ impl<S: Store> Engine<S> {
                 lo,
                 hi.and_then(|t| Timestamp::from_micros(t.as_micros().saturating_add(1))),
             );
+            // Only versions with one of the rows' received times matter: prune segments
+            // and blocks by received time too.
+            let rt_of = |c: &(SeriesId, Timestamp, Timestamp)| {
+                pts.contains_key(&c.0).then_some(c.2.as_micros())
+            };
+            let tc_lo = rts.iter().filter_map(rt_of).min().unwrap_or(i64::MAX);
+            let tc_hi = rts.iter().filter_map(rt_of).max().unwrap_or(i64::MIN);
             let mut scanner = Scanner::new(&self.shared, st);
-            let cands = scanner.scan(&ScanSpec {
+            let mut cands = scanner.scan(&ScanSpec {
                 table,
                 ids: &ids,
                 range,
-                clock: muninn_core::Clock::System,
-                tc_lo: i64::MIN,
-                tc_hi: i64::MAX,
+                clock: muninn_core::Clock::Received,
+                tc_lo,
+                tc_hi,
                 system: None,
                 points: Some(pts),
             })?;
+            cands.retain(|c| rts.contains(&(c.series, c.vt, c.rt)));
             for v in scanner.materialize(table.columns.len(), &cands)? {
                 out.entry((v.series, v.value_time)).or_default().push(v);
             }
@@ -524,6 +539,8 @@ impl<S: Store> Engine<S> {
         entry.add.push(new.to_json());
         entry.remove = segs.iter().map(|s| s.key.as_str().to_owned()).collect();
         self.commit(w, st, entry)?;
+        let removed: Vec<Key> = segs.iter().map(|s| s.key.clone()).collect();
+        lock(&self.dedup).record_compaction(&t.name, p, &removed, &new.key);
         Ok(true)
     }
 
@@ -860,22 +877,48 @@ impl<S: Store> Engine<S> {
             }
             BatchPlan::Candidates { clock, rows } => (clock, rows),
         };
-        // SPEC §4.3 against stored versions: read every stored version of the touched
-        // points (pruned by partition, series and value time).
-        let mut points: BTreeMap<String, HashMap<SeriesId, BTreeSet<Timestamp>>> = BTreeMap::new();
+        // SPEC §4.3 against stored versions. A row can only be content-identical to a
+        // stored version with the same received time, so the dedup index (per point, the
+        // range of stored received times) rules out most rows; only the others are
+        // compared with the stored versions of their point that share their received
+        // time.
+        let mut placed = Vec::with_capacity(candidates.len());
+        let mut touched: BTreeSet<(String, Partition)> = BTreeSet::new();
+        let mut prev: Option<(&str, Partition)> = None;
         for v in &candidates {
             let s = st
                 .catalog
                 .series_by_id(v.series)
                 .ok_or_else(|| Error::internal("validated row of unknown series"))?;
-            points
-                .entry(s.table.clone())
-                .or_default()
-                .entry(v.series)
-                .or_default()
-                .insert(v.value_time);
+            let t = st.catalog.table(&s.table)?;
+            let p = Partition::of(t.partition, v.value_time);
+            if prev != Some((t.name.as_str(), p)) {
+                touched.insert((t.name.clone(), p));
+                prev = Some((t.name.as_str(), p));
+            }
+            placed.push((&t.name, p));
         }
-        let stored = self.load_points(&st, &points)?;
+        let mut dedup = lock(&self.dedup);
+        dedup.prepare(&self.shared, &st, &touched)?;
+        let mut points: BTreeMap<String, HashMap<SeriesId, BTreeSet<Timestamp>>> = BTreeMap::new();
+        let mut rts: HashSet<(SeriesId, Timestamp, Timestamp)> = HashSet::new();
+        for (v, (table, p)) in candidates.iter().zip(&placed) {
+            if dedup.may_have(table, *p, v.series, v.value_time, v.received_time) {
+                points
+                    .entry((*table).clone())
+                    .or_default()
+                    .entry(v.series)
+                    .or_default()
+                    .insert(v.value_time);
+                rts.insert((v.series, v.value_time, v.received_time));
+            }
+        }
+        drop(placed);
+        let stored = if points.is_empty() {
+            HashMap::new()
+        } else {
+            self.load_points(&st, &points, &rts)?
+        };
         let system_time = batch_system_time(clock, st.last_system_time)?;
         let plan = plan_dedup(candidates, system_time, st.next_seq, |v| {
             Ok(stored
@@ -902,11 +945,12 @@ impl<S: Store> Engine<S> {
         let mut entry = self.new_entry(&st, "write");
         entry.batch_id = batch.batch_id.clone();
         let started = Instant::now();
+        let mut written = Vec::with_capacity(groups.len());
         for ((table, partition), versions) in &groups {
             let t = st.catalog.table(table)?;
-            entry
-                .add
-                .push(self.put_segment(t, *partition, versions)?.to_json());
+            let seg = self.put_segment(t, *partition, versions)?;
+            entry.add.push(seg.to_json());
+            written.push(seg.key);
         }
         if !plan.kept.is_empty() {
             entry.next_seq = st.next_seq + plan.kept.len() as u64;
@@ -914,6 +958,16 @@ impl<S: Store> Engine<S> {
         }
         self.check_commit_age(started)?;
         self.commit(&mut w, &st, entry)?;
+        for (((table, partition), versions), key) in groups.iter().zip(&written) {
+            dedup.record(
+                table,
+                *partition,
+                key,
+                versions
+                    .iter()
+                    .map(|v| (v.series, v.value_time, v.received_time)),
+            );
+        }
         Ok(result)
     }
 }

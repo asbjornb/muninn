@@ -16,9 +16,10 @@
 //! - **State.** The committed state is an immutable value ([`state::State`]) — catalog,
 //!   batch ids, high-water marks, live segments with their statistics — derived from the
 //!   log by one `apply` function used both when committing and when recovering.
-//! - **Writes** validate with core's shared code, deduplicate against the stored versions
-//!   of the touched points (pruned by partition, series and value time), assign
-//!   `system_time`/`seq`, write segments and commit. A lost race (`AlreadyExists`) is a
+//! - **Writes** validate with core's shared code, deduplicate (an in-memory index of each
+//!   point's stored received-time range decides which rows could be duplicates; only
+//!   those are compared with stored versions, see `dedup`), assign `system_time`/`seq`,
+//!   write segments and commit. A lost race (`AlreadyExists`) is a
 //!   `Conflict`; any failed commit marks the engine stale so it reloads from the log before
 //!   serving anything else.
 //! - **Reads** pin a snapshot ([`EngineSnapshot`], an `Arc` of the state). Each SPEC §6
@@ -30,6 +31,7 @@
 
 #![forbid(unsafe_code)]
 
+mod dedup;
 mod engine;
 pub mod log;
 mod read;
@@ -62,6 +64,11 @@ pub struct EngineOptions {
     /// Bytes read from a segment's end to find its footer (one ranged read if the footer
     /// fits).
     pub tail_read: u64,
+    /// Points `(series, value_time)` the write-side dedup index may hold in memory
+    /// (about 50 bytes each); least recently written partitions are evicted beyond that
+    /// and rebuilt from their segments when written again. 0 disables the index (every
+    /// write then reads the stored versions of every point it touches).
+    pub dedup_index_points: usize,
 }
 
 impl Default for EngineOptions {
@@ -73,6 +80,7 @@ impl Default for EngineOptions {
             wall_clock: Arc::new(system_wall_clock),
             footer_cache_entries: 4096,
             tail_read: 64 * 1024,
+            dedup_index_points: 2_000_000,
         }
     }
 }
@@ -85,6 +93,7 @@ impl std::fmt::Debug for EngineOptions {
             .field("gc_grace", &self.gc_grace)
             .field("footer_cache_entries", &self.footer_cache_entries)
             .field("tail_read", &self.tail_read)
+            .field("dedup_index_points", &self.dedup_index_points)
             .finish_non_exhaustive()
     }
 }
