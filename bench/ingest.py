@@ -64,7 +64,7 @@ BULK_ONLY = {"muninn-100k"}
 def sys_key(label: str):
     """Sort key of a report label ``system`` or ``system (tag)``: ORDER, then tag."""
     base, _, tag = label.partition(" ")
-    return (ORDER.index(base) if base in ORDER else 99, tag)
+    return (ORDER.index(base) if base in ORDER else 99, "pre" not in tag, tag)
 DEFAULT_PREFIX = "sparse=10000"
 FSYNC_CATS = ["segment file", "segment dir", "log file", "log dir", "other file", "other dir"]
 SHIM_SRC = HERE / "fsyncstat.c"
@@ -194,7 +194,8 @@ def markdown(rep) -> str:
              "the whole wall time. **prefix** = only the first N batches were loaded (same N for "
              "every system), rates are for that prefix. Size = on disk after finalisation.")
     L.append("* **fsyncs**: calls to fsync/fdatasync in the benchmark process and the time spent in "
-             "them (`bench/fsyncstat.c`); ClickHouse runs as its own server process, so not counted.")
+             "them (`bench/fsyncstat.c`); ClickHouse runs as its own server process, so not counted." + " Summed over threads, so with background flushes the total can exceed the wall time.")
+    L.append("* **Muninn builds**: `(pre-0009)` = before the fast write path (one segment file per touched partition plus a log entry per write, ~4-25 fsyncs); `(post-0009)` = ADR 0009 (rows inline in the commit entry, group commit, memtable, background flush; ~2 fsyncs per commit). Per-batch variants of the post-0009 build: `muninn-wm64` submits 64 original batches per `write_many` call (one durable commit per 64 batches, each batch still its own transaction and system_time), `muninn-8p` has 8 producer threads calling `write` (the engine groups concurrent writes). Neither has a competitor counterpart here: DuckDB and ClickHouse were measured with one client committing one batch at a time.")
     L.append("")
     by_storage: dict = {}
     for r in rep["runs"]:
@@ -225,7 +226,9 @@ def markdown(rep) -> str:
                  and r["mode"] == "per-batch"]
         if mrows:
             L.append("Muninn per-batch, inside `write` only (excludes the periodic compact+gc): "
-                     "mean latency and the part of it spent in fsync, per write.")
+                     "mean latency and the part of it spent in fsync, per write. The counters "
+                     "are process-wide: post-0009, fsyncs of a background flush that overlap a "
+                     "write are attributed to it (which can make 'other' negative).")
             L.append("")
             L.append("| dataset | system | writes | mean ms/write | fsyncs/write | segment file+dir fsync ms | "
                      "log file+dir fsync ms | other ms (encode, dedup, file writes, Python) |")
@@ -270,6 +273,8 @@ def summary_markdown(rep, link: str) -> list[str]:
          "batch; `clickhouse` does not fsync inserts by default, `clickhouse-fsync` does);",
          "* **bulk**: as few writes as possible (DuckDB/ClickHouse one statement, Muninn 1M-row "
          "writes; `muninn-100k`: 100k-row writes).", "",
+         "* **Muninn builds**: `(pre-0009)` = before the fast write path (one segment file per touched partition plus a log entry per write, ~4-25 fsyncs); `(post-0009)` = ADR 0009 (rows inline in the commit entry, group commit, memtable, background flush; ~2 fsyncs per commit). Per-batch variants of the post-0009 build: `muninn-wm64` submits 64 original batches per `write_many` call (one durable commit per 64 batches, each batch still its own transaction and system_time), `muninn-8p` has 8 producer threads calling `write` (the engine groups concurrent writes). Neither has a competitor counterpart here: DuckDB and ClickHouse were measured with one client committing one batch at a time.",
+         "",
          "Cells: wall seconds incl. finalisation (rows/s). *prefix*: only the first N batches, "
          "the same N for every system.", ""]
     systems = sorted({r["system"] for r in rep["runs"]}, key=sys_key)

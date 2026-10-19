@@ -2,7 +2,127 @@
 
 One directory per run date and host; `<scale>.md` is the readable report, `<scale>.json`
 everything measured (per-instance result hashes included). Regenerate with
-`uv run --project bench python bench/run.py --scale <scale>`.
+`uv run --project bench python bench/run.py --scale <scale>`. Ingest has its own reports,
+`ingest-<scale>.{md,json}` (`bench/ingest.py`), summarised in the `## Ingest` section of
+`<scale>.md`.
+
+## Ingest, 2026-10-19/20, omarchy-hp
+
+**Why a separate ingest benchmark.** The query runs load each system its own way: Muninn
+writes one commit per original batch so that it reproduces `system_time` exactly (medium
+forecasts: 26 030 commits), while DuckDB and ClickHouse load everything in one statement.
+The "ingest s" columns of the earlier reports (Muninn 1 940 s vs DuckDB 4.4 s on medium
+forecasts) therefore compared a durable commit per batch with one bulk insert, and said
+nothing about either engine's ingest. `bench/ingest.py` now loads every dataset in two
+modes for every system:
+
+* **per-batch**: one transaction/commit per original batch (the dataset's arrival order;
+  da_prices 31k batches at medium, forecasts 26k of ~960 rows, settlement 40k of 96 rows,
+  backfill 3.7k, sparse 3.2M one-row batches). Muninn: `write` per batch, as in the
+  query runs (compact+gc every 500 writes). DuckDB: `BEGIN; INSERT; COMMIT` on a database
+  file (one WAL fsync per commit). ClickHouse: one synchronous `INSERT` per batch;
+  `clickhouse` with default settings does **not** fsync an insert before acknowledging
+  it, `clickhouse-fsync` sets `fsync_after_insert=1, fsync_part_directory=1`, which is
+  the durable equivalent of the other two. For sparse, every system loads the same
+  first 10 000 batches (a full per-batch load is days for some systems); rates are for
+  that prefix and are not extrapolated.
+* **bulk**: as few writes as each system allows: DuckDB/ClickHouse exactly as in the
+  query runs; Muninn `write` calls of 1M rows (`muninn`) or 100k rows (`muninn-100k`),
+  whose system_time values then differ from the dataset's (irrelevant for timing).
+
+Every number includes the system's finalisation (Muninn flush+compact+gc, DuckDB
+CHECKPOINT, ClickHouse OPTIMIZE FINAL). The per-batch DuckDB table stays in arrival order
+rather than the sorted layout the query runs use. fsync calls and the time spent in them
+are counted by an LD_PRELOAD shim (`bench/fsyncstat.c`) in the benchmark process (so not
+for the ClickHouse server). Same laptop as below (btrfs on NVMe), and the same runs on
+tmpfs (`/dev/shm`) for Muninn and DuckDB to show the floor without disk syncs.
+`tests/test_ingest.py` checks every load path against the oracle.
+
+**Two Muninn builds.** `(pre-0009)`: the engine these reports were made with, one segment
+file per touched partition plus a log entry per write, every file created with a file and
+a directory fsync. `(post-0009)`: main after ADR 0009 (rows inline in the commit entry,
+group commit, memtable, background flush), measured after rebasing. Two more post-0009
+per-batch variants use the group commit: `muninn-wm64` submits 64 original batches per
+`write_many` call (one durable commit per 64 batches; each batch is still its own
+transaction with its own system_time, results identical to the reference), `muninn-8p`
+runs 8 producer threads calling `write` (commit order and so seq/system_time are then
+nondeterministic). **DuckDB and ClickHouse were not measured with grouped or concurrent
+commits**, so these two rows show what Muninn's API allows, not a like-for-like comparison.
+
+The disk was shared with other agents' work: load average 2-6 during the pre-0009 session
+(late 19 Oct), 1.3-2.8 during the post-0009 session (early 20 Oct). At small scale the
+competitors' per-batch runs were repeated in the post-0009 session, so those rows are
+same-time comparisons; at medium the competitors' numbers are from the earlier, noisier
+session (a commit fsync then cost ~3.5 ms for DuckDB, ~7 ms for a Muninn file + directory
+fsync pair). Treat ratios within ~1.5x as noise.
+
+Per-batch, local disk, medium (wall s incl. finalisation; rows/s):
+
+| dataset | Muninn pre-0009 | Muninn post-0009 | post, `write_many` x64 | post, 8 producers | DuckDB | ClickHouse (no fsync) | ClickHouse fsync |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| da_prices (31k commits) | 494 (3.7k) | 223 (8.1k) | 6.8 (267k) | 45 (41k) | 188 (9.6k) | 75 (24k) | 767 (2.4k) |
+| forecasts (26k) | 2 099 (12k) | 274 (91k) | 32 (777k) | 90 (276k) | 162 (154k) | 99 (254k) | 645 (39k) |
+| settlement (40k) | 579 (6.6k) | 325 (12k) | 8.1 (473k) | 69 (56k) | 196 (20k) | 103 (37k) | 890 (4.3k) |
+| backfill (3.7k) | 56 (49k) | 30 (92k) | 7.6 (364k) | 8.2 (338k) | 15 (179k) | 9.7 (286k) | 84 (33k) |
+| sparse, first 10k | 65 | 40 | 3.1 | 9.6 | 45 | 21 | 189 |
+
+Small scale, same session for all (wall s): da_prices Muninn post 39 / DuckDB 38 /
+ClickHouse 17 / ClickHouse fsync 150; forecasts 27 / 11 / 8.3 / 57; settlement 70 / 55 /
+23 / 209; backfill 3.4 / 4.0 / 1.5 / 7.0 (pre-0009 Muninn: 69, 188, 142, 3.1).
+
+Bulk, medium (wall s; rows/s): Muninn post-0009 1M-row writes da 1.8 (1.0M) / forecasts
+62 (0.40M) / settlement 3.9 (0.97M) / backfill 3.5 (0.79M) / sparse 8.7 (0.37M);
+100k-row writes forecasts 25 (1.0M); pre-0009 1M-row writes 3.0 / 60 / 5.9 / 4.8 / 9.9.
+DuckDB 0.40 / 4.9 / 0.68 / 0.46 / 0.86 (4-6M rows/s, including the sort); ClickHouse
+0.71 / 9.2 / 1.6 / 1.1 / 3.1 (2.5M rows/s; fsync makes no difference in bulk).
+
+Where the time goes (Muninn, inside `write`, per write, medium, local disk):
+
+| dataset | build | ms/write | fsyncs/write | segment fsync ms | log fsync ms | rest ms |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| forecasts | pre-0009 | 76 | 23.9 | 64 | 6.1 | 6.3 |
+| forecasts | post-0009 | 8.7 | 2.5 | 2.6* | 7.4 | ~0 |
+| da_prices | pre-0009 | 15.6 | 4.0 | 7.3 | 7.5 | 0.8 |
+| da_prices | post-0009 | 7.0 | 2.0 | 0 | 6.7 | 0.3 |
+
+\* the counters are process-wide: fsyncs of a background flush that overlap a write are
+attributed to it. On tmpfs the same writes cost 2.0 ms (pre) and 0.93 ms (post) for
+forecasts, 0.23 / 0.15 ms for da_prices: **fsync is 89-98% of a per-batch write on this
+disk**, before and after 0009. Sampling the in-memory writes (py-spy, small forecasts,
+tmpfs) splits the CPU part: pre-0009 31% converting Arrow input into per-row maps
+(`BTreeMap<String, InputValue>`) and validating, 20% dedup, 11% file creation, 8% segment
+encoding, <1% log entry; post-0009 46% input conversion and validation, ~15% inline
+segment encoding (incl. base64), ~5% commit and file writes, 2% dedup.
+
+Findings:
+
+1. **Per-batch, durable, one client: Muninn post-0009 is 1.0-2.5x slower than DuckDB and
+   2-4x faster than ClickHouse with fsync** (small, same session: da_prices 39 vs 38 s,
+   settlement 70 vs 55, forecasts 27 vs 11), and 2-4x slower than ClickHouse's default,
+   which does not sync. Pre-0009 it was 2.6-3.3x (da_prices) to 13-16x (forecasts)
+   slower than DuckDB: ~24 file + directory fsyncs per forecast write. Post-0009 a write is one log file
+   creation (file + directory fsync, ~7 ms on this disk at the time); DuckDB pays one WAL
+   fsync per commit.
+2. **Without disk syncs Muninn's per-batch path is the fastest measured**: tmpfs medium
+   da_prices 7.1 s vs DuckDB 48 s, settlement 15 vs 68, forecasts 31 vs 57 (post-0009).
+3. **Grouping commits removes the fsync bound**: `write_many` x64 loads medium forecasts
+   in 32 s (777k rows/s) and settlement in 8 s with every batch still its own
+   transaction; 8 producer threads give 3-5x over one. No competitor was given the same
+   advantage here (ClickHouse async inserts or batched DuckDB transactions would be the
+   counterparts).
+4. **Bulk: Muninn ~0.4-1.4M rows/s vs DuckDB 4-6M and ClickHouse 1-3M.** 1M-row writes
+   are *slower* than 100k-row writes on forecasts (62 s vs 25 s at medium, both builds):
+   in a 1M-row write each point has hundreds of versions in the same batch, and
+   `Version::content_identical` (in-batch duplicate check, quadratic per point) takes
+   ~48% of the samples (pre-0009 profile; post-0009 shows the same 1M-vs-100k gap).
+   Input conversion is most of the rest.
+5. **Size after a post-0009 load includes un-truncated log**: e.g. small forecasts via
+   `write_many` 125 MB on disk for 8 MB of segments (`log_bytes` in the JSON), da_prices
+   per-batch 2.3 vs 1.8 MB. The inline rows stay in log entries and checkpoints until later
+   checkpoints let GC truncate them; the end-of-load flush+compact+gc does not get there.
+   Bulk loads and pre-0009 loads end with logs of tens of KB to a few MB.
+6. The sparse dataset at medium (150k series) spends ~19 s of its 10k-write prefix in the
+   compact+gc every 500 writes (the per-write cost is 0.12-1.7 ms), on tmpfs too.
 
 ## 2026-10-19 (later), omarchy-hp: Muninn after fixing the three problems below
 

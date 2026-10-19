@@ -142,7 +142,11 @@ loads every dataset in two modes for every system: **per-batch** (one transactio
 per original batch, in arrival order: Muninn `write`, DuckDB `BEGIN/INSERT/COMMIT` on a
 database file, ClickHouse one synchronous `INSERT`, with and without
 `fsync_after_insert`) and **bulk** (as few writes as possible; Muninn in 1M-row writes,
-`muninn-100k` in 100k-row writes). Each includes the system's finalisation (compact+gc,
+`muninn-100k` in 100k-row writes). With the fast write path (ADR 0009) two per-batch
+variants use group commit: `muninn-wm64` (64 batches per `write_many` call) and `muninn-8p`
+(8 producer threads); competitors have no such variant yet. `--tag <build>` labels a
+run's systems (e.g. `muninn (post-0009)`) so that builds can sit side by side in one
+report. Each includes the system's finalisation (compact+gc,
 CHECKPOINT, OPTIMIZE FINAL). Where a full per-batch load would take too long (`--prefix`,
 by default the sparse dataset's 1-row batches), all systems load the same first N batches
 and the report gives rates for that prefix. Reported: wall, write and finalisation time,
