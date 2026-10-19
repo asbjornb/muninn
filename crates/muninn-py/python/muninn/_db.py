@@ -70,6 +70,8 @@ class GcReport:
 
     deleted: list[str]
     kept: int
+    #: log entries and checkpoints removed by log truncation
+    log_deleted: int = 0
 
 
 def _table_info(d: dict) -> TableInfo:
@@ -156,9 +158,23 @@ class _Reads:
         frontier: TimeLike | None = None,
         system: TimeLike | None = None,
         _as_of: dict | None = None,
+        *,
+        lead: tuple[str, DurationLike, DurationLike] | None = None,
     ) -> pa.Table:
         """Every version visible at ``(clock, frontier, system)`` (SPEC §6.2), tombstones
-        included (``deleted`` column), ordered by ``(series, value_time, knowledge order)``."""
+        included (``deleted`` column), ordered by ``(series, value_time, knowledge order)``.
+
+        ``lead=(column, min, max)`` keeps only the versions whose ``timestamp`` column
+        ``column`` (e.g. a forecast's issue time) is non-null and satisfies
+        ``min <= value_time - column < max`` — exactly the rows a client-side filter of the
+        full history would keep, but the engine skips segments by their column statistics
+        and never decodes the rest. The filter is part of the receipt."""
+        kw = dict(_as_of or {})
+        if lead is not None:
+            if isinstance(lead, (str, bytes, dict)) or not hasattr(lead, "__len__") \
+                    or len(lead) != 3:
+                raise InvalidArgumentError(f"lead must be (column, min, max), not {lead!r}")
+            kw["lead"] = (lead[0], cv.dur_arg(lead[1]), cv.dur_arg(lead[2]))
         return self._snap().history(
             table,
             cv.series_arg(series),
@@ -167,7 +183,7 @@ class _Reads:
             clock,
             cv.read_time(frontier),
             cv.read_time(system),
-            **(_as_of or {}),
+            **kw,
         )
 
     def replay(
@@ -371,6 +387,35 @@ class Database(_Reads):
             )
         )
 
+    def create_series_batch(
+        self, series: Iterable[Mapping[str, Any] | str], table: str | None = None
+    ) -> list[SeriesInfo]:
+        """Creates many series in one atomic commit (far faster than one
+        :meth:`create_series` call each): either all are created or, if any request
+        fails, none. Each item is a mapping with ``name`` and optionally ``table``,
+        ``tags``, ``timezone``, ``resolution`` (as for :meth:`create_series`), or a bare
+        name; ``table`` is the default table. Requests are checked in order, as if created
+        one by one (a repeated name is ``already_exists``)."""
+        items = []
+        for s in series:
+            if isinstance(s, str):
+                s = {"name": s}
+            if not isinstance(s, Mapping):
+                raise InvalidArgumentError("series must be mappings or names")
+            unknown = set(s) - {"name", "table", "tags", "timezone", "resolution"}
+            if unknown:
+                raise InvalidArgumentError(f"unknown series fields: {sorted(unknown)}")
+            res = s.get("resolution")
+            tags = s.get("tags")
+            items.append((
+                s.get("name"),
+                s.get("table", table),
+                dict(tags) if isinstance(tags, Mapping) else tags,
+                s.get("timezone"),
+                None if res is None else cv.dur_arg(res),
+            ))
+        return [_series_info(d) for d in self._native.create_series_batch(items)]
+
     # -- writes (SPEC §4) --------------------------------------------------------------
 
     def write(
@@ -426,7 +471,8 @@ class Database(_Reads):
     def gc(self, grace: DurationLike | None = None) -> GcReport:
         """Deletes segment files nothing references any more (orphans of failed writes,
         segments replaced by compaction) that are older than ``grace`` (default: one hour)
-        and not used by a live snapshot of this process."""
+        and not used by a live snapshot of this process, and truncates the commit log
+        below the second-newest checkpoint (writing a checkpoint of the head first)."""
         us = None
         if grace is not None:
             g = cv.dur_arg(grace)
@@ -435,8 +481,8 @@ class Database(_Reads):
             if not isinstance(g, int):
                 raise InvalidArgumentError(f"grace: {g}")
             us = g
-        deleted, kept = self._native.gc(us)
-        return GcReport(list(deleted), kept)
+        deleted, kept, log_deleted = self._native.gc(us)
+        return GcReport(list(deleted), kept, log_deleted)
 
 
 _pytype = type
@@ -524,7 +570,9 @@ def replay_receipt(db: Database | Snapshot, rcpt: Any, *, left: Any = None) -> p
     as_of = {"as_of_columns": list(r["columns"]), "empty": empty}
     common = dict(series=q.get("series") or None, clock=clock, system=system, _as_of=as_of)
     rng = dict(value_from=q.get("value_from"), value_to=q.get("value_to"))
-    if op in ("latest", "history"):
+    if op == "history" and q.get("lead") is not None:
+        res = db.history(table, **common, **rng, frontier=r["frontier"], lead=tuple(q["lead"]))
+    elif op in ("latest", "history"):
         res = getattr(db, op)(table, **common, **rng, frontier=r["frontier"])
     elif op == "replay":
         res = db.replay(table, q.get("from"), q.get("to"), **common, **rng)

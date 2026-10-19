@@ -166,15 +166,25 @@ impl<S: Store> Engine<S> {
             },
         );
         entry.batch_id = batch_id.map(str::to_owned);
+        let mut written = Vec::with_capacity(groups.len());
         for ((table, partition), vs) in &groups {
             let t = st.catalog.table(table)?;
-            entry
-                .add
-                .push(self.put_segment(t, *partition, vs)?.to_json());
+            let seg = self.put_segment(t, *partition, vs)?;
+            entry.add.push(seg.to_json());
+            written.push(seg.key);
         }
         entry.next_seq = next_seq;
         entry.last_system_time = last.map(Timestamp::as_micros);
         self.commit(&mut w, &st, entry)?;
+        let mut dedup = lock(&self.dedup);
+        for (((table, partition), vs), key) in groups.iter().zip(&written) {
+            dedup.record(
+                table,
+                *partition,
+                key,
+                vs.iter().map(|v| (v.series, v.value_time, v.received_time)),
+            );
+        }
         Ok(WriteResult {
             stored: versions.len() as u64,
             duplicates: 0,

@@ -35,6 +35,7 @@ pub const CHECKS: &[Check] = &[
     ("put_if_absent", put_if_absent),
     ("list_prefix_semantics", list_prefix_semantics),
     ("delete", delete),
+    ("delete_many", delete_many),
     ("path_conflicts", path_conflicts),
     (
         "concurrent_put_if_absent_single_winner",
@@ -228,6 +229,21 @@ pub fn delete(s: &dyn Store) {
     s.delete(&key("d/sub/3")).unwrap();
     s.delete(&key("d/sub")).unwrap(); // not an object: no-op
     assert_eq!(keys(s, ""), ["d/1"]);
+}
+
+/// `delete_many` removes exactly the given objects (absent ones are fine) and frees
+/// their paths.
+pub fn delete_many(s: &dyn Store) {
+    for k in ["m/1", "m/2", "m/sub/3", "m/sub/4", "n/5"] {
+        s.put(&key(k), b"x").unwrap();
+    }
+    s.delete_many(&[key("m/sub/3"), key("m/2"), key("m/nope"), key("m/sub/4")])
+        .unwrap();
+    assert_eq!(keys(s, ""), ["m/1", "n/5"]);
+    s.delete_many(&[]).unwrap();
+    // The emptied directory can hold an object again.
+    s.put(&key("m/sub"), b"y").unwrap();
+    assert_eq!(s.get(&key("m/sub")).unwrap(), b"y");
 }
 
 /// A key may not be a path-prefix of another key, in either direction; freed paths can be

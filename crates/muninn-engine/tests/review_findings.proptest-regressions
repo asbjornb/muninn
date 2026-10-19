@@ -6,3 +6,4 @@
 # everyone who runs the test benefits from these saved cases.
 cc 8a550969d30a8d22c1308558206edbe4a44364b51d170b33a5fa11dc3bb99feb # shrinks to ops = [Write { clock: 0, rows: [(1, 26, None, 0, false, 0)] }, Grid { table: 1, frontiers: [23, 0], window: Some((2678400000001, 9223372036854775807)), range: (None, None), clock: None }], block_rows = 1, checkpoint = 0
 cc 2184d9e6f7d05d95060521e6592b774d7c1db4b6869e50f60483db1908b04d94 # shrinks to ops = [Write(true, [(0, 9, 0, 0)], None), Write(false, [(0, 0, 0, 0)], None), Compact(false), GcAfterRefresh(false), Write(true, [(0, 9, 0, 0)], None)], block_rows = 1, checkpoint = 0
+cc 2ffaef5f07a57e867a73f52babb3df739cf52704e1db615d78cc59d1a6781765 # shrinks to ops = [Write(false, [], None), Write(false, [], None), Write(false, [(0, 0, 0, 0)], None), Write(false, [], Some(0)), GcAfterRefresh(false), Checkpoint(true)], block_rows = 1, checkpoint = 1

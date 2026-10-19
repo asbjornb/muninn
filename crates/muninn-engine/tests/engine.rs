@@ -401,7 +401,13 @@ fn ambiguous_commit_is_visible_after_reload() {
     // the seq range) and the retry is a harmless duplicate.
     let inner: Mem = Arc::new(MemoryStore::new());
     let store = Arc::new(FaultyStore::new(Arc::clone(&inner), 7));
-    let e = Engine::open(Arc::clone(&store), test_options(4, 0, false)).unwrap();
+    // A grace period, so the commit needs no head probe (the previous commit confirmed
+    // the head, decision 0007).
+    let opts = EngineOptions {
+        gc_grace: std::time::Duration::from_secs(3600),
+        ..test_options(4, 0, false)
+    };
+    let e = Engine::open(Arc::clone(&store), opts).unwrap();
     e.create_table(&CreateTable::new(
         "t",
         vec![ColumnDef::new("value", ColumnType::F64)],

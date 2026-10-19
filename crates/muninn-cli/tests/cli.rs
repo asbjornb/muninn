@@ -1164,3 +1164,75 @@ fn verify_detects_a_flipped_byte() {
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stdout).contains("problem: log entry 3"));
 }
+
+// ---------------------------------------------------------------------------------------
+// series import, verify on a truncated log
+// ---------------------------------------------------------------------------------------
+
+#[test]
+fn series_import_creates_all_or_nothing() {
+    let t = T::new();
+    t.ok(&["table", "create", "wind", "--column", "mw:f64"], "");
+    t.ok(&["table", "create", "solar", "--column", "mw:f64"], "");
+    let csv = "name,table,resolution,area,kind\n\
+               dk1,wind,1h,DK1,forecast\n\
+               dk2,,15m,DK2,\n\
+               \"se,1\",solar,,SE1,actual\n";
+    let out = t.ok(&["series", "import", "--table", "wind", "-"], csv);
+    assert!(out.contains("created 3 series (ids 1..=3)"), "{out}");
+    let list = t.ok(&["series", "list", "--format", "csv"], "");
+    let lines = csv_lines(&list);
+    assert_eq!(lines.len(), 4, "{list}");
+    assert!(lines[1].starts_with("1,dk1,wind,"), "{list}");
+    assert!(lines[1].contains("area=DK1,kind=forecast"), "{list}");
+    assert!(lines[2].starts_with("2,dk2,wind,area=DK2,"), "{list}");
+    assert!(lines[3].starts_with("3,\"se,1\",solar,"), "{list}");
+    // NDJSON; the third line repeats a name, so nothing is created.
+    let nd = r#"{"name": "a", "table": "wind", "tags": {"x": "1"}}
+{"name": "b", "table": "solar", "timezone": "Europe/Oslo", "resolution": "1h"}
+{"name": "a", "table": "wind"}
+"#;
+    let path = t.write_file("s.ndjson", nd);
+    let err = t.fail(&["series", "import", &path], "");
+    assert!(
+        err.contains("line 3") && err.contains("already_exists"),
+        "{err}"
+    );
+    let n = csv_lines(&t.ok(&["series", "list", "--format", "csv"], "")).len();
+    assert_eq!(n, 4);
+    let nd = nd.lines().take(2).collect::<Vec<_>>().join("\n");
+    let path = t.write_file("ok.ndjson", &nd);
+    let out = t.ok(&["series", "import", &path], "");
+    assert!(out.contains("created 2 series (ids 4..=5)"), "{out}");
+    let err = t.fail(&["series", "import", "-"], "name,table\nq,nope\n");
+    assert!(
+        err.contains("line 2") && err.contains("unknown_table"),
+        "{err}"
+    );
+    t.ok(&["verify"], "");
+}
+
+#[test]
+fn verify_accepts_a_truncated_log() {
+    let t = T::new();
+    t.ok(&["table", "create", "wind", "--column", "mw:f64"], "");
+    t.ok(&["series", "create", "dk1", "--table", "wind"], "");
+    for i in 0..4 {
+        let csv = format!(
+            "series,value_time,received_time,mw\n\
+             dk1,2025-01-01T0{i}:00:00Z,2025-01-01T00:00:0{i}Z,{i}\n"
+        );
+        t.ok(&["write", "-"], &csv);
+        t.ok(&["gc", "--grace", "0s"], "");
+    }
+    let first = fs::read_to_string(t.db().join("log/00000000000000000001.json")).unwrap();
+    assert!(first.contains("\"truncated\""), "{first}");
+    assert!(!t.db().join("log/00000000000000000002.json").exists());
+    let out = t.ok(&["verify"], "");
+    assert!(out.contains("note: the log is truncated"), "{out}");
+    assert!(out.contains("ok: "), "{out}");
+    let latest = t.ok(&["latest", "--table", "wind", "--format", "csv"], "");
+    assert_eq!(csv_lines(&latest).len(), 5, "{latest}");
+    let info = t.ok(&["info", "--format", "ndjson"], "");
+    assert!(info.contains("\"log_bytes\""), "{info}");
+}

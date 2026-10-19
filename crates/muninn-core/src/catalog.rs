@@ -55,6 +55,8 @@ pub enum CatalogChangeKind {
 pub struct Catalog {
     tables: Vec<TableDef>,
     series: Vec<SeriesDef>,
+    /// Series name → position in `series` (derived from `series`).
+    by_name: HashMap<Arc<str>, usize>,
 }
 
 /// Outcome of [`Catalog::validate_batch`].
@@ -98,9 +100,9 @@ impl Catalog {
 
     /// Series by name (`unknown_series`).
     pub fn series_by_name(&self, name: &str) -> Result<&SeriesDef> {
-        self.series
-            .iter()
-            .find(|s| &*s.name == name)
+        self.by_name
+            .get(name)
+            .map(|&i| &self.series[i])
             .ok_or_else(|| Error::new(ErrorKind::UnknownSeries, format!("no series {name:?}")))
     }
 
@@ -179,7 +181,7 @@ impl Catalog {
         // §10.4: empty name, unknown_table, uniqueness.
         validate_series_name(&req.name)?;
         self.table(&req.table)?;
-        if self.series.iter().any(|s| *s.name == *req.name) {
+        if self.by_name.contains_key(req.name.as_str()) {
             return Err(Error::new(
                 ErrorKind::AlreadyExists,
                 format!("series {:?} already exists", req.name),
@@ -241,6 +243,8 @@ impl Catalog {
                         def.name, def.id, checked.id
                     )));
                 }
+                self.by_name
+                    .insert(Arc::clone(&checked.name), self.series.len());
                 self.series.push(checked);
             }
         }

@@ -603,6 +603,80 @@ def test_series_id_value_column_is_never_clobbered():
     assert miss.schema.remove_metadata() == j.schema.remove_metadata()
 
 
+def test_create_series_batch_is_atomic(db):
+    made = db.create_series_batch(
+        ["s0", {"name": "s1", "tags": {"k": "v"}, "resolution": "15m"},
+         {"name": "s2", "table": "prices", "timezone": "Europe/Oslo"}],
+        table="prices",
+    )
+    assert [s.name for s in made] == ["s0", "s1", "s2"]
+    assert [s.id for s in made] == [3, 4, 5]
+    assert made[1].tags == {"k": "v"} and made[2].timezone == "Europe/Oslo"
+    assert {s.name for s in db.series("prices")} == {"DK1", "DK2", "s0", "s1", "s2"}
+    v = db.version
+    with pytest.raises(muninn.AlreadyExistsError):
+        db.create_series_batch(["x", "y", "x"], table="prices")
+    with pytest.raises(muninn.UnknownTableError):
+        db.create_series_batch(["z", {"name": "w", "table": "nope"}], table="prices")
+    with pytest.raises(muninn.InvalidArgumentError):
+        db.create_series_batch([{"name": "q", "table": "prices", "colour": "red"}])
+    assert db.version == v and len(db.series("prices")) == 5
+    assert db.create_series_batch([]) == []
+
+
+def test_history_lead_filter_matches_client_side_filter():
+    d = muninn.memory()
+    d.create_table("fc", columns={"mw": "f64", "issue": "timestamp"})
+    d.create_series_batch(["a", "b"], table="fc")
+    rows = []
+    for run in range(8):  # every 6 h, for the next 48 h
+        issued = T0 + run * 6 * H
+        for k in range(48):
+            for s in ("a", "b"):
+                rows.append({"series": s, "value_time": issued + k * H, "received_time": issued,
+                             "mw": float(run * 100 + k), "issue": issued})
+        d.write(rows, clock=issued)
+        rows = []
+    d.write([{"series": "a", "value_time": T0 + 50 * H, "received_time": T0 + 49 * H,
+              "mw": 1.0}], clock=T0 + 49 * H)  # null issue time: never matches
+    d.compact()
+    full = d.history("fc")
+    for lo, hi in [("24h", "25h"), ("0h", "48h"), ("30h", "30h"), ("-5h", "1h")]:
+        got = d.history("fc", lead=("issue", lo, hi))
+        lo_us, hi_us = (muninn._db._parse_duration(x) for x in (lo, hi))
+        lead = pa.compute.subtract(full.column("value_time").cast(pa.int64()),
+                                   full.column("issue").cast(pa.int64()))
+        keep = pa.compute.fill_null(pa.compute.and_(pa.compute.greater_equal(lead, lo_us),
+                                                    pa.compute.less(lead, hi_us)), False)
+        want = full.filter(keep)
+        assert got.drop_columns([]).equals(want.drop_columns([])), (lo, hi)
+        r = muninn.receipt(got)
+        assert r["request"]["lead"][0] == "issue"
+        assert muninn.replay_receipt(d, got).equals(got)
+    with pytest.raises(muninn.UnknownColumnError):
+        d.history("fc", lead=("nope", "0h", "1h"))
+    with pytest.raises(muninn.TypeMismatchError):
+        d.history("fc", lead=("mw", "0h", "1h"))
+    with pytest.raises(muninn.InvalidRangeError):
+        d.history("fc", lead=("issue", "2h", "1h"))
+    with pytest.raises(muninn.InvalidArgumentError):
+        d.history("fc", lead="issue")
+
+
+def test_gc_truncates_the_log(tmp_path):
+    d = muninn.open(tmp_path / "db", create=True)
+    d.create_table("t", columns={"x": "f64"})
+    d.create_series_batch([f"s{i}" for i in range(100)], table="t")
+    for i in range(6):
+        d.write([{"series": f"s{i}", "value_time": i, "received_time": i, "x": 1.0}],
+                clock=T0 + i * H)
+        r = d.gc(grace="0s")
+    assert r.log_deleted > 0
+    assert not (tmp_path / "db" / "log" / "00000000000000000002.json").exists()
+    d2 = muninn.open(tmp_path / "db")
+    assert d2.latest("t").num_rows == 6 and len(d2.series("t")) == 100
+
+
 def test_pandas_fallback_reports_spec_codes(db):
     with pytest.raises(muninn.TypeMismatchError):
         db.write(pd.DataFrame({"series": ["DK1"], "value_time": [T0], "received_time": [T0],

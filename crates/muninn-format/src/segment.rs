@@ -6,16 +6,17 @@ use muninn_core::types::{Clock, ColumnType, SeriesId, Version};
 use muninn_core::{Partitioning, Timestamp, Value};
 
 use crate::codec::{
-    Encoding, Reader, decode_bitmap, decode_ints, encode_bitmap, encode_ints, put_ivarint,
-    put_string, put_uvarint,
+    Encoding, Reader, decode_bitmap, decode_bitmap_into, decode_ints, decode_ints_into,
+    encode_bitmap, encode_ints, put_ivarint, put_string, put_uvarint,
 };
 use crate::partition::Partition;
 use crate::{Error, Result};
 
 /// First and last 8 bytes of every segment file.
 pub const MAGIC: [u8; 8] = *b"MUNINNSG";
-/// The format version written in the header (and the footer format byte).
-pub const FORMAT_VERSION: u16 = 1;
+/// The format version the writer uses by default, in the header and the footer format
+/// byte. Format 2 adds encoding 8 ([`Encoding::NibbleDelta`]); readers accept 1 and 2.
+pub const FORMAT_VERSION: u16 = 2;
 /// Header size: magic, `u16` version, `u16` flags, `u32` reserved.
 pub const HEADER_LEN: u64 = 16;
 /// Tail size: `u32` footer length, `u32` footer CRC-32C, magic.
@@ -76,18 +77,23 @@ fn granularity_code(g: Partitioning) -> u8 {
     }
 }
 
-fn value_encoding(ty: ColumnType) -> Encoding {
+fn value_encoding(ty: ColumnType, format: u8) -> Encoding {
     match ty {
         ColumnType::F64 => Encoding::PlainF64,
         ColumnType::I64 => Encoding::Zigzag,
         ColumnType::Bool => Encoding::Bitmap,
         ColumnType::String => Encoding::LengthPrefixed,
+        ColumnType::Timestamp if format >= 2 => Encoding::NibbleDelta,
         ColumnType::Timestamp => Encoding::Delta,
     }
 }
 
-/// Is `enc` a legal encoding for chunk `pos` (`ty` for value columns)?
-fn encoding_allowed(pos: usize, ty: Option<ColumnType>, enc: Encoding) -> bool {
+/// Is `enc` a legal encoding for chunk `pos` (`ty` for value columns) in a file of
+/// footer format `format`?
+fn encoding_allowed(pos: usize, ty: Option<ColumnType>, enc: Encoding, format: u8) -> bool {
+    if enc == Encoding::NibbleDelta && format < 2 {
+        return false;
+    }
     match (pos, ty) {
         (C_DELETED, None) => enc == Encoding::Bitmap,
         (_, None) => enc.is_integer(),
@@ -126,6 +132,13 @@ pub enum Compression {
     Zstd,
 }
 
+thread_local! {
+    /// One zstd decompression context per thread, reused for every chunk (creating one
+    /// per chunk dominated the decoding of small chunks).
+    static DECOMPRESSOR: std::cell::RefCell<Option<zstd::bulk::Decompressor<'static>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 /// Directory entry of one column chunk.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ChunkMeta {
@@ -151,6 +164,17 @@ impl ChunkMeta {
 
     /// Verifies the checksum of `stored` and decompresses it.
     fn open<'a>(&self, stored: &'a [u8]) -> Result<std::borrow::Cow<'a, [u8]>> {
+        let mut scratch = Vec::new();
+        Ok(match self.open_into(stored, &mut scratch)? {
+            Some(raw) => std::borrow::Cow::Borrowed(raw),
+            None => std::borrow::Cow::Owned(scratch),
+        })
+    }
+
+    /// [`ChunkMeta::open`] decompressing into `scratch` (whose capacity is reused):
+    /// `Some(stored)` for an uncompressed chunk, `None` when the raw bytes are now in
+    /// `scratch`.
+    fn open_into<'a>(&self, stored: &'a [u8], scratch: &mut Vec<u8>) -> Result<Option<&'a [u8]>> {
         if stored.len() as u64 != self.length {
             return Err(Error::corrupt(format!(
                 "chunk at {} has {} bytes, directory says {}",
@@ -166,28 +190,57 @@ impl ChunkMeta {
                 self.offset, self.crc32c
             )));
         }
-        match self.compression {
-            Compression::None => Ok(std::borrow::Cow::Borrowed(stored)),
-            Compression::Zstd => {
-                // Stream into a growing buffer (bounded by raw_length + 1) rather than
-                // trusting raw_length for an up-front allocation.
-                use std::io::Read;
-                let mut raw = Vec::new();
-                zstd::stream::read::Decoder::new(stored)
-                    .and_then(|d| d.take(self.raw_length + 1).read_to_end(&mut raw))
-                    .map_err(|e| Error::corrupt(format!("zstd chunk at {}: {e}", self.offset)))?;
-                if raw.len() as u64 != self.raw_length {
-                    return Err(Error::corrupt(format!(
-                        "chunk at {} decompressed to {} bytes, directory says {}",
-                        self.offset,
-                        raw.len(),
-                        self.raw_length
-                    )));
-                }
-                Ok(std::borrow::Cow::Owned(raw))
-            }
+        if self.compression == Compression::None {
+            return Ok(Some(stored));
         }
+        // The output is bounded by the buffer's capacity (at least `raw_length`; a
+        // decoded footer bounds raw_length by what the chunk's encoding can need,
+        // `max_raw_length`, the cap guards hand-built directories), and must be exactly
+        // `raw_length` bytes.
+        if self.raw_length > MAX_STRING_CHUNK_RAW {
+            return Err(Error::corrupt(format!(
+                "chunk at {} claims {} raw bytes",
+                self.offset, self.raw_length
+            )));
+        }
+        scratch.clear();
+        scratch.reserve(self.raw_length as usize);
+        DECOMPRESSOR
+            .with(|d| {
+                let mut d = d.borrow_mut();
+                if d.is_none() {
+                    *d = Some(zstd::bulk::Decompressor::new()?);
+                }
+                d.as_mut()
+                    .expect("just set")
+                    .decompress_to_buffer(stored, scratch)
+            })
+            .map_err(|e| Error::corrupt(format!("zstd chunk at {}: {e}", self.offset)))?;
+        if scratch.len() as u64 != self.raw_length {
+            return Err(Error::corrupt(format!(
+                "chunk at {} decompressed to {} bytes, directory says {}",
+                self.offset,
+                scratch.len(),
+                self.raw_length
+            )));
+        }
+        Ok(None)
     }
+}
+
+/// Reusable buffers for decoding blocks (one set per thread): allocating and freeing
+/// a block's worth of scratch memory per block made the allocator return pages to the
+/// system and fault them in again, which cost as much as the decoding itself.
+#[derive(Default)]
+struct Scratch {
+    raw: Vec<u8>,
+    ints: [Vec<i64>; 5],
+    present: Vec<bool>,
+    published: Vec<i64>,
+}
+
+thread_local! {
+    static SCRATCH: std::cell::RefCell<Scratch> = std::cell::RefCell::new(Scratch::default());
 }
 
 /// Inclusive bounds of a timestamp column.
@@ -340,6 +393,8 @@ impl BlockMeta {
 /// A decoded segment footer (FORMAT.md §5).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Footer {
+    /// The footer format byte (1 or 2; it equals the header's format version).
+    pub format: u8,
     /// The table name (informational; the engine also knows it from the path).
     pub table: String,
     /// The partition.
@@ -439,6 +494,29 @@ impl Footer {
     /// the file bytes of engine chunk `i`), verifying checksums, the series directory,
     /// the sort order and the block statistics.
     pub fn decode_engine_block(&self, b: usize, chunks: &[&[u8]]) -> Result<EngineBlock> {
+        let mut out = EngineBlock::default();
+        self.decode_engine_block_into(b, chunks, &mut out)?;
+        Ok(out)
+    }
+
+    /// [`Footer::decode_engine_block`] into `out`, reusing its vectors' capacity (and the
+    /// thread's scratch buffers). On an error `out` holds no meaningful rows.
+    pub fn decode_engine_block_into(
+        &self,
+        b: usize,
+        chunks: &[&[u8]],
+        out: &mut EngineBlock,
+    ) -> Result<()> {
+        SCRATCH.with(|s| self.decode_engine_block_with(b, chunks, out, &mut s.borrow_mut()))
+    }
+
+    fn decode_engine_block_with(
+        &self,
+        b: usize,
+        chunks: &[&[u8]],
+        out: &mut EngineBlock,
+        sc: &mut Scratch,
+    ) -> Result<()> {
         let block = self
             .blocks
             .get(b)
@@ -447,106 +525,262 @@ impl Footer {
             return Err(Error::invalid("decode_engine_block needs 7 chunks"));
         }
         let n = block.row_count as usize;
-        let open = |i: usize| block.chunks[i].open(chunks[i]);
-        let ints = |i: usize, what: &'static str| -> Result<Vec<i64>> {
-            let raw = open(i)?;
-            let mut r = Reader::new(&raw, what);
-            let v = decode_ints(block.chunks[i].encoding, n, &mut r)?;
-            r.finish()?;
-            Ok(v)
+        let Scratch {
+            raw,
+            ints,
+            present,
+            published,
+        } = sc;
+        let [series_raw, value_time, received_time, system_time, seq] = ints;
+        let mut decode = |i: usize, what: &'static str, dst: &mut Vec<i64>| -> Result<()> {
+            let bytes = block.chunks[i].open_into(chunks[i], raw)?.unwrap_or(raw);
+            let mut r = Reader::new(bytes, what);
+            decode_ints_into(block.chunks[i].encoding, n, &mut r, dst)?;
+            r.finish()
         };
-        let to_ts = |v: Vec<i64>, what: &str| -> Result<Vec<Timestamp>> {
-            v.into_iter().map(|x| ts_checked(x, what)).collect()
-        };
-
-        let series_raw = ints(C_SERIES, "series chunk")?;
-        let value_time = to_ts(ints(C_VALUE_TIME, "value_time chunk")?, "value_time")?;
-        let received_time = to_ts(ints(C_RECEIVED, "received_time chunk")?, "received_time")?;
-        let system_time = to_ts(ints(C_SYSTEM, "system_time chunk")?, "system_time")?;
-        let seq: Vec<u64> = ints(C_SEQ, "seq chunk")?
-            .into_iter()
-            .map(|x| x as u64)
-            .collect();
-        let published_time = {
-            let raw = open(C_PUBLISHED)?;
-            let mut r = Reader::new(&raw, "published_time chunk");
-            let present = read_validity(n, &mut r)?;
+        decode(C_SERIES, "series chunk", series_raw)?;
+        decode(C_VALUE_TIME, "value_time chunk", value_time)?;
+        decode(C_RECEIVED, "received_time chunk", received_time)?;
+        decode(C_SYSTEM, "system_time chunk", system_time)?;
+        decode(C_SEQ, "seq chunk", seq)?;
+        {
+            let bytes = block.chunks[C_PUBLISHED]
+                .open_into(chunks[C_PUBLISHED], raw)?
+                .unwrap_or(raw);
+            let mut r = Reader::new(bytes, "published_time chunk");
+            read_validity_into(n, &mut r, present)?;
             let k = present.iter().filter(|&&p| p).count();
-            let mut vals = decode_ints(block.chunks[C_PUBLISHED].encoding, k, &mut r)?.into_iter();
+            decode_ints_into(block.chunks[C_PUBLISHED].encoding, k, &mut r, published)?;
             r.finish()?;
-            let mut out = Vec::with_capacity(n);
-            for p in present {
-                out.push(match p {
-                    true => Some(ts_checked(
-                        vals.next().expect("k values"),
-                        "published_time",
-                    )?),
-                    false => None,
-                });
-            }
-            out
-        };
-        let deleted = {
-            let raw = open(C_DELETED)?;
-            let mut r = Reader::new(&raw, "deleted chunk");
-            let v = decode_bitmap(n, &mut r)?;
+        }
+        {
+            let bytes = block.chunks[C_DELETED]
+                .open_into(chunks[C_DELETED], raw)?
+                .unwrap_or(raw);
+            let mut r = Reader::new(bytes, "deleted chunk");
+            decode_bitmap_into(n, &mut r, &mut out.deleted)?;
             r.finish()?;
-            v
-        };
+        }
 
-        // Series ids must agree with the directory for this block's rows.
-        let mut series = Vec::with_capacity(n);
+        // Series ids must agree with the directory for this block's rows: one tight
+        // comparison per directory entry overlapping the block (the entries tile the
+        // rows, checked when the footer was decoded).
+        let series = &mut out.series;
+        series.clear();
+        let end = block.row_start + n as u64;
         let mut e = self
             .series
             .partition_point(|s| s.row_end <= block.row_start);
-        for (i, &raw) in series_raw.iter().enumerate() {
-            let row = block.row_start + i as u64;
-            while e < self.series.len() && self.series[e].row_end <= row {
-                e += 1;
-            }
+        while (series.len() as u64) < n as u64 {
             let entry = self
                 .series
                 .get(e)
                 .ok_or_else(|| Error::corrupt("row beyond the series directory"))?;
-            if raw != i64::from(entry.id.0) {
+            let lo = (entry.row_start.max(block.row_start) - block.row_start) as usize;
+            let hi = (entry.row_end.min(end) - block.row_start) as usize;
+            if lo != series.len() || hi <= lo {
+                return Err(Error::corrupt("series directory does not tile the block"));
+            }
+            let id = i64::from(entry.id.0);
+            if let Some(off) = series_raw[lo..hi].iter().position(|&x| x != id) {
                 return Err(Error::corrupt(format!(
-                    "row {row} has series {raw}, directory says {}",
+                    "row {} has series {}, directory says {}",
+                    block.row_start + (lo + off) as u64,
+                    series_raw[lo + off],
                     entry.id.0
                 )));
             }
-            series.push(entry.id);
+            series.resize(hi, entry.id);
+            e += 1;
         }
 
-        let out = EngineBlock {
-            series,
-            value_time,
-            published_time,
-            received_time,
-            system_time,
-            seq,
-            deleted,
-        };
-        // Sort order (strict: seq is unique) and statistics.
+        // Every row within its block statistics (whose bounds are valid timestamps, so
+        // this also range-checks every value) and in strict sort order (seq is unique).
+        let b_vt = (
+            block.value_time.min.as_micros(),
+            block.value_time.max.as_micros(),
+        );
+        let b_rt = (
+            block.received_time.min.as_micros(),
+            block.received_time.max.as_micros(),
+        );
+        let b_pt = (
+            block.published_time.min.as_micros(),
+            block.published_time.max.as_micros(),
+        );
+        let b_st = (
+            block.system_time.min.as_micros(),
+            block.system_time.max.as_micros(),
+        );
+        let inside = |b: (i64, i64), x: i64| b.0 <= x && x <= b.1;
+        let published_time = &mut out.published_time;
+        published_time.clear();
+        let mut pv = published.iter();
+        let mut prev: Option<(SeriesId, i64, i64, i64, u64)> = None;
         for i in 0..n {
-            let eff = out.published_time[i].unwrap_or(out.received_time[i]);
-            if !(block.value_time.contains(out.value_time[i])
-                && block.received_time.contains(out.received_time[i])
-                && block.published_time.contains(eff)
-                && block.system_time.contains(out.system_time[i])
-                && (self.stats.seq_min..=self.stats.seq_max).contains(&out.seq[i]))
+            let pt = if present[i] {
+                Some(*pv.next().expect("k values"))
+            } else {
+                None
+            };
+            let (vt, rt, st, sq) = (
+                value_time[i],
+                received_time[i],
+                system_time[i],
+                seq[i] as u64,
+            );
+            if !(inside(b_vt, vt)
+                && inside(b_rt, rt)
+                && inside(b_pt, pt.unwrap_or(rt))
+                && inside(b_st, st)
+                && (self.stats.seq_min..=self.stats.seq_max).contains(&sq))
             {
                 return Err(Error::corrupt(format!(
                     "row {} lies outside its block statistics",
                     block.row_start + i as u64
                 )));
             }
-            if i > 0 && sort_key(&out, i - 1) >= sort_key(&out, i) {
+            let key = (series[i], vt, rt, st, sq);
+            if prev.is_some_and(|p| p >= key) {
                 return Err(Error::corrupt(format!(
                     "rows {} and {} are out of order",
                     block.row_start + i as u64 - 1,
                     block.row_start + i as u64
                 )));
             }
+            prev = Some(key);
+            published_time.push(pt.map(|p| ts_checked(p, "published_time")).transpose()?);
+        }
+        let ts = |dst: &mut Vec<Timestamp>, v: &[i64], what: &str| {
+            dst.clear();
+            Timestamp::extend_from_micros(dst, v)
+                .map_err(|i| Error::corrupt(format!("{what}: row {i} out of range")))
+        };
+        ts(&mut out.value_time, value_time, "value_time")?;
+        ts(&mut out.received_time, received_time, "received_time")?;
+        ts(&mut out.system_time, system_time, "system_time")?;
+        out.seq.clear();
+        out.seq.extend(seq.iter().map(|&x| x as u64));
+        Ok(())
+    }
+
+    /// Decodes an `i64` or `timestamp` value column (position `pos` in
+    /// [`Footer::columns`]) of block `b` as raw integers (µs for timestamps), `None` for
+    /// nulls — the same values [`Footer::decode_value_chunk`] returns, without building
+    /// a [`Value`] per row.
+    pub fn decode_int_column(
+        &self,
+        b: usize,
+        pos: usize,
+        stored: &[u8],
+    ) -> Result<Vec<Option<i64>>> {
+        let block = self
+            .blocks
+            .get(b)
+            .ok_or_else(|| Error::invalid(format!("no block {b}")))?;
+        let col = self
+            .columns
+            .get(pos)
+            .ok_or_else(|| Error::invalid(format!("no value column at position {pos}")))?;
+        if !matches!(col.ty, ColumnType::I64 | ColumnType::Timestamp) {
+            return Err(Error::invalid(format!(
+                "column {} is not an integer column",
+                col.id
+            )));
+        }
+        let meta = &block.chunks[ENGINE_COLUMNS + pos];
+        let n = block.row_count as usize;
+        let raw = meta.open(stored)?;
+        let mut r = Reader::new(&raw, "value chunk");
+        let present = read_validity(n, &mut r)?;
+        let k = present.iter().filter(|&&p| p).count();
+        let vals = decode_ints(meta.encoding, k, &mut r)?;
+        r.finish()?;
+        if col.ty == ColumnType::Timestamp
+            && let Some(&x) = vals.iter().find(|&&x| Timestamp::from_micros(x).is_none())
+        {
+            return Err(Error::corrupt(format!(
+                "timestamp value: {x}us out of range"
+            )));
+        }
+        let mut vals = vals.into_iter();
+        Ok(present
+            .into_iter()
+            .map(|p| if p { vals.next() } else { None })
+            .collect())
+    }
+
+    /// [`Footer::decode_value_chunk`] for only the block-relative `rows` (ascending, may
+    /// repeat): one value per requested row. The chunk is verified and validated as a
+    /// whole exactly as by `decode_value_chunk`, but values are built only for the
+    /// requested rows (fixed-width `f64` values are not even decoded otherwise).
+    pub fn decode_value_rows(
+        &self,
+        b: usize,
+        pos: usize,
+        stored: &[u8],
+        rows: &[u32],
+    ) -> Result<Vec<Option<Value>>> {
+        let block = self
+            .blocks
+            .get(b)
+            .ok_or_else(|| Error::invalid(format!("no block {b}")))?;
+        let col = self
+            .columns
+            .get(pos)
+            .ok_or_else(|| Error::invalid(format!("no value column at position {pos}")))?;
+        let n = block.row_count as usize;
+        if rows.windows(2).any(|w| w[0] > w[1]) || rows.last().is_some_and(|&r| r as usize >= n) {
+            return Err(Error::invalid(
+                "rows must be ascending and within the block",
+            ));
+        }
+        if matches!(col.ty, ColumnType::I64 | ColumnType::Timestamp) {
+            let all = self.decode_int_column(b, pos, stored)?;
+            let ts = col.ty == ColumnType::Timestamp;
+            return rows
+                .iter()
+                .map(|&r| {
+                    all[r as usize]
+                        .map(|x| {
+                            if ts {
+                                ts_checked(x, "timestamp value").map(Value::Timestamp)
+                            } else {
+                                Ok(Value::I64(x))
+                            }
+                        })
+                        .transpose()
+                })
+                .collect();
+        }
+        if col.ty != ColumnType::F64 {
+            let all = self.decode_value_chunk(b, pos, stored)?;
+            return Ok(rows.iter().map(|&r| all[r as usize].clone()).collect());
+        }
+        let meta = &block.chunks[ENGINE_COLUMNS + pos];
+        let raw = meta.open(stored)?;
+        let mut r = Reader::new(&raw, "value chunk");
+        let present = read_validity(n, &mut r)?;
+        let k = present.iter().filter(|&&p| p).count();
+        if k > r.remaining() / 8 {
+            return Err(r.err("f64 chunk truncated"));
+        }
+        let vals = r.bytes(8 * k)?;
+        r.finish()?;
+        // Rank of each requested row among the present ones.
+        let mut out = Vec::with_capacity(rows.len());
+        let (mut row, mut rank) = (0usize, 0usize);
+        for &want in rows {
+            while row < want as usize {
+                rank += usize::from(present[row]);
+                row += 1;
+            }
+            out.push(present[row].then(|| {
+                let b = &vals[8 * rank..8 * rank + 8];
+                Value::F64(f64::from_bits(u64::from_le_bytes(
+                    b.try_into().expect("8 bytes"),
+                )))
+            }));
         }
         Ok(out)
     }
@@ -616,14 +850,29 @@ impl Footer {
     }
 }
 
-fn sort_key(b: &EngineBlock, i: usize) -> (SeriesId, Timestamp, Timestamp, Timestamp, u64) {
-    (
-        b.series[i],
-        b.value_time[i],
-        b.received_time[i],
-        b.system_time[i],
-        b.seq[i],
-    )
+/// [`read_validity`] into `out` (cleared first; its capacity is reused).
+fn read_validity_into(n: usize, r: &mut Reader<'_>, out: &mut Vec<bool>) -> Result<()> {
+    match r.u8()? {
+        0 => {
+            out.clear();
+            out.resize(n, true);
+            Ok(())
+        }
+        1 => {
+            out.clear();
+            out.resize(n, false);
+            Ok(())
+        }
+        2 => {
+            decode_bitmap_into(n, r, out)?;
+            let k = out.iter().filter(|&&b| b).count();
+            if k == 0 || k == n {
+                return Err(r.err("validity bitmap used for an all-null or no-null chunk"));
+            }
+            Ok(())
+        }
+        m => Err(r.err(format!("unknown null mode {m}"))),
+    }
 }
 
 /// The nullable-chunk prefix (FORMAT.md §4.1): mode byte, then a validity bitmap for mode
@@ -660,11 +909,9 @@ fn put_validity(present: &[bool], out: &mut Vec<u8>) {
 // Footer encoding
 // ---------------------------------------------------------------------------------------
 
-const FOOTER_FORMAT: u8 = 1;
-
 fn encode_footer(f: &Footer) -> Vec<u8> {
     let mut out = Vec::new();
-    out.push(FOOTER_FORMAT);
+    out.push(f.format);
     put_string(&mut out, &f.table);
     out.push(granularity_code(f.partition.granularity));
     put_ivarint(&mut out, f.partition.index);
@@ -741,7 +988,7 @@ fn encode_footer(f: &Footer) -> Vec<u8> {
 fn decode_footer(bytes: &[u8], footer_offset: u64, file_size: u64) -> Result<Footer> {
     let mut r = Reader::new(bytes, "footer");
     let fmt = r.u8()?;
-    if fmt != FOOTER_FORMAT {
+    if !(1..=2).contains(&fmt) {
         return Err(Error::unsupported(format!("footer format {fmt}")));
     }
     let table = r.string()?.to_owned();
@@ -904,7 +1151,7 @@ fn decode_footer(bytes: &[u8], footer_offset: u64, file_size: u64) -> Result<Foo
             };
             let crc32c = r.u32_le()?;
             let ty = pos.checked_sub(ENGINE_COLUMNS).map(|j| columns[j].ty);
-            if !encoding_allowed(pos, ty, encoding) {
+            if !encoding_allowed(pos, ty, encoding, fmt) {
                 return Err(r.err(format!("encoding {encoding:?} not allowed for chunk {pos}")));
             }
             let end = offset.checked_add(length);
@@ -941,6 +1188,7 @@ fn decode_footer(bytes: &[u8], footer_offset: u64, file_size: u64) -> Result<Foo
     }
     r.finish()?;
     Ok(Footer {
+        format: fmt,
         table,
         partition,
         row_count,
@@ -993,9 +1241,11 @@ pub fn parse_tail(tail: &[u8], file_size: u64) -> Result<Tail> {
     if k < footer_len + TAIL_LEN {
         return Ok(Tail::NeedBytes(footer_len + TAIL_LEN));
     }
-    if k == file_size {
-        check_header(tail)?;
-    }
+    let header = if k == file_size {
+        Some(check_header(tail)?)
+    } else {
+        None
+    };
     let end = tail.len() - TAIL_LEN as usize;
     let bytes = &tail[end - footer_len as usize..end];
     let computed = crc32c::crc32c(bytes);
@@ -1005,27 +1255,32 @@ pub fn parse_tail(tail: &[u8], file_size: u64) -> Result<Tail> {
         )));
     }
     let footer_offset = file_size - TAIL_LEN - footer_len;
-    Ok(Tail::Footer(Box::new(decode_footer(
-        bytes,
-        footer_offset,
-        file_size,
-    )?)))
+    let footer = decode_footer(bytes, footer_offset, file_size)?;
+    if header.is_some_and(|h| h != u16::from(footer.format)) {
+        return Err(Error::corrupt(format!(
+            "header format {} but footer format {}",
+            header.expect("some"),
+            footer.format
+        )));
+    }
+    Ok(Tail::Footer(Box::new(footer)))
 }
 
-fn check_header(file: &[u8]) -> Result<()> {
+/// Checks the header; returns its format version (1 or 2).
+fn check_header(file: &[u8]) -> Result<u16> {
     let mut r = Reader::new(file, "header");
     if r.bytes(8)? != MAGIC {
         return Err(Error::corrupt("bad leading magic"));
     }
     let version = r.u16_le()?;
-    if version != FORMAT_VERSION {
+    if !(1..=2).contains(&version) {
         return Err(Error::unsupported(format!("format version {version}")));
     }
     let (flags, reserved) = (r.u16_le()?, r.u32_le()?);
     if flags != 0 || reserved != 0 {
         return Err(Error::unsupported("unknown header flags"));
     }
-    Ok(())
+    Ok(version)
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1037,18 +1292,27 @@ fn check_header(file: &[u8]) -> Result<()> {
 pub struct WriteOptions {
     /// Maximum rows per block (1..=[`MAX_BLOCK_ROWS`]).
     pub block_rows: usize,
+    /// A block also ends where a new series starts once it holds at least this many rows
+    /// (0 = only at `block_rows`). Rows are sorted by series, so a reader that needs one
+    /// series then decodes (almost) only that series' blocks.
+    pub series_block_rows: usize,
     /// Compress chunks with zstd when that makes them smaller.
     pub compress: bool,
     /// zstd level.
     pub zstd_level: i32,
+    /// Segment format to write: 2 (default; nibble-length integer encoding), or 1 for
+    /// readers that predate format 2.
+    pub format_version: u16,
 }
 
 impl Default for WriteOptions {
     fn default() -> WriteOptions {
         WriteOptions {
             block_rows: 16_384,
+            series_block_rows: 1024,
             compress: true,
             zstd_level: 3,
+            format_version: FORMAT_VERSION,
         }
     }
 }
@@ -1073,6 +1337,16 @@ pub fn write_segment(
     if !(1..=MAX_BLOCK_ROWS).contains(&opts.block_rows) {
         return Err(Error::invalid("block_rows out of range"));
     }
+    if !(1..=2).contains(&opts.format_version) {
+        return Err(Error::invalid("format_version must be 1 or 2"));
+    }
+    let format = opts.format_version as u8;
+    // Integer encodings: format 2 decodes engine timestamps and seqs without varints.
+    let (time_enc, vt_enc) = if format >= 2 {
+        (Encoding::NibbleDelta, Encoding::NibbleDelta)
+    } else {
+        (Encoding::Delta, Encoding::DeltaOfDelta)
+    };
     if columns.windows(2).any(|w| w[0].id >= w[1].id) {
         return Err(Error::invalid("column ids must be strictly increasing"));
     }
@@ -1125,7 +1399,7 @@ pub fn write_segment(
 
     let mut file = Vec::new();
     file.extend_from_slice(&MAGIC);
-    file.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
+    file.extend_from_slice(&opts.format_version.to_le_bytes());
     file.extend_from_slice(&0u16.to_le_bytes());
     file.extend_from_slice(&0u32.to_le_bytes());
 
@@ -1151,8 +1425,23 @@ pub fn write_segment(
         meta
     };
 
+    // Block boundaries: at most `block_rows` rows, and a cut at a series change once a
+    // block has `series_block_rows`.
+    let mut cuts = vec![0usize];
+    for i in 1..order.len() {
+        let len = i - cuts[cuts.len() - 1];
+        if len >= opts.block_rows
+            || (opts.series_block_rows > 0
+                && len >= opts.series_block_rows
+                && order[i].series != order[i - 1].series)
+        {
+            cuts.push(i);
+        }
+    }
+    cuts.push(order.len());
     let mut blocks = Vec::new();
-    for (bi, rows) in order.chunks(opts.block_rows).enumerate() {
+    for w in cuts.windows(2) {
+        let rows = &order[w[0]..w[1]];
         let mut chunks = Vec::with_capacity(ENGINE_COLUMNS + columns.len());
         let ints = |f: &dyn Fn(&Version) -> i64, enc: Encoding| {
             let vals: Vec<i64> = rows.iter().map(|v| f(v)).collect();
@@ -1162,8 +1451,8 @@ pub fn write_segment(
         };
         let raw = ints(&|v| i64::from(v.series.0), Encoding::RunLength);
         chunks.push(put_chunk(&mut file, raw, Encoding::RunLength));
-        let raw = ints(&|v| v.value_time.as_micros(), Encoding::DeltaOfDelta);
-        chunks.push(put_chunk(&mut file, raw, Encoding::DeltaOfDelta));
+        let raw = ints(&|v| v.value_time.as_micros(), vt_enc);
+        chunks.push(put_chunk(&mut file, raw, vt_enc));
         {
             let present: Vec<bool> = rows.iter().map(|v| v.published_time.is_some()).collect();
             let mut raw = Vec::new();
@@ -1172,15 +1461,15 @@ pub fn write_segment(
                 .iter()
                 .filter_map(|v| v.published_time.map(Timestamp::as_micros))
                 .collect();
-            encode_ints(Encoding::Delta, &vals, &mut raw);
-            chunks.push(put_chunk(&mut file, raw, Encoding::Delta));
+            encode_ints(time_enc, &vals, &mut raw);
+            chunks.push(put_chunk(&mut file, raw, time_enc));
         }
-        let raw = ints(&|v| v.received_time.as_micros(), Encoding::Delta);
-        chunks.push(put_chunk(&mut file, raw, Encoding::Delta));
-        let raw = ints(&|v| v.system_time.as_micros(), Encoding::Delta);
-        chunks.push(put_chunk(&mut file, raw, Encoding::Delta));
-        let raw = ints(&|v| v.seq as i64, Encoding::Delta);
-        chunks.push(put_chunk(&mut file, raw, Encoding::Delta));
+        let raw = ints(&|v| v.received_time.as_micros(), time_enc);
+        chunks.push(put_chunk(&mut file, raw, time_enc));
+        let raw = ints(&|v| v.system_time.as_micros(), time_enc);
+        chunks.push(put_chunk(&mut file, raw, time_enc));
+        let raw = ints(&|v| v.seq as i64, time_enc);
+        chunks.push(put_chunk(&mut file, raw, time_enc));
         {
             let mut raw = Vec::new();
             encode_bitmap(rows.iter().map(|v| v.deleted), &mut raw);
@@ -1191,7 +1480,7 @@ pub fn write_segment(
             let present: Vec<bool> = vals.iter().map(Option::is_some).collect();
             let mut raw = Vec::new();
             put_validity(&present, &mut raw);
-            let enc = value_encoding(c.ty);
+            let enc = value_encoding(c.ty, format);
             let some = vals.iter().flatten();
             match c.ty {
                 ColumnType::F64 => {
@@ -1226,7 +1515,7 @@ pub fn write_segment(
             chunks.push(put_chunk(&mut file, raw, enc));
         }
         blocks.push(BlockMeta {
-            row_start: (bi * opts.block_rows) as u64,
+            row_start: w[0] as u64,
             row_count: rows.len() as u32,
             value_time: bounds(rows, &|v| v.value_time),
             received_time: bounds(rows, &|v| v.received_time),
@@ -1304,6 +1593,7 @@ pub fn write_segment(
         })
         .collect();
     let footer = Footer {
+        format,
         table: table.to_owned(),
         partition,
         row_count: order.len() as u64,
@@ -1370,9 +1660,16 @@ impl<'a> SegmentFile<'a> {
 
     /// Decodes the engine columns of block `b`.
     pub fn engine_block(&self, b: usize) -> Result<EngineBlock> {
+        let mut out = EngineBlock::default();
+        self.engine_block_into(b, &mut out)?;
+        Ok(out)
+    }
+
+    /// [`SegmentFile::engine_block`] into `out`, reusing its capacity.
+    pub fn engine_block_into(&self, b: usize, out: &mut EngineBlock) -> Result<()> {
         let ranges = self.footer.engine_chunk_ranges(b);
         let chunks: Vec<&[u8]> = ranges.into_iter().map(|r| self.slice(r)).collect();
-        self.footer.decode_engine_block(b, &chunks)
+        self.footer.decode_engine_block_into(b, &chunks, out)
     }
 
     /// Decodes value column at position `pos` of block `b`.
@@ -1436,5 +1733,179 @@ impl<'a> SegmentFile<'a> {
             }
         }
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod format_versions {
+    use super::*;
+    use muninn_core::types::Version;
+
+    fn one_version() -> Vec<Version> {
+        vec![Version {
+            series: SeriesId(1),
+            value_time: Timestamp::from_micros(10).unwrap(),
+            published_time: None,
+            received_time: Timestamp::from_micros(5).unwrap(),
+            deleted: false,
+            values: vec![Some(Value::Timestamp(Timestamp::from_micros(3).unwrap()))],
+            system_time: Timestamp::from_micros(7).unwrap(),
+            seq: 1,
+        }]
+    }
+
+    fn write(format_version: u16) -> Vec<u8> {
+        let part = Partition::of(Partitioning::Day, Timestamp::from_micros(10).unwrap());
+        let cols = [ValueColumn {
+            id: 0,
+            ty: ColumnType::Timestamp,
+        }];
+        let opts = WriteOptions {
+            format_version,
+            compress: false,
+            ..WriteOptions::default()
+        };
+        write_segment("t", part, &cols, &one_version(), &opts).unwrap()
+    }
+
+    fn footer_bytes(file: &[u8]) -> (usize, usize) {
+        let n = file.len();
+        let len = u32::from_le_bytes(file[n - 16..n - 12].try_into().unwrap()) as usize;
+        (n - 16 - len, n - 16)
+    }
+
+    fn reseal(file: &mut [u8]) {
+        let (a, b) = footer_bytes(file);
+        let crc = crc32c::crc32c(&file[a..b]);
+        let n = file.len();
+        file[n - 12..n - 8].copy_from_slice(&crc.to_le_bytes());
+    }
+
+    #[test]
+    fn both_formats_read_and_rules_hold() {
+        let v1 = write(1);
+        let v2 = write(2);
+        for f in [&v1, &v2] {
+            let s = SegmentFile::open(f).unwrap();
+            assert_eq!(s.versions().unwrap(), one_version());
+        }
+        assert_eq!(SegmentFile::open(&v1).unwrap().footer().format, 1);
+        assert_eq!(SegmentFile::open(&v2).unwrap().footer().format, 2);
+        assert_eq!(u16::from_le_bytes([v2[8], v2[9]]), 2);
+        // Encoding 8 is not allowed in a format-1 footer.
+        let mut bad = v2.clone();
+        let (a, _) = footer_bytes(&bad);
+        bad[a] = 1;
+        bad[8] = 1;
+        reseal(&mut bad);
+        let e = SegmentFile::open(&bad).unwrap_err();
+        assert!(e.message().contains("not allowed"), "{e}");
+        // Header and footer formats must agree.
+        let mut bad = v2.clone();
+        bad[8] = 1;
+        assert!(SegmentFile::open(&bad).is_err());
+        // Unknown formats are unsupported.
+        let mut bad = v2.clone();
+        bad[8] = 3;
+        assert_eq!(
+            SegmentFile::open(&bad).unwrap_err().kind(),
+            crate::ErrorKind::Unsupported
+        );
+        let mut bad = v2;
+        let (a, _) = footer_bytes(&bad);
+        bad[a] = 3;
+        reseal(&mut bad);
+        assert_eq!(
+            parse_tail(&bad, bad.len() as u64)
+                .map(|_| ())
+                .unwrap_err()
+                .kind(),
+            crate::ErrorKind::Unsupported
+        );
+    }
+}
+
+#[cfg(test)]
+mod experiments {
+    use super::*;
+
+    /// Size and speed of the integer encodings on real engine columns
+    /// (`MUNINN_PERF_SEGMENTS=<dir> cargo test --release -p muninn-format --lib --
+    /// --ignored --nocapture encoding_experiment`).
+    #[test]
+    #[ignore]
+    fn encoding_experiment() {
+        let Ok(dir) = std::env::var("MUNINN_PERF_SEGMENTS") else {
+            return;
+        };
+        fn files(p: &std::path::Path, out: &mut Vec<Vec<u8>>) {
+            for e in std::fs::read_dir(p).unwrap().flatten() {
+                if e.path().is_dir() {
+                    files(&e.path(), out);
+                } else if e.path().extension().is_some_and(|x| x == "seg") {
+                    out.push(std::fs::read(e.path()).unwrap());
+                }
+            }
+        }
+        let mut segs = Vec::new();
+        files(std::path::Path::new(&dir), &mut segs);
+        let names = ["value_time", "received", "system", "seq", "published"];
+        let encs = [
+            Encoding::Delta,
+            Encoding::DeltaOfDelta,
+            Encoding::NibbleDelta,
+        ];
+        let mut stored = [[0usize; 3]; 5];
+        let mut time = [[std::time::Duration::ZERO; 3]; 5];
+        let mut rows = 0usize;
+        let mut d = zstd::bulk::Decompressor::new().unwrap();
+        for bytes in &segs {
+            let f = SegmentFile::open(bytes).unwrap();
+            for b in 0..f.footer().blocks.len() {
+                let eb = f.engine_block(b).unwrap();
+                rows += eb.len();
+                let cols: [Vec<i64>; 5] = [
+                    eb.value_time.iter().map(|t| t.as_micros()).collect(),
+                    eb.received_time.iter().map(|t| t.as_micros()).collect(),
+                    eb.system_time.iter().map(|t| t.as_micros()).collect(),
+                    eb.seq.iter().map(|&x| x as i64).collect(),
+                    eb.published_time
+                        .iter()
+                        .flatten()
+                        .map(|t| t.as_micros())
+                        .collect(),
+                ];
+                for (c, vals) in cols.iter().enumerate() {
+                    for (k, &enc) in encs.iter().enumerate() {
+                        let mut raw = Vec::new();
+                        encode_ints(enc, vals, &mut raw);
+                        let z = zstd::bulk::compress(&raw, 3).unwrap();
+                        stored[c][k] += z.len().min(raw.len());
+                        let t = std::time::Instant::now();
+                        let mut out = Vec::with_capacity(raw.len());
+                        d.decompress_to_buffer(&z, &mut out).unwrap();
+                        let mut r = Reader::new(&out, "x");
+                        let v = decode_ints(enc, vals.len(), &mut r).unwrap();
+                        time[c][k] += t.elapsed();
+                        assert_eq!(&v, vals);
+                    }
+                }
+            }
+        }
+        for c in 0..5 {
+            eprintln!(
+                "{:>10}: {}",
+                names[c],
+                (0..3)
+                    .map(|k| format!(
+                        "{:?} {:.3} B/row {:.2} ns/row",
+                        encs[k],
+                        stored[c][k] as f64 / rows as f64,
+                        time[c][k].as_nanos() as f64 / rows as f64
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            );
+        }
     }
 }

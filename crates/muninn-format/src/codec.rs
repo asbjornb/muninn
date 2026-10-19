@@ -31,6 +31,36 @@ pub fn put_ivarint(out: &mut Vec<u8>, v: i64) {
     put_uvarint(out, zigzag(v));
 }
 
+/// Decodes a canonical varint of at most 8 bytes from the first 8 bytes of `buf` in a
+/// few word operations: `None` if fewer than 8 bytes are available, the varint is longer,
+/// or it is not canonical (callers fall back to the byte-wise decoder, which reports
+/// errors).
+#[inline(always)]
+fn varint_word(buf: &[u8]) -> Option<(u64, usize)> {
+    let w = u64::from_le_bytes(*buf.first_chunk::<8>()?);
+    // Bit 7 of byte k is clear where the varint ends.
+    let stops = !w & 0x8080_8080_8080_8080;
+    if stops == 0 {
+        return None;
+    }
+    let len = (stops.trailing_zeros() as usize >> 3) + 1;
+    let w = if len == 8 {
+        w
+    } else {
+        w & ((1u64 << (8 * len)) - 1)
+    };
+    // Canonical: a multi-byte varint does not end in a zero byte.
+    if len > 1 && w >> (8 * (len - 1)) == 0 {
+        return None;
+    }
+    // Squeeze the 7-bit groups together (8 x 7 = 56 bits, no overflow possible).
+    let x = w & 0x7f7f_7f7f_7f7f_7f7f;
+    let x = ((x & 0x7f00_7f00_7f00_7f00) >> 1) | (x & 0x007f_007f_007f_007f);
+    let x = ((x & 0x3fff_0000_3fff_0000) >> 2) | (x & 0x0000_3fff_0000_3fff);
+    let x = ((x & 0x0fff_ffff_0000_0000) >> 4) | (x & 0x0000_0000_0fff_ffff);
+    Some((x, len))
+}
+
 /// A bounds-checked cursor over a byte slice.
 #[derive(Clone, Debug)]
 pub struct Reader<'a> {
@@ -126,6 +156,29 @@ impl<'a> Reader<'a> {
         Ok(unzigzag(self.uvarint()?))
     }
 
+    /// [`Reader::uvarint`] with a fast path: the same values accepted and the same
+    /// inputs rejected, but without a bounds check per byte while at least 10 bytes
+    /// remain (the longest varint). Used by the column decoders.
+    #[inline]
+    pub fn uvarint_fast(&mut self) -> Result<u64> {
+        let rest = &self.buf[self.pos..];
+        if let Some(&b0) = rest.first()
+            && b0 < 0x80
+        {
+            self.pos += 1;
+            return Ok(u64::from(b0));
+        }
+        match varint_word(rest) {
+            Some((v, len)) => {
+                self.pos += len;
+                Ok(v)
+            }
+            // Fewer than 8 bytes left, longer than 8 bytes, or non-canonical: the
+            // byte-wise path decodes or reports it.
+            None => self.uvarint(),
+        }
+    }
+
     /// A varint that must fit in `usize` and be at most `max`.
     pub fn count(&mut self, max: usize, what: &str) -> Result<usize> {
         let v = self.uvarint()?;
@@ -171,6 +224,11 @@ pub enum Encoding {
     LengthPrefixed,
     /// `7`: zigzag varint per value.
     Zigzag,
+    /// `8` (segment format 2): the zigzagged differences `v[i] - v[i-1]` (`v[-1] = 0`)
+    /// as a 4-bit byte count per value (all counts first, two per byte), then each
+    /// value's low bytes, little-endian. Byte-aligned like a varint (so it compresses as
+    /// well) but decoded without parsing a varint per value.
+    NibbleDelta,
 }
 
 impl Encoding {
@@ -184,6 +242,7 @@ impl Encoding {
             Encoding::PlainF64 => 5,
             Encoding::LengthPrefixed => 6,
             Encoding::Zigzag => 7,
+            Encoding::NibbleDelta => 8,
         }
     }
 
@@ -197,6 +256,7 @@ impl Encoding {
             5 => Encoding::PlainF64,
             6 => Encoding::LengthPrefixed,
             7 => Encoding::Zigzag,
+            8 => Encoding::NibbleDelta,
             _ => return None,
         })
     }
@@ -205,9 +265,110 @@ impl Encoding {
     pub const fn is_integer(self) -> bool {
         matches!(
             self,
-            Encoding::RunLength | Encoding::Delta | Encoding::DeltaOfDelta | Encoding::Zigzag
+            Encoding::RunLength
+                | Encoding::Delta
+                | Encoding::DeltaOfDelta
+                | Encoding::Zigzag
+                | Encoding::NibbleDelta
         )
     }
+}
+
+/// Decodes `n` zigzag varints, passing each to `sink`: the column decoders' inner loop.
+/// Works on the slice directly (word-at-a-time, see `varint_word`) and falls back to the
+/// checked byte-wise decoder near the end of the buffer and for long or non-canonical
+/// varints, so it accepts and rejects exactly what [`Reader::ivarint`] does.
+#[inline]
+fn zigzags(r: &mut Reader<'_>, n: usize, mut sink: impl FnMut(i64)) -> Result<()> {
+    let buf = r.buf;
+    let mut pos = r.pos;
+    for _ in 0..n {
+        match varint_word(&buf[pos..]) {
+            Some((v, len)) => {
+                pos += len;
+                sink(unzigzag(v));
+            }
+            None => {
+                r.pos = pos;
+                let v = r.uvarint()?;
+                pos = r.pos;
+                sink(unzigzag(v));
+            }
+        }
+    }
+    r.pos = pos;
+    Ok(())
+}
+
+fn encode_nibble_delta(values: &[i64], out: &mut Vec<u8>) {
+    let mut prev = 0i64;
+    let zz: Vec<u64> = values
+        .iter()
+        .map(|&v| {
+            let d = v.wrapping_sub(prev);
+            prev = v;
+            zigzag(d)
+        })
+        .collect();
+    let len = |x: u64| (64 - x.leading_zeros()).div_ceil(8) as u8;
+    for pair in zz.chunks(2) {
+        out.push(len(pair[0]) | pair.get(1).map_or(0, |&x| len(x) << 4));
+    }
+    for &x in &zz {
+        out.extend_from_slice(&x.to_le_bytes()[..usize::from(len(x))]);
+    }
+}
+
+/// Decodes `n` values of [`Encoding::NibbleDelta`] into `out`.
+fn nibble_deltas(r: &mut Reader<'_>, n: usize, out: &mut Vec<i64>) -> Result<()> {
+    let ctrl = r.bytes(n.div_ceil(2))?;
+    if n % 2 == 1 && ctrl[n / 2] >> 4 != 0 {
+        return Err(r.err("unused byte count nibble is not zero"));
+    }
+    // Validate the counts (at most 8) and size the data, one control byte at a time.
+    let (mut total, mut over) = (0usize, false);
+    for &b in ctrl {
+        let (lo, hi) = (b & 0xf, b >> 4);
+        total += usize::from(lo) + usize::from(hi);
+        over |= (lo > 8) | (hi > 8);
+    }
+    if over {
+        return Err(r.err("byte count > 8"));
+    }
+    let data = r.bytes(total)?;
+    let (mut off, mut prev) = (0usize, 0i64);
+    // The value in the low `l` bytes of `w`. (Writers use the fewest bytes; a longer
+    // count still denotes the same value, so it is not rejected: FORMAT.md §4.2.)
+    let mut take = |w: u64, l: usize| {
+        let x = if l == 8 {
+            w
+        } else {
+            w & ((1u64 << (8 * l)) - 1)
+        };
+        prev = prev.wrapping_add(unzigzag(x));
+        out.push(prev);
+    };
+    let load = |d: &[u8], at: usize| u64::from_le_bytes(d[at..at + 8].try_into().expect("8 bytes"));
+    // Two values per control byte, loading straight from the data while 16 bytes remain.
+    let (pairs, mut p) = (n / 2, 0);
+    while p < pairs && off + 16 <= data.len() {
+        let b = ctrl[p];
+        let (l0, l1) = (usize::from(b & 0xf), usize::from(b >> 4));
+        take(load(data, off), l0);
+        take(load(data, off + l0), l1);
+        off += l0 + l1;
+        p += 1;
+    }
+    // The rest (at most 23 bytes) from a zero-padded copy.
+    let mut tail = [0u8; 40];
+    tail[..data.len() - off].copy_from_slice(&data[off..]);
+    let mut at = 0;
+    for i in 2 * p..n {
+        let l = usize::from((ctrl[i >> 1] >> ((i & 1) * 4)) & 0xf);
+        take(load(&tail, at), l);
+        at += l;
+    }
+    Ok(())
 }
 
 /// Encodes 64-bit integers with an integer encoding.
@@ -251,23 +412,38 @@ pub fn encode_ints(enc: Encoding, values: &[i64], out: &mut Vec<u8>) {
                 put_ivarint(out, v);
             }
         }
+        Encoding::NibbleDelta => encode_nibble_delta(values, out),
         _ => unreachable!("encode_ints called with non-integer encoding {enc:?}"),
     }
 }
 
 /// Decodes exactly `n` integers.
 pub fn decode_ints(enc: Encoding, n: usize, r: &mut Reader<'_>) -> Result<Vec<i64>> {
-    // Every encoding needs at least one byte per value except run-length.
-    if enc != Encoding::RunLength && n > r.remaining() {
+    let mut out = Vec::new();
+    decode_ints_into(enc, n, r, &mut out)?;
+    Ok(out)
+}
+
+/// [`decode_ints`] into `out` (cleared first; its capacity is reused).
+pub fn decode_ints_into(
+    enc: Encoding,
+    n: usize,
+    r: &mut Reader<'_>,
+    out: &mut Vec<i64>,
+) -> Result<()> {
+    out.clear();
+    // Every encoding needs at least one byte per value except run-length and nibble
+    // differences (callers bound `n` by MAX_BLOCK_ROWS).
+    if !matches!(enc, Encoding::RunLength | Encoding::NibbleDelta) && n > r.remaining() {
         return Err(r.err(format!("{n} values cannot fit in {} bytes", r.remaining())));
     }
     // Callers bound `n` (at most MAX_BLOCK_ROWS), so reserving it is safe.
-    let mut out = Vec::with_capacity(n);
+    out.reserve(n);
     match enc {
         Encoding::RunLength => {
             while out.len() < n {
-                let v = r.uvarint()? as i64;
-                let run = r.uvarint()?;
+                let v = r.uvarint_fast()? as i64;
+                let run = r.uvarint_fast()?;
                 if run == 0 || run > (n - out.len()) as u64 {
                     return Err(r.err(format!("bad run length {run}")));
                 }
@@ -276,33 +452,29 @@ pub fn decode_ints(enc: Encoding, n: usize, r: &mut Reader<'_>) -> Result<Vec<i6
         }
         Encoding::Delta => {
             let mut prev = 0i64;
-            for _ in 0..n {
-                prev = prev.wrapping_add(r.ivarint()?);
+            zigzags(r, n, |x| {
+                prev = prev.wrapping_add(x);
                 out.push(prev);
-            }
+            })?;
         }
         Encoding::DeltaOfDelta => {
-            let (mut prev, mut prev_d) = (0i64, 0i64);
-            for i in 0..n {
-                let x = r.ivarint()?;
-                if i == 0 {
+            let (mut prev, mut prev_d, mut first) = (0i64, 0i64, true);
+            zigzags(r, n, |x| {
+                if first {
                     prev = x;
+                    first = false;
                 } else {
-                    let d = prev_d.wrapping_add(x);
-                    prev = prev.wrapping_add(d);
-                    prev_d = d;
+                    prev_d = prev_d.wrapping_add(x);
+                    prev = prev.wrapping_add(prev_d);
                 }
                 out.push(prev);
-            }
+            })?;
         }
-        Encoding::Zigzag => {
-            for _ in 0..n {
-                out.push(r.ivarint()?);
-            }
-        }
+        Encoding::Zigzag => zigzags(r, n, |x| out.push(x))?,
+        Encoding::NibbleDelta => nibble_deltas(r, n, out)?,
         _ => return Err(r.err(format!("{enc:?} is not an integer encoding"))),
     }
-    Ok(out)
+    Ok(())
 }
 
 /// Appends a bitmap (LSB first, zero padding).
@@ -319,11 +491,26 @@ pub fn encode_bitmap(bits: impl ExactSizeIterator<Item = bool>, out: &mut Vec<u8
 
 /// Decodes a bitmap of exactly `n` bits; padding bits must be zero.
 pub fn decode_bitmap(n: usize, r: &mut Reader<'_>) -> Result<Vec<bool>> {
+    let mut out = Vec::new();
+    decode_bitmap_into(n, r, &mut out)?;
+    Ok(out)
+}
+
+/// [`decode_bitmap`] into `out` (cleared first; its capacity is reused).
+pub fn decode_bitmap_into(n: usize, r: &mut Reader<'_>, out: &mut Vec<bool>) -> Result<()> {
+    out.clear();
     let bytes = r.bytes(n.div_ceil(8))?;
     if n % 8 != 0 && bytes[n / 8] >> (n % 8) != 0 {
         return Err(r.err("bitmap padding bits are not zero"));
     }
-    Ok((0..n).map(|i| bytes[i / 8] & (1 << (i % 8)) != 0).collect())
+    out.reserve(bytes.len() * 8);
+    for &b in bytes {
+        for k in 0..8 {
+            out.push(b & (1 << k) != 0);
+        }
+    }
+    out.truncate(n);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -357,10 +544,148 @@ mod tests {
         }
     }
 
+    /// The fast varint path accepts and rejects exactly what the plain one does, at every
+    /// position relative to the end of the buffer.
+    #[test]
+    fn fast_varint_matches_plain() {
+        let mut cases: Vec<Vec<u8>> = vec![
+            vec![0x80, 0x00],
+            vec![0xff; 11],
+            vec![0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x02],
+            vec![0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01],
+            vec![0x80; 10],
+            vec![0x81, 0x80, 0x00],
+        ];
+        for v in [0u64, 1, 127, 128, 300, 1 << 35, u64::MAX] {
+            let mut b = Vec::new();
+            put_uvarint(&mut b, v);
+            cases.push(b);
+        }
+        for c in cases {
+            for pad in 0..12 {
+                let mut buf = c.clone();
+                buf.extend(std::iter::repeat_n(0x05u8, pad));
+                let (mut a, mut b) = (Reader::new(&buf, "t"), Reader::new(&buf, "t"));
+                let (x, y) = (a.uvarint(), b.uvarint_fast());
+                assert_eq!(x.is_ok(), y.is_ok(), "{buf:?}");
+                if let (Ok(x), Ok(y)) = (x, y) {
+                    assert_eq!(x, y);
+                    assert_eq!(a.remaining(), b.remaining());
+                }
+            }
+        }
+    }
+
+    /// Nibble-length differences round-trip for every byte count, and malformed input
+    /// (truncation, counts above 8, non-canonical counts, a stray last nibble) is an
+    /// error.
+    #[test]
+    fn nibble_delta_edges() {
+        let mut rng = 0x9e37_79b9_7f4a_7c15u64;
+        for bits in [0u32, 1, 7, 8, 9, 31, 55, 56, 57, 63, 64] {
+            for n in [0usize, 1, 2, 3, 127, 300] {
+                let vals: Vec<i64> = (0..n)
+                    .map(|_| {
+                        rng ^= rng << 13;
+                        rng ^= rng >> 7;
+                        rng ^= rng << 17;
+                        if bits == 64 {
+                            rng as i64
+                        } else {
+                            (rng & ((1u64 << bits) - 1)) as i64
+                        }
+                    })
+                    .scan(0i64, |acc, d| {
+                        *acc = acc.wrapping_add(d);
+                        Some(*acc)
+                    })
+                    .collect();
+                let mut b = Vec::new();
+                encode_ints(Encoding::NibbleDelta, &vals, &mut b);
+                let mut r = Reader::new(&b, "t");
+                assert_eq!(decode_ints(Encoding::NibbleDelta, n, &mut r).unwrap(), vals);
+                r.finish().unwrap();
+                for cut in 0..b.len() {
+                    let mut r = Reader::new(&b[..cut], "t");
+                    let ok =
+                        decode_ints(Encoding::NibbleDelta, n, &mut r).is_ok() && r.finish().is_ok();
+                    assert!(
+                        !ok,
+                        "a truncated chunk decoded (bits {bits} n {n} cut {cut})"
+                    );
+                }
+            }
+        }
+        let dec = |b: &[u8], n| decode_ints(Encoding::NibbleDelta, n, &mut Reader::new(b, "t"));
+        assert_eq!(dec(&[0x21, 0x02, 0x01, 0x01], 2).unwrap(), vec![1, -128]);
+        assert!(dec(&[0x09, 0, 0, 0, 0, 0, 0, 0, 0, 1], 1).is_err()); // count 9
+        // More bytes than needed denote the same value (writers never emit them).
+        assert_eq!(
+            dec(&[0x02, 0x01, 0x00], 1).unwrap(),
+            dec(&[0x01, 0x01], 1).unwrap()
+        );
+        assert_eq!(dec(&[0x01, 0x00], 1).unwrap(), vec![0]);
+        assert!(dec(&[0x10], 1).is_err()); // stray high nibble
+        assert_eq!(dec(&[0x00], 1).unwrap(), vec![0]);
+    }
+
+    /// Decoder speed on forecast-like columns (`cargo test --release -p muninn-format
+    /// --lib -- --ignored --nocapture decode_speed`).
+    #[test]
+    #[ignore]
+    fn decode_speed() {
+        let n = 16_384;
+        // Received times: hourly runs (3.6e9 µs steps) with jumps back between points.
+        let rt: Vec<i64> = (0..n as i64)
+            .map(|i| 1_700_000_000_000_000 + (i % 230) * 3_600_000_000 + (i % 7) * 1_000_000)
+            .collect();
+        let seq: Vec<i64> = (0..n as i64)
+            .map(|i| 1000 + (i % 230) * 4000 + i / 230)
+            .collect();
+        for (name, enc, vals) in [
+            ("delta rt", Encoding::Delta, &rt),
+            ("delta seq", Encoding::Delta, &seq),
+            ("dod rt", Encoding::DeltaOfDelta, &rt),
+            ("nibble rt", Encoding::NibbleDelta, &rt),
+            ("nibble seq", Encoding::NibbleDelta, &seq),
+        ] {
+            let mut b = Vec::new();
+            encode_ints(enc, vals, &mut b);
+            let t = std::time::Instant::now();
+            let reps = 200;
+            for _ in 0..reps {
+                let mut r = Reader::new(&b, "t");
+                let v = decode_ints(enc, n, &mut r).unwrap();
+                assert_eq!(v.len(), n);
+            }
+            let ns = t.elapsed().as_nanos() as f64 / (reps * n) as f64;
+            eprintln!(
+                "{name}: {:.2} B/value, {ns:.2} ns/value",
+                b.len() as f64 / n as f64
+            );
+        }
+    }
+
     proptest! {
         #[test]
+        fn fast_varint_matches_plain_random(bytes in prop::collection::vec(any::<u8>(), 0..24)) {
+            let (mut a, mut b) = (Reader::new(&bytes, "t"), Reader::new(&bytes, "t"));
+            loop {
+                let (x, y) = (a.uvarint(), b.uvarint_fast());
+                prop_assert_eq!(x.is_ok(), y.is_ok());
+                match (x, y) {
+                    (Ok(x), Ok(y)) => {
+                        prop_assert_eq!(x, y);
+                        prop_assert_eq!(a.remaining(), b.remaining());
+                    }
+                    _ => break,
+                }
+            }
+        }
+
+        #[test]
         fn ints_round_trip(values in prop::collection::vec(any::<i64>(), 0..50), small in prop::collection::vec(-3i64..3, 0..50)) {
-            for enc in [Encoding::RunLength, Encoding::Delta, Encoding::DeltaOfDelta, Encoding::Zigzag] {
+            for enc in [Encoding::RunLength, Encoding::Delta, Encoding::DeltaOfDelta, Encoding::Zigzag, Encoding::NibbleDelta] {
                 for vs in [&values, &small] {
                     let mut b = Vec::new();
                     encode_ints(enc, vs, &mut b);
@@ -381,7 +706,7 @@ mod tests {
 
         #[test]
         fn decoders_never_panic(bytes in prop::collection::vec(any::<u8>(), 0..40), n in 0usize..100) {
-            for enc in [Encoding::RunLength, Encoding::Delta, Encoding::DeltaOfDelta, Encoding::Zigzag] {
+            for enc in [Encoding::RunLength, Encoding::Delta, Encoding::DeltaOfDelta, Encoding::Zigzag, Encoding::NibbleDelta] {
                 let _ = decode_ints(enc, n, &mut Reader::new(&bytes, "t"));
             }
             let _ = decode_bitmap(n, &mut Reader::new(&bytes, "t"));

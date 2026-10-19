@@ -1,4 +1,4 @@
-# Muninn storage format (v1)
+# Muninn storage format (segment formats 1–2, log formats 1–2)
 
 This document specifies the bytes a Muninn database leaves on a store, precisely enough
 for a third party to write an independent reader. It complements `SPEC.md`, which defines
@@ -54,9 +54,16 @@ segments/<table>/<partition label>/<name>.seg
 
 Version 0 is the empty database. **The state at version v is the fold of entries
 `1..=v`.** Entries are created with an atomic create-if-absent; a writer only writes `v+1`
-after reading or writing `v`, so the versions present always form a gapless prefix
-`1..=N`. A reader determines the current version by reading `N+1, N+2, …` until one is
-absent. A segment file that no entry (still) references is garbage: it MUST be ignored.
+after reading or writing `v`, so the versions ever written form a gapless prefix `1..=N`.
+A reader determines the current version by reading `N+1, N+2, …` until one is absent. A
+segment file that no entry (still) references is garbage: it MUST be ignored.
+
+Garbage collection may **truncate** the log (§3.6): entry 1 is then replaced by a marker
+and the entries `2..T-1` are deleted, where a valid checkpoint at version `T` or later
+summarises them. The entries present are then `1` (the marker), possibly some leftovers
+below `T`, and the gapless range `T..=N`. A reader that finds entry `N+1` absent MUST
+then list `log/`: if any entry greater than `N+1` is present, its state is older than a
+truncation and it MUST reload from a checkpoint (§3.6); otherwise `N` was the head.
 
 Segment names written by the reference engine are
 `<creation wall time µs, 20 digits>-<64-bit nonce, 16 lowercase hex>.seg`. Readers MUST
@@ -69,9 +76,9 @@ bumps `format`).
 
 | field | type | meaning |
 | --- | --- | --- |
-| `format` | int | `1` |
+| `format` | int | `1` or `2` (written by engines that may truncate the log, §3.6; the fields are the same) |
 | `version` | int | `v` (must equal the key's number) |
-| `kind` | string | `catalog`, `write`, `restore`, `compact`, `gc` (constrains `add`/`remove`, below) |
+| `kind` | string | `catalog`, `write`, `restore`, `compact`, `gc` (constrains `add`/`remove`, below), or `truncated` for the marker of §3.6, which is not an applicable entry. Readers MUST reject other kinds |
 | `wall_time` | int | writer wall clock, µs (used by GC only) |
 | `catalog` | array, optional | catalog changes, applied in order (§3.2) |
 | `batch_id` | string, optional | batch id recorded by this write (SPEC §4.4) |
@@ -150,7 +157,7 @@ a reader SHOULD verify that when it opens the footer.
 `log/<v>.checkpoint.json` holds the state after entry `v`:
 
 ```jsonc
-{"format": 1, "version": v,
+{"format": 2, "version": v,                   // 1 or 2, as for entries
  "catalog": [<catalog change>, ...],   // the whole catalog change log, in order
  "batch_ids": ["..."], "segments": [<segment record>, ...],
  "retired": [["<key>", <removal wall time>], ...],
@@ -173,6 +180,12 @@ consistent, sealed and bound to the right entry but still wrong is not detectabl
 a full replay; writers never produce one.) `log/_last_checkpoint` (`{"version": v}`)
 names a recent checkpoint. It is only a hint: readers MUST tolerate it being absent,
 stale, unparsable or naming a missing or invalid checkpoint.
+
+When to write a checkpoint is the writer's choice and never changes a state. The
+reference engine writes one when at least `checkpoint_interval` entries (default 100)
+*and* at least `checkpoint_size_factor` (default 1) times the previous checkpoint's
+bytes of entries were committed since it — so checkpoint bytes stay proportional to
+entry bytes rather than to entries × state size — and GC writes one of the head (§3.6).
 
 ### 3.5 Garbage collection and the commit window
 
@@ -198,6 +211,42 @@ after GC first sees them retired; after that it gets a "missing segment" error, 
 which an engine reloads the head and retries once. `G = 0` disables rules 2–3 (single
 process tests only).
 
+### 3.6 Log truncation (log format 2)
+
+Checkpoints make old entries redundant; GC may remove them so that the log does not grow
+with every commit forever. The rules (decision 0007), with `G` the grace period of §3.5:
+
+1. GC truncates only below the **second-newest** checkpoint `T` (by version, at most the
+   head), and only once the **newest** checkpoint verifies (checksum, version, bound to its
+   entry). The newest one keeps the head cheap to load; `T` with the entries `T+1..` is the
+   fallback if the newest is damaged.
+2. Removable are the entries `< T` and the checkpoints `< T`. GC removes each only after
+   it has itself observed it removable for at least `G` (its own clock).
+3. Entry 1 is not deleted but overwritten with the **truncation marker**
+   `{"format": 2, "version": 1, "kind": "truncated", "wall_time": t, "next_seq": 1,
+   "last_system_time": null}`. Entry 1 therefore always exists once written: nobody can
+   create it again, and a reader that replays from the start fails on the marker instead
+   of seeing an empty database. The other removable entries and checkpoints are deleted
+   in any order (a crash may leave any subset of them; GC removes the rest later).
+   Entry `T` and every entry above it are never removed by this truncation.
+4. **Readers** detect a truncation as follows: having found entry `v+1` absent, they list
+   `log/`. If an entry greater than `v+1` is present, `v+1` was removed (or written and
+   followed by more entries since they looked — either way their state is stale) and they
+   reload from a checkpoint. If none is, `v+1` had not been written when they looked:
+   whenever an entry has been removed, entry `T` above it is present (rule 3), and entries
+   are created in order.
+5. **Writers** commit entry `v+1` only after a recent proof that `v` is the head: their own
+   successful commit of `v`, or a read that found `v+1` absent and nothing beyond it (rule
+   4), younger than `G / 2` by their own clock. Otherwise they repeat that check first and
+   treat a present or removed `v+1` as a conflict. Since GC deletes `v+1` no earlier than
+   `G` after it first saw it, which is after `v+1` was created, a lagging writer can never
+   re-create a removed entry (assuming, as in §3.5, that a store call completes within
+   `G / 2`). `G = 0` disables the timing (single process tests only); writers then check
+   the head before every commit.
+
+A reader that only knows format 1 does not know rules 3–5; a log that was ever truncated
+contains format-2 entries and checkpoints, which such a reader rejects (§7).
+
 ## 4. Segment file
 
 A segment holds versions of one table and one partition. Rows are sorted by
@@ -211,9 +260,11 @@ footer_offset       footer (footer_len bytes)
 file_size - 16      tail (16 bytes)
 ```
 
-**Header**: `"MUNINNSG"` (8 bytes ASCII), `u16` format version `1`, `u16` flags `0`,
-`u32` reserved `0`. A reader that reads the header MUST reject other versions or non-zero
-flags (a tail-only reader relies on the footer format byte, §5.1).
+**Header**: `"MUNINNSG"` (8 bytes ASCII), `u16` format version (`1` or `2`), `u16` flags
+`0`, `u32` reserved `0`. A reader that reads the header MUST reject other versions or
+non-zero flags, and a version different from the footer format byte (§5.1); a tail-only
+reader relies on the footer format byte. Format 2 differs from format 1 only in allowing
+encoding 8 (§4.2).
 
 **Tail**: `u32 footer_len`, `u32 footer_crc` (CRC-32C of the footer bytes), `"MUNINNSG"`.
 `footer_offset = file_size - 16 - footer_len`, and MUST be ≥ 16.
@@ -224,8 +275,10 @@ uses 64 KiB, or the whole file if smaller). If `k < footer_len + 16`, read the l
 
 ### 4.1 Rows, blocks and chunks
 
-Rows are grouped into **blocks** of consecutive rows (1 … 1 048 576 rows each; the
-reference writer uses 16 384). Each block stores one **chunk** per column:
+Rows are grouped into **blocks** of consecutive rows (1 … 1 048 576 rows each). Block
+boundaries are the writer's choice; the reference writer ends a block after 16 384 rows,
+or where a new series starts once the block has 1 024 rows (so that a reader of one
+series decodes little of the others). Each block stores one **chunk** per column:
 
 | chunk | column | type | nullable | encodings |
 | --- | --- | --- | --- | --- |
@@ -239,8 +292,9 @@ reference writer uses 16 384). Each block stores one **chunk** per column:
 | 7 + j | value column `j` of the footer's column list | per type | **yes** | per type |
 
 Value chunk encodings by type: `f64` → 5, `i64` → integer, `bool` → 4, `string` → 6,
-`timestamp` → integer. "Integer" means any of encodings 1, 2, 3, 7. Readers MUST reject
-any other combination.
+`timestamp` → integer. "Integer" means any of encodings 1, 2, 3, 7, and in format 2 also
+8. Readers MUST reject any other combination (in particular encoding 8 in a format-1
+file).
 
 A chunk is stored as `stored = compress(raw)`. Its directory entry (§5.5) gives offset,
 stored length, raw length, encoding, compression and the CRC-32C of the **stored** bytes,
@@ -269,10 +323,18 @@ Every raw chunk MUST be consumed exactly.
 | 5 | plain f64 | 8 bytes per value, IEEE-754 binary64 little-endian (bit patterns are preserved, NaN payloads included) |
 | 6 | length-prefixed | per value a `string` (§1) |
 | 7 | zigzag | `ivarint(v)` per value |
+| 8 | nibble delta (format 2) | with `z[i] = zigzag(v[i] - v[i-1])` (`v[-1] = 0`) and `L[i]` its byte count: `ceil(m / 2)` bytes of 4-bit counts (`L[i]` in the low nibble of byte `i / 2` for even `i`, the high nibble for odd `i`; an unused last nibble MUST be zero), then for each `i` the `L[i]` low bytes of `z[i]`, little-endian |
 
 Run-length values are read as `uvarint` and reinterpreted as `i64`. For the `series`
-column values MUST fit in u32. The reference writer uses: series 1, value_time 3,
-published/received/system time and seq 2, i64 values 7, timestamp values 2.
+column values MUST fit in u32. Encoding 8: every `L[i]` MUST be at most 8; writers MUST
+use the fewest bytes (`L[i] = 0` iff `z[i] = 0`), but a larger count denotes the same
+value and readers need not reject it (the chunk CRC guards against corruption). Its
+point is decoding speed: the byte counts are known before the values are read, so no
+varint is parsed per value, while the value bytes stay byte-aligned (they compress like
+varints). The reference writer uses, in format 2: series 1, value_time, published,
+received and system time, seq and timestamp values 8, i64 values 7; in format 1: series
+1, value_time 3, published/received/system time and seq 2, i64 values 7, timestamp
+values 2.
 
 ### 4.3 Values
 
@@ -291,7 +353,7 @@ remain, and the footer MUST be consumed exactly.
 ### 5.1 Header fields
 
 ```
-u8      footer format = 1
+u8      footer format = 1 or 2 (equal to the header's format version)
 string  table name
 u8      partition granularity: 0 = day, 1 = month, 2 = year
 ivarint partition ordinal (§2)
@@ -370,5 +432,10 @@ predicates (value range, series filter, `t_clock` bounds, `system_time ≤ S`).
 
 ## 7. Versioning
 
-The header version, footer format byte and log `format` field are independent integers,
-all `1` for this document. A reader MUST reject versions it does not know.
+The segment format (header version = footer format byte) and the log `format` field are
+independent integers. This document specifies segment formats `1` and `2` (format 2 adds
+encoding 8, §4.2) and log formats `1` and `2` (§3.6; format 2 entries and checkpoints have
+the same fields, and a format-2 writer may truncate the log). Readers of this document
+MUST accept segment formats 1 and 2 and log formats 1 and 2, and MUST reject versions they
+do not know. A database may mix segment formats (compaction rewrites segments in the
+writer's format).

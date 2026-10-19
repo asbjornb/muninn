@@ -30,6 +30,13 @@ fn format_err(key: &Key, e: muninn_format::Error) -> Error {
     Error::new(ErrorKind::Io, format!("corrupt segment {key}: {e}"))
 }
 
+/// Chunks read by [`Shared::read_spans`]: the bytes of each coalesced read, and per
+/// requested range `(read, start, end)`.
+struct Spans {
+    bytes: Vec<Vec<u8>>,
+    parts: Vec<(usize, usize, usize)>,
+}
+
 /// What every engine handle and snapshot shares: the store, options and caches.
 pub(crate) struct Shared<S> {
     pub store: S,
@@ -150,6 +157,37 @@ impl<S: Store> Shared<S> {
         Ok(footer)
     }
 
+    /// Reads the chunks at `ranges` of one file, coalescing adjacent ranges into one read
+    /// and without copying the chunks out of it.
+    fn read_spans(&self, key: &Key, ranges: &[Range<u64>]) -> Result<Spans> {
+        let mut out = Spans {
+            bytes: Vec::new(),
+            parts: Vec::with_capacity(ranges.len()),
+        };
+        let mut i = 0;
+        while i < ranges.len() {
+            let mut j = i + 1;
+            while j < ranges.len() && ranges[j].start == ranges[j - 1].end {
+                j += 1;
+            }
+            let span = ranges[i].start..ranges[j - 1].end;
+            let bytes = self.get_range(key, span.clone())?;
+            if bytes.len() as u64 != span.end - span.start {
+                return Err(Error::new(ErrorKind::Io, format!("short read of {key}")));
+            }
+            for r in &ranges[i..j] {
+                out.parts.push((
+                    out.bytes.len(),
+                    (r.start - span.start) as usize,
+                    (r.end - span.start) as usize,
+                ));
+            }
+            out.bytes.push(bytes);
+            i = j;
+        }
+        Ok(out)
+    }
+
     /// Reads the chunks at `ranges` of one file, coalescing ranges that are adjacent.
     fn read_chunks(&self, key: &Key, ranges: &[Range<u64>]) -> Result<Vec<Vec<u8>>> {
         let mut out = Vec::with_capacity(ranges.len());
@@ -174,16 +212,46 @@ impl<S: Store> Shared<S> {
         Ok(out)
     }
 
-    /// Decodes the engine columns of block `b`.
-    pub fn engine_block(&self, seg: &SegmentRef, f: &Footer, b: usize) -> Result<EngineBlock> {
+    /// Decodes the engine columns of block `b` into `out` (reusing its capacity).
+    pub fn engine_block_into(
+        &self,
+        seg: &SegmentRef,
+        f: &Footer,
+        b: usize,
+        out: &mut EngineBlock,
+    ) -> Result<()> {
         let ranges = f.engine_chunk_ranges(b);
-        let chunks = self.read_chunks(&seg.key, &ranges)?;
-        let refs: Vec<&[u8]> = chunks.iter().map(Vec::as_slice).collect();
-        f.decode_engine_block(b, &refs)
+        let spans = self.read_spans(&seg.key, &ranges)?;
+        let refs: Vec<&[u8]> = spans
+            .parts
+            .iter()
+            .map(|&(i, a, z)| &spans.bytes[i][a..z])
+            .collect();
+        f.decode_engine_block_into(b, &refs, out)
             .map_err(|e| format_err(&seg.key, e))
     }
 
-    /// Decodes the value columns of block `b` for table columns `0..ncols`: entry `i` is
+    /// Decodes integer (`i64` / `timestamp`) table column `id` of block `b` as raw
+    /// integers; `None` when the segment predates it.
+    pub fn int_column(
+        &self,
+        seg: &SegmentRef,
+        f: &Footer,
+        b: usize,
+        id: usize,
+    ) -> Result<Option<Vec<Option<i64>>>> {
+        let Some(p) = f.column_position(id as u32) else {
+            return Ok(None);
+        };
+        let r = f.blocks[b].chunks[ENGINE_COLUMNS + p].range();
+        let bytes = self.read_chunks(&seg.key, &[r])?;
+        f.decode_int_column(b, p, &bytes[0])
+            .map(Some)
+            .map_err(|e| format_err(&seg.key, e))
+    }
+
+    /// Decodes the value columns of block `b` for table columns `0..ncols`, for the
+    /// block-relative `rows` (ascending) only: entry `i` is
     /// `None` when the segment predates column `i` (every row reads null).
     pub fn value_columns(
         &self,
@@ -191,6 +259,7 @@ impl<S: Store> Shared<S> {
         f: &Footer,
         b: usize,
         ncols: usize,
+        rows: &[u32],
     ) -> Result<Vec<Option<Vec<Option<Value>>>>> {
         let present: Vec<(usize, usize)> = (0..ncols)
             .filter_map(|id| f.column_position(id as u32).map(|p| (id, p)))
@@ -203,7 +272,7 @@ impl<S: Store> Shared<S> {
         let mut out: Vec<Option<Vec<Option<Value>>>> = vec![None; ncols];
         for ((id, p), bytes) in present.into_iter().zip(chunks) {
             out[id] = Some(
-                f.decode_value_chunk(b, p, &bytes)
+                f.decode_value_rows(b, p, &bytes, rows)
                     .map_err(|e| format_err(&seg.key, e))?,
             );
         }

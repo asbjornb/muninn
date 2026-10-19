@@ -65,8 +65,13 @@ pub fn info(ctx: &Context, f: FormatArg) -> Res<()> {
         e.3.insert(seg.partition.index);
     }
     let mut total_bytes = 0u64;
+    let mut log_bytes = 0u64;
     for k in store.list("").map_err(|e| store_err("listing", e))? {
-        total_bytes += store.head(&k).map_err(|e| store_err("head", e))?.size;
+        let size = store.head(&k).map_err(|e| store_err("head", e))?.size;
+        total_bytes += size;
+        if k.as_str().starts_with("log/") {
+            log_bytes += size;
+        }
     }
     let cp = st.to_checkpoint();
     let mut db_rows = Rows::flat(&["key", "value"]);
@@ -83,6 +88,7 @@ pub fn info(ctx: &Context, f: FormatArg) -> Res<()> {
         ),
         ("retired_segments", n(st.retired.len())),
         ("store_bytes", n(total_bytes)),
+        ("log_bytes", n(log_bytes)),
         ("next_seq", n(st.next_seq)),
         ("last_system_time", ots(st.last_system_time)),
         ("batch_ids", n(cp.batch_ids.len())),
@@ -171,6 +177,10 @@ fn content_hash(v: &muninn_core::types::Version) -> u64 {
 
 /// Order-insensitive form of a checkpoint, for comparing states.
 fn normalise(mut c: Checkpoint) -> Checkpoint {
+    // The seal binds a checkpoint to its bytes and entry; a fold has neither (checked
+    // separately).
+    c.entry_crc32c = 0;
+    c.checksum = 0;
     c.batch_ids.sort();
     c.segments.sort_by(|a, b| a.key.cmp(&b.key));
     c.retired.sort();
@@ -319,7 +329,17 @@ pub fn verify(ctx: &Context) -> Res<()> {
     let store = ctx.store()?;
     let mut problems: Vec<String> = Vec::new();
     let mut notes: Vec<String> = Vec::new();
-    let (entries, checkpoints) = log_listing(&store)?;
+    let (mut entries, checkpoints) = log_listing(&store)?;
+    // A truncated log (decision 0007): entry 1 is the truncation marker and the entries
+    // below the oldest kept checkpoint are gone.
+    if entries.first() == Some(&1) && read_entry(&store, 1).is_ok_and(|e| e.is_truncation_marker())
+    {
+        entries.remove(0);
+        notes.push(format!(
+            "the log is truncated (entries before {} were removed by gc)",
+            entries.first().copied().unwrap_or(1)
+        ));
+    }
     let max = entries.last().copied().unwrap_or(0);
     let first = entries.first().copied().unwrap_or(1);
     for w in entries.windows(2) {
@@ -331,17 +351,33 @@ pub fn verify(ctx: &Context) -> Res<()> {
             ));
         }
     }
-    // Fold the log from the start (or from the earliest usable checkpoint).
+    // Fold the log from the start (or from the earliest usable checkpoint whose
+    // successors are all present, so that later checkpoints are checked against it).
     let mut state = State::empty();
     if first > 1 {
-        match checkpoints.iter().rev().find(|&&c| c + 1 >= first) {
-            Some(&c) => match read_checkpoint(&store, c)
+        let usable: Vec<u64> = checkpoints
+            .iter()
+            .copied()
+            .filter(|&c| c + 1 >= first && c <= max)
+            .collect();
+        let mut loaded = false;
+        for &c in &usable {
+            match read_checkpoint(&store, c)
                 .and_then(|cp| State::from_checkpoint(&cp).map_err(CliError::from))
             {
-                Ok(s) => state = s,
+                Ok(s) => {
+                    state = s;
+                    loaded = true;
+                    break;
+                }
                 Err(e) => problems.push(format!("checkpoint {c}: {}", e.message)),
-            },
-            None => problems.push(format!("log entries 1..{} are missing", first - 1)),
+            }
+        }
+        if !loaded && usable.is_empty() {
+            problems.push(format!(
+                "log entries 1..{} are missing and no checkpoint covers them",
+                first - 1
+            ));
         }
     }
     let mut folded: HashMap<u64, Checkpoint> = HashMap::new();
@@ -364,6 +400,23 @@ pub fn verify(ctx: &Context) -> Res<()> {
         v += 1;
     }
     for &c in &checkpoints {
+        // The seal: checksum, and the CRC of the entry it summarises (if still present).
+        match store.get(&log::checkpoint_key(c)) {
+            Ok(bytes) => match Checkpoint::open(&bytes, c) {
+                Err(e) => problems.push(format!("checkpoint {c}: {e}")),
+                Ok(cp) if c > 0 && entries.contains(&c) => {
+                    if let Ok(entry) = store.get(&log::entry_key(c))
+                        && crc32c::crc32c(&entry) != cp.entry_crc32c
+                    {
+                        problems.push(format!(
+                            "checkpoint {c} is not bound to log entry {c} (entry CRC differs)"
+                        ));
+                    }
+                }
+                Ok(_) => {}
+            },
+            Err(e) => problems.push(format!("reading checkpoint {c}: {e}")),
+        }
         match read_checkpoint(&store, c) {
             Err(e) => problems.push(format!("checkpoint {c}: {}", e.message)),
             Ok(cp) => {
@@ -378,9 +431,13 @@ pub fn verify(ctx: &Context) -> Res<()> {
                 } else if let Some(f) = folded.get(&c) {
                     if normalise(cp) != *f {
                         problems.push(format!(
-                            "checkpoint {c} differs from replaying log entries 1..={c}"
+                            "checkpoint {c} differs from replaying the log up to entry {c}"
                         ));
                     }
+                } else if c + 1 < first {
+                    notes.push(format!(
+                        "checkpoint {c} predates the truncated log and is unused (gc removes it)"
+                    ));
                 }
             }
         }

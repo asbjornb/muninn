@@ -317,24 +317,37 @@ impl Store for LocalFsStore {
     }
 
     fn delete(&self, key: &Key) -> Result<()> {
-        let path = self.path(key);
-        match fs::remove_file(&path) {
-            Ok(()) => {}
-            Err(e) if is_absent(&e) => return Ok(()),
-            Err(e) => return Err(io_err("remove", &path, e)),
+        self.delete_many(std::slice::from_ref(key))
+    }
+
+    fn delete_many(&self, keys: &[Key]) -> Result<()> {
+        // Unlink everything, then sync each directory once.
+        let mut parents = std::collections::BTreeSet::new();
+        for key in keys {
+            let path = self.path(key);
+            match fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(e) if is_absent(&e) => continue,
+                Err(e) => return Err(io_err("remove", &path, e)),
+            }
+            parents.insert(
+                path.parent()
+                    .map(Path::to_path_buf)
+                    .unwrap_or_else(|| self.root.clone()),
+            );
         }
-        let parent = path
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| self.root.clone());
-        sync_dir(&parent)?;
+        for parent in &parents {
+            sync_dir(parent)?;
+        }
         // Prune now-empty parent directories (best effort; never the root) so that the
-        // freed path can hold an object again, as in the other backends.
-        let mut dir = parent;
-        while dir != self.root && fs::remove_dir(&dir).is_ok() {
-            match dir.parent() {
-                Some(p) => dir = p.to_path_buf(),
-                None => break,
+        // freed path can hold an object again, as in the other backends. Deepest first.
+        for parent in parents.into_iter().rev() {
+            let mut dir = parent;
+            while dir != self.root && fs::remove_dir(&dir).is_ok() {
+                match dir.parent() {
+                    Some(p) => dir = p.to_path_buf(),
+                    None => break,
+                }
             }
         }
         Ok(())

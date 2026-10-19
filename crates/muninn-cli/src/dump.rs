@@ -345,16 +345,42 @@ fn columns(w: &Wire, what: &str) -> Res<Vec<ColumnDef>> {
         .collect()
 }
 
-/// Replays the catalog change log with the original change times.
+/// Creates the pending series (consecutive `create_series` changes) in one commit and
+/// checks that they got the dump's ids.
+fn flush_series<D: Database>(db: &D, pending: &mut Vec<(CreateSeries, u64, String)>) -> Res<()> {
+    if pending.is_empty() {
+        return Ok(());
+    }
+    let reqs: Vec<CreateSeries> = pending.iter().map(|(r, _, _)| r.clone()).collect();
+    let made = db.create_series_batch(&reqs)?;
+    for (s, (_, want, what)) in made.iter().zip(pending.iter()) {
+        if u64::from(s.id.0) != *want {
+            return Err(err(format!(
+                "{what}: series {:?} got id {} but the dump says {want}",
+                s.name, s.id.0
+            )));
+        }
+    }
+    pending.clear();
+    Ok(())
+}
+
+/// Replays the catalog change log with the original change times (runs of
+/// `create_series` as one commit each).
 fn restore_catalog<D: Database>(db: &D, catalog: &Wire) -> Res<usize> {
     let changes = get(catalog, "changes", "catalog.json")?
         .as_array()
         .ok_or_else(|| err("catalog.json: changes must be a list"))?;
+    let mut pending: Vec<(CreateSeries, u64, String)> = Vec::new();
     for (i, c) in changes.iter().enumerate() {
         let what = format!("catalog.json change {i}");
         let what = what.as_str();
         let clock = Some(get_ts(c, "system_time", what)?);
-        match get_str(c, "op", what)? {
+        let op = get_str(c, "op", what)?;
+        if op != "create_series" {
+            flush_series(db, &mut pending)?;
+        }
+        match op {
             "create_table" => {
                 let dc = get_str(c, "default_clock", what)?;
                 let p = get_str(c, "partition", what)?;
@@ -399,25 +425,20 @@ fn restore_catalog<D: Database>(db: &D, catalog: &Wire) -> Res<usize> {
                     ),
                     Some(_) => return Err(err(format!("{what}: bad resolution"))),
                 };
-                let s = db.create_series(&CreateSeries {
+                let req = CreateSeries {
                     name: get_str(c, "name", what)?.to_owned(),
                     table: get_str(c, "table", what)?.to_owned(),
                     tags,
                     timezone: Some(get_str(c, "timezone", what)?.to_owned()),
                     resolution,
                     clock,
-                })?;
-                let want = get_u64(c, "id", what)?;
-                if u64::from(s.id.0) != want {
-                    return Err(err(format!(
-                        "{what}: series {:?} got id {} but the dump says {want}",
-                        s.name, s.id.0
-                    )));
-                }
+                };
+                pending.push((req, get_u64(c, "id", what)?, what.to_owned()));
             }
             other => return Err(err(format!("{what}: unknown op {other:?}"))),
         }
     }
+    flush_series(db, &mut pending)?;
     Ok(changes.len())
 }
 

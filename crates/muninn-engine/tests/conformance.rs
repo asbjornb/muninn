@@ -16,8 +16,10 @@ fn small() -> EngineOptions {
         checkpoint_interval: 3,
         segment: WriteOptions {
             block_rows: 2,
+            series_block_rows: 1,
             compress: true,
             zstd_level: 1,
+            format_version: 1,
         },
         gc_grace: std::time::Duration::ZERO,
         ..EngineOptions::default()
@@ -135,6 +137,9 @@ impl Database for Hooked {
     }
     fn create_series(&self, req: &CreateSeries) -> Result<SeriesDef> {
         self.engine().create_series(req)
+    }
+    fn create_series_batch(&self, reqs: &[CreateSeries]) -> Result<Vec<SeriesDef>> {
+        self.engine().create_series_batch(reqs)
     }
     fn write(&self, batch: &WriteBatch) -> Result<WriteResult> {
         self.engine().write(batch)
