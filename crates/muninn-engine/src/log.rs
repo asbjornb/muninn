@@ -21,8 +21,26 @@ use muninn_core::{
 use muninn_store::Key;
 use serde::{Deserialize, Serialize};
 
-/// Format version of log entries and checkpoints.
-pub const LOG_FORMAT: u32 = 1;
+/// Format version of the log entries and checkpoints this engine writes. Format 2
+/// (decision 0007) allows the log to be truncated below a checkpoint; entries and
+/// checkpoints of format 1 are read unchanged.
+pub const LOG_FORMAT: u32 = 2;
+
+/// Is `format` a log format this engine reads?
+pub fn format_supported(format: u32) -> bool {
+    format == 1 || format == 2
+}
+
+/// `kind` of the marker that replaces entry 1 once the log is truncated (FORMAT.md §3.6).
+pub const TRUNCATED_KIND: &str = "truncated";
+
+/// Parses `log/<20 digits>.json` into its version.
+pub fn parse_entry_key(key: &str) -> Option<u64> {
+    let digits = key.strip_prefix("log/")?.strip_suffix(".json")?;
+    (digits.len() == 20 && digits.bytes().all(|b| b.is_ascii_digit()))
+        .then(|| digits.parse().ok())
+        .flatten()
+}
 
 /// Key of commit entry `version`.
 pub fn entry_key(version: u64) -> Key {
@@ -74,9 +92,48 @@ pub(crate) fn corrupt(what: impl std::fmt::Display) -> Error {
     Error::new(ErrorKind::Io, format!("{CORRUPT}: {what}"))
 }
 
+/// The error of a state whose next entries were truncated away (decision 0007): the
+/// state is stale and must be reloaded from a checkpoint.
+pub(crate) fn truncated(what: impl std::fmt::Display) -> Error {
+    Error::new(ErrorKind::Io, format!("{TRUNCATED}: {what}"))
+}
+
+/// Is `e` a [`truncated`] error?
+pub(crate) fn is_truncated(e: &Error) -> bool {
+    e.kind() == ErrorKind::Io && e.message().starts_with(TRUNCATED)
+}
+
+const TRUNCATED: &str = "log truncated past this state";
+
 // ---------------------------------------------------------------------------------------
 // Commit entries
 // ---------------------------------------------------------------------------------------
+
+impl LogEntry {
+    /// The marker written over `log/<1>.json` when the log is truncated: it keeps entry 1
+    /// present (so nobody can create it again) and makes readers that replay from the
+    /// start fail instead of seeing an empty database.
+    pub fn truncation_marker(wall_time: i64) -> LogEntry {
+        LogEntry {
+            format: LOG_FORMAT,
+            version: 1,
+            kind: TRUNCATED_KIND.to_owned(),
+            wall_time,
+            catalog: Vec::new(),
+            batch_id: None,
+            add: Vec::new(),
+            remove: Vec::new(),
+            purged: Vec::new(),
+            next_seq: 1,
+            last_system_time: None,
+        }
+    }
+
+    /// Is this the truncation marker?
+    pub fn is_truncation_marker(&self) -> bool {
+        self.kind == TRUNCATED_KIND
+    }
+}
 
 /// One commit entry: `log/<version>.json`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -86,7 +143,8 @@ pub struct LogEntry {
     pub format: u32,
     /// This entry's version (= the previous version + 1).
     pub version: u64,
-    /// What kind of change (informational): `catalog`, `write`, `compact`, `gc`.
+    /// What kind of change: `catalog`, `write`, `restore`, `compact`, `gc` (or the
+    /// truncation marker, `truncated`, which is not an applicable entry).
     pub kind: String,
     /// The committing writer's wall clock (µs since the epoch); used for GC grace periods.
     pub wall_time: i64,
@@ -398,6 +456,8 @@ mod tests {
         assert_eq!(entry_key(7).as_str(), "log/00000000000000000007.json");
         assert_eq!(parse_checkpoint_key(checkpoint_key(42).as_str()), Some(42));
         assert_eq!(parse_checkpoint_key(entry_key(42).as_str()), None);
+        assert_eq!(parse_entry_key(entry_key(42).as_str()), Some(42));
+        assert_eq!(parse_entry_key(checkpoint_key(42).as_str()), None);
         assert_eq!(parse_checkpoint_key("log/_last_checkpoint"), None);
         let k = segment_key("t", "2025-01-01", 123, 0xabc);
         assert_eq!(

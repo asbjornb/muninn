@@ -881,46 +881,45 @@ impl Database {
         timezone: Option<&Bound<'py, PyAny>>,
         resolution: Option<&Bound<'py, PyAny>>,
     ) -> PyResult<Bound<'py, PyDict>> {
-        let req = (|| -> Result<CreateSeries> {
-            let name = req_str(name, "series name")?;
-            let table = req_str(table, "table")?;
-            let mut tag_map = BTreeMap::new();
-            if let Some(t) = tags.filter(|o| !o.is_none()) {
-                let d = t
-                    .cast::<PyDict>()
-                    .map_err(|_| invalid("tags must be a dict of strings"))?;
-                for (k, v) in d.iter() {
-                    tag_map.insert(req_str(&k, "tag names")?, req_str(&v, "tag values")?);
-                }
-            }
-            let timezone = match timezone.filter(|o| !o.is_none()) {
-                None => None,
-                Some(t) => Some(req_str(t, "timezone")?),
-            };
-            let resolution = match resolution.filter(|o| !o.is_none()) {
-                None => None,
-                Some(r) => Some(match DurInput::from_py(r) {
-                    DurInput::Micros(us) => Duration::from_micros(us),
-                    DurInput::Text(s) => {
-                        Duration::parse(&s).map_err(|e| invalid(format!("resolution: {e}")))?
-                    }
-                    DurInput::Invalid(d) => {
-                        return Err(invalid(format!("resolution: not a duration: {d}")));
-                    }
-                }),
-            };
-            Ok(CreateSeries {
-                name,
-                table,
-                tags: tag_map,
-                timezone,
-                resolution,
-                clock: None,
-            })
-        })()
-        .or_py(py)?;
+        let req = series_request(name, table, tags, timezone, resolution).or_py(py)?;
         let s = py.detach(|| self.engine.create_series(&req)).or_py(py)?;
         series_dict(py, &s)
+    }
+
+    /// Several series in one atomic commit: `items` is a list of
+    /// `(name, table, tags, timezone, resolution)` tuples.
+    fn create_series_batch<'py>(
+        &self,
+        py: Python<'py>,
+        items: &Bound<'py, PyList>,
+    ) -> PyResult<Vec<Bound<'py, PyDict>>> {
+        let reqs = items
+            .iter()
+            .map(|it| {
+                let t = it.cast::<PyTuple>().map_err(|_| {
+                    invalid("series must be (name, table, tags, timezone, resolution)")
+                })?;
+                if t.len() != 5 {
+                    return Err(invalid(
+                        "series must be (name, table, tags, timezone, resolution)",
+                    ));
+                }
+                let item = |i: usize| t.get_item(i).map_err(|_| invalid("bad series item"));
+                let opt = |b: Bound<'py, PyAny>| (!b.is_none()).then_some(b);
+                series_request(
+                    &item(0)?,
+                    &item(1)?,
+                    opt(item(2)?).as_ref(),
+                    opt(item(3)?).as_ref(),
+                    opt(item(4)?).as_ref(),
+                )
+            })
+            .collect::<Result<Vec<CreateSeries>>>()
+            .or_py(py)?;
+        let made = py
+            .detach(|| self.engine.create_series_batch(&reqs))
+            .or_py(py)?;
+        made.iter().map(|s| series_dict(py, s)).collect()
     }
 
     /// Writes one atomic batch from a list of dicts (`rows`) or Arrow data (`arrow`).
@@ -1001,9 +1000,10 @@ impl Database {
     }
 
     /// Deletes unreferenced segment files older than the grace period (µs; `None` = the
-    /// engine default). Returns `(deleted keys, kept count)`.
+    /// engine default) and truncates the log. Returns `(deleted keys, kept count, log
+    /// files deleted)`.
     #[pyo3(signature = (grace_us=None))]
-    fn gc(&self, py: Python<'_>, grace_us: Option<i64>) -> PyResult<(Vec<String>, usize)> {
+    fn gc(&self, py: Python<'_>, grace_us: Option<i64>) -> PyResult<(Vec<String>, usize, usize)> {
         let r = match grace_us {
             None => py.detach(|| self.engine.gc()),
             Some(us) => {
@@ -1019,8 +1019,54 @@ impl Database {
         Ok((
             r.deleted.iter().map(|k| k.as_str().to_owned()).collect(),
             r.kept,
+            r.log_deleted.len(),
         ))
     }
+}
+
+/// A `create_series` request from Python arguments.
+fn series_request(
+    name: &Bound<'_, PyAny>,
+    table: &Bound<'_, PyAny>,
+    tags: Option<&Bound<'_, PyAny>>,
+    timezone: Option<&Bound<'_, PyAny>>,
+    resolution: Option<&Bound<'_, PyAny>>,
+) -> Result<CreateSeries> {
+    let name = req_str(name, "series name")?;
+    let table = req_str(table, "table")?;
+    let mut tag_map = BTreeMap::new();
+    if let Some(t) = tags.filter(|o| !o.is_none()) {
+        let d = t
+            .cast::<PyDict>()
+            .map_err(|_| invalid("tags must be a dict of strings"))?;
+        for (k, v) in d.iter() {
+            tag_map.insert(req_str(&k, "tag names")?, req_str(&v, "tag values")?);
+        }
+    }
+    let timezone = match timezone.filter(|o| !o.is_none()) {
+        None => None,
+        Some(t) => Some(req_str(t, "timezone")?),
+    };
+    let resolution = match resolution.filter(|o| !o.is_none()) {
+        None => None,
+        Some(r) => Some(match DurInput::from_py(r) {
+            DurInput::Micros(us) => Duration::from_micros(us),
+            DurInput::Text(s) => {
+                Duration::parse(&s).map_err(|e| invalid(format!("resolution: {e}")))?
+            }
+            DurInput::Invalid(d) => {
+                return Err(invalid(format!("resolution: not a duration: {d}")));
+            }
+        }),
+    };
+    Ok(CreateSeries {
+        name,
+        table,
+        tags: tag_map,
+        timezone,
+        resolution,
+        clock: None,
+    })
 }
 
 /// Opens (or creates) a database in a local directory.

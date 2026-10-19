@@ -410,6 +410,20 @@ impl Database for ModelDb {
         self.commit(|s| s.create_series(req).map(|(n, d)| (Some(n), d)))
     }
 
+    fn create_series_batch(&self, reqs: &[CreateSeries]) -> Result<Vec<SeriesDef>> {
+        self.commit(|s| {
+            // Literally the sequence of single creations, published only if all succeed.
+            let mut next: Option<State> = None;
+            let mut defs = Vec::with_capacity(reqs.len());
+            for req in reqs {
+                let (n, d) = next.as_ref().unwrap_or(s).create_series(req)?;
+                next = Some(n);
+                defs.push(d);
+            }
+            Ok((next, defs))
+        })
+    }
+
     fn write(&self, batch: &WriteBatch) -> Result<WriteResult> {
         self.commit(|s| s.write(batch))
     }

@@ -23,7 +23,8 @@ use muninn_store::{Key, PutOutcome, Store, StoreErrorKind};
 use crate::EngineOptions;
 use crate::dedup::DedupIndex;
 use crate::log::{
-    self, CatalogChangeJson, Checkpoint, Hint, LOG_FORMAT, LogEntry, from_json, to_json,
+    self, CatalogChangeJson, Checkpoint, Hint, LOG_FORMAT, LogEntry, from_json, is_truncated,
+    to_json, truncated,
 };
 use crate::read::{EngineSnapshot, ScanSpec, Scanner};
 use crate::segio::{Shared, check_columns, is_missing_segment, store_err};
@@ -39,6 +40,36 @@ pub struct GcReport {
     /// Unreferenced files kept because they are younger than the grace period or a live
     /// snapshot of this process still uses them.
     pub kept: usize,
+    /// Log entries and checkpoints deleted (log truncation, decision 0007; entry 1 is
+    /// replaced by the truncation marker instead and not counted).
+    pub log_deleted: Vec<Key>,
+}
+
+/// Bookkeeping for size-triggered checkpoints: the newest checkpoint this engine knows
+/// of, and the log written or read after it.
+#[derive(Copy, Clone, Debug, Default)]
+struct CkTrack {
+    version: u64,
+    bytes: u64,
+    since_entries: u64,
+    since_bytes: u64,
+}
+
+impl CkTrack {
+    fn due(&self, opts: &EngineOptions) -> bool {
+        let every = opts.checkpoint_interval;
+        every > 0
+            && self.since_entries >= every
+            && self.since_bytes as f64 >= opts.checkpoint_size_factor * self.bytes as f64
+    }
+}
+
+/// The result of reading the log: a state, the checkpoint it started from, what was
+/// applied after it, and when the state was last known to be the head.
+struct Loaded {
+    state: State,
+    ck: CkTrack,
+    at_head: Instant,
 }
 
 /// The current state plus every snapshot handed out (for GC), under one lock so that a
@@ -65,8 +96,15 @@ pub struct Engine<S: Store> {
     /// clock). A file is deleted only `gc_grace` after that, so no writer's clock is
     /// trusted.
     unreferenced_since: Mutex<HashMap<Key, i64>>,
+    /// GC: when this engine first saw each log entry or checkpoint as truncatable.
+    log_truncatable_since: Mutex<HashMap<Key, i64>>,
     /// Write-side dedup index (only used under the writer lock).
     dedup: Mutex<DedupIndex>,
+    /// Size-triggered checkpoints.
+    ck: Mutex<CkTrack>,
+    /// The last time this engine knew its state to be the log head: `(version, when)`
+    /// (decision 0007: a writer commits only from a recently confirmed head).
+    head_seen: Mutex<Option<(u64, Instant)>>,
 }
 
 impl<S: Store> std::fmt::Debug for Engine<S> {
@@ -101,18 +139,21 @@ impl<S: Store> Engine<S> {
     pub fn open(store: S, opts: EngineOptions) -> Result<Engine<S>> {
         let dedup = DedupIndex::new(opts.dedup_index_points);
         let shared = Arc::new(Shared::new(store, opts));
-        let state = load(&shared)?;
+        let loaded = load(&shared)?;
         Ok(Engine {
             dedup: Mutex::new(dedup),
             shared,
+            head_seen: Mutex::new(Some((loaded.state.version, loaded.at_head))),
+            ck: Mutex::new(loaded.ck),
             published: Mutex::new(Published {
-                state: Arc::new(state),
+                state: Arc::new(loaded.state),
                 live: Vec::new(),
             }),
             writer: Mutex::new(Writer),
             nonce: RandomState::new(),
             counter: AtomicU64::new(0),
             unreferenced_since: Mutex::new(HashMap::new()),
+            log_truncatable_since: Mutex::new(HashMap::new()),
         })
     }
 
@@ -175,7 +216,24 @@ impl<S: Store> Engine<S> {
         if !self.shared.stale.load(Ordering::SeqCst) {
             return Ok(cur);
         }
-        let next = Arc::new(catch_up(&self.shared, (*cur).clone())?);
+        let next = match catch_up(&self.shared, (*cur).clone()) {
+            Ok(c) => {
+                let mut t = lock(&self.ck);
+                t.since_entries += c.entries;
+                t.since_bytes += c.bytes;
+                (c.state, c.at_head)
+            }
+            // The entries after our version were truncated away (we lagged behind a GC
+            // by more than its grace period): reload from a checkpoint.
+            Err(e) if is_truncated(&e) => {
+                let l = load(&self.shared)?;
+                *lock(&self.ck) = l.ck;
+                (l.state, l.at_head)
+            }
+            Err(e) => return Err(e),
+        };
+        let (next, at_head) = (Arc::new(next.0), next.1);
+        *lock(&self.head_seen) = Some((next.version, at_head));
         self.publish(Arc::clone(&next));
         self.shared.stale.store(false, Ordering::SeqCst);
         Ok(next)
@@ -271,6 +329,8 @@ impl<S: Store> Engine<S> {
     fn commit(&self, _w: &mut Writer, base: &State, entry: LogEntry) -> Result<Arc<State>> {
         let next = Arc::new(base.apply(&entry)?);
         let bytes = to_json(&entry)?;
+        self.confirm_head(base)?;
+        let attempt = Instant::now();
         match self
             .shared
             .store
@@ -295,15 +355,60 @@ impl<S: Store> Engine<S> {
                 ));
             }
         }
+        // Nobody can have written the next entry before ours existed.
+        *lock(&self.head_seen) = Some((next.version, attempt));
         self.publish(Arc::clone(&next));
-        let every = self.shared.opts.checkpoint_interval;
-        if every > 0 && next.version % every == 0 {
+        let due = {
+            let mut t = lock(&self.ck);
+            t.since_entries += 1;
+            t.since_bytes += bytes.len() as u64;
+            t.due(&self.shared.opts)
+        };
+        if due {
             // An optimisation only: failures are ignored (recovery replays more entries).
             let _ = self.write_checkpoint(&next);
         }
         Ok(next)
     }
 
+    /// Decision 0007: a commit of entry `v + 1` must follow a recent proof that `v` is
+    /// the head — otherwise a writer that lagged behind a log truncation could re-create
+    /// a deleted entry. Our own commit of `v` or a read that found `v + 1` absent and
+    /// then `v` present are such proofs; with a grace period `G`, one is recent if it is
+    /// younger than `G / 2` (GC deletes an entry only `G` after it saw it truncatable).
+    /// With `G = 0` (single-process use) the head is checked before every commit.
+    fn confirm_head(&self, base: &State) -> Result<()> {
+        let grace = self.shared.opts.gc_grace;
+        if !grace.is_zero()
+            && matches!(*lock(&self.head_seen),
+                Some((v, at)) if v == base.version && at.elapsed() < grace / 2)
+        {
+            return Ok(());
+        }
+        let probe = Instant::now();
+        match head_probe(&self.shared, base.version) {
+            Ok(()) => {
+                *lock(&self.head_seen) = Some((base.version, probe));
+                Ok(())
+            }
+            Err(e) => {
+                self.shared.stale.store(true, Ordering::SeqCst);
+                if e.kind() == ErrorKind::Conflict || is_truncated(&e) {
+                    Err(Error::new(
+                        ErrorKind::Conflict,
+                        format!(
+                            "log version {} is not the head any more; reload and retry",
+                            base.version
+                        ),
+                    ))
+                } else {
+                    Err(e)
+                }
+            }
+        }
+    }
+
+    /// Writes a checkpoint of `st` (and the hint), and records it as the newest one.
     fn write_checkpoint(&self, st: &State) -> Result<()> {
         let store = &self.shared.store;
         let mut ck = st.to_checkpoint();
@@ -317,6 +422,16 @@ impl<S: Store> Engine<S> {
         store
             .put_if_absent(&log::checkpoint_key(st.version), &bytes)
             .map_err(|e| store_err("writing checkpoint", e))?;
+        {
+            let mut t = lock(&self.ck);
+            if st.version >= t.version {
+                *t = CkTrack {
+                    version: st.version,
+                    bytes: bytes.len() as u64,
+                    ..CkTrack::default()
+                };
+            }
+        }
         store
             .put(
                 &log::hint_key(),
@@ -327,11 +442,11 @@ impl<S: Store> Engine<S> {
             .map_err(|e| store_err("writing checkpoint hint", e))
     }
 
-    /// Writes a checkpoint of the current state now (normally automatic every
-    /// [`EngineOptions::checkpoint_interval`] versions).
+    /// Catches up with the log head and writes a checkpoint of it now (normally
+    /// automatic, see [`EngineOptions::checkpoint_interval`]).
     pub fn checkpoint(&self) -> Result<()> {
         let mut w = lock(&self.writer);
-        let st = self.fresh(&mut w)?;
+        let st = self.head(&mut w)?;
         self.write_checkpoint(&st)
     }
 
@@ -647,18 +762,115 @@ impl<S: Store> Engine<S> {
                 purged.push(k.as_str().to_owned());
             }
         }
+        let mut st = st;
         if !purged.is_empty() {
             let mut entry = self.new_entry(&st, "gc");
             entry.purged = purged;
             match self.commit(&mut w, &st, entry) {
                 // Losing the race only delays forgetting the retired keys.
                 Err(e) if e.kind() == ErrorKind::Conflict => {}
-                r => {
-                    r?;
-                }
+                r => st = r?,
             }
         }
+        report.log_deleted = self.gc_log(&st, now, grace)?;
         Ok(report)
+    }
+
+    /// Log truncation (decision 0007, FORMAT.md §3.6): checkpoints the head if the newest
+    /// checkpoint is older, then removes everything only needed to replay to the
+    /// *second*-newest checkpoint `T` — entries below `T` (entry 1 is replaced by the
+    /// truncation marker, the others deleted, in ascending order) and checkpoints below
+    /// `T` — once this engine has seen them truncatable for the grace period. The newest
+    /// checkpoint must verify first; the second-newest one stays as a fallback.
+    fn gc_log(&self, st: &State, now: i64, grace: i64) -> Result<Vec<Key>> {
+        let store = &self.shared.store;
+        let listed = store
+            .list("log/")
+            .map_err(|e| store_err("listing the log", e))?;
+        let mut cks: Vec<u64> = listed
+            .iter()
+            .filter_map(|k| log::parse_checkpoint_key(k.as_str()))
+            .filter(|&v| v <= st.version)
+            .collect();
+        cks.sort_unstable();
+        let mut entries: Vec<u64> = listed
+            .iter()
+            .filter_map(|k| log::parse_entry_key(k.as_str()))
+            .collect();
+        entries.sort_unstable();
+        if st.version > 0 && cks.last() != Some(&st.version) && self.write_checkpoint(st).is_ok() {
+            cks.push(st.version);
+        }
+        let mut since = lock(&self.log_truncatable_since);
+        let (Some(&newest), Some(&keep_from)) =
+            (cks.last(), cks.len().checked_sub(2).map(|i| &cks[i]))
+        else {
+            since.clear();
+            return Ok(Vec::new());
+        };
+        if checkpoint_state(&self.shared, newest)?.is_none() {
+            since.clear();
+            return Ok(Vec::new());
+        }
+        let candidates: BTreeSet<Key> = entries
+            .iter()
+            .filter(|&&v| v < keep_from)
+            .map(|&v| log::entry_key(v))
+            .chain(
+                cks.iter()
+                    .filter(|&&v| v < keep_from)
+                    .map(|&v| log::checkpoint_key(v)),
+            )
+            .collect();
+        // Age every candidate by our own observation (FORMAT.md §3.5 rule 2).
+        since.retain(|k, _| candidates.contains(k));
+        for k in &candidates {
+            since.entry(k.clone()).or_insert(now);
+        }
+        let ripe = |since: &HashMap<Key, i64>, k: &Key| {
+            since
+                .get(k)
+                .is_some_and(|&first| now.saturating_sub(first) >= grace)
+        };
+        let mut deleted = Vec::new();
+        // Entries in ascending order, stopping at the first that is not ripe: an entry is
+        // only ever removed after every lower one is gone (entry 1: marked), which is what
+        // lets readers tell a truncated log from the head (`head_probe`).
+        for &v in entries.iter().filter(|&&v| v < keep_from) {
+            let key = log::entry_key(v);
+            if !ripe(&since, &key) {
+                break;
+            }
+            if v == 1 {
+                let bytes = store
+                    .get(&key)
+                    .map_err(|e| store_err("reading log entry 1", e))?;
+                let marked = from_json::<LogEntry>(&bytes, "log entry 1")
+                    .is_ok_and(|e| e.is_truncation_marker());
+                if !marked {
+                    store
+                        .put(&key, &to_json(&LogEntry::truncation_marker(now))?)
+                        .map_err(|e| store_err("marking log entry 1", e))?;
+                }
+            } else {
+                store
+                    .delete(&key)
+                    .map_err(|e| store_err(&format!("deleting {key}"), e))?;
+                since.remove(&key);
+                deleted.push(key);
+            }
+        }
+        for &v in cks.iter().filter(|&&v| v < keep_from) {
+            let key = log::checkpoint_key(v);
+            if ripe(&since, &key) {
+                store
+                    .delete(&key)
+                    .map_err(|e| store_err(&format!("deleting {key}"), e))?;
+                since.remove(&key);
+                deleted.push(key);
+            }
+        }
+        Ok(deleted)
     }
 }
 
@@ -666,8 +878,21 @@ impl<S: Store> Engine<S> {
 /// newest listed) plus every later entry. A checkpoint is only an optimisation: one that
 /// is missing, unparsable, fails its checksum, does not match the log entry it claims to
 /// summarise, or from which the later entries do not apply is skipped in favour of an
-/// older one, and finally of a full replay of the log.
-fn load<S: Store>(shared: &Shared<S>) -> Result<State> {
+/// older one, and finally of a full replay of the log. A log truncated below every valid
+/// checkpoint (decision 0007) cannot be replayed and is an error.
+fn load<S: Store>(shared: &Shared<S>) -> Result<Loaded> {
+    // A GC elsewhere may truncate the log while we read it: start again then.
+    let mut last = None;
+    for _ in 0..4 {
+        match load_once(shared) {
+            Err(e) if is_truncated(&e) => last = Some(e),
+            r => return r,
+        }
+    }
+    Err(last.expect("at least one attempt"))
+}
+
+fn load_once<S: Store>(shared: &Shared<S>) -> Result<Loaded> {
     let store = &shared.store;
     let mut hint: Option<u64> = None;
     match store.get(&log::hint_key()) {
@@ -708,21 +933,41 @@ fn load<S: Store>(shared: &Shared<S>) -> Result<State> {
         if !tried.insert(v) {
             continue;
         }
-        let Some(state) = checkpoint_state(shared, v)? else {
+        let Some((state, bytes)) = checkpoint_state(shared, v)? else {
             continue;
         };
         match catch_up(shared, state) {
-            Ok(s) => return Ok(s),
+            Ok(c) => {
+                return Ok(Loaded {
+                    ck: CkTrack {
+                        version: v,
+                        bytes,
+                        since_entries: c.entries,
+                        since_bytes: c.bytes,
+                    },
+                    state: c.state,
+                    at_head: c.at_head,
+                });
+            }
             Err(e) if log::is_corrupt(&e) => continue,
             Err(e) => return Err(e),
         }
     }
-    catch_up(shared, State::empty())
+    let c = catch_up(shared, State::empty())?;
+    Ok(Loaded {
+        ck: CkTrack {
+            since_entries: c.entries,
+            since_bytes: c.bytes,
+            ..CkTrack::default()
+        },
+        state: c.state,
+        at_head: c.at_head,
+    })
 }
 
-/// Checkpoint `v` if it exists and verifies against the log; `Ok(None)` if it should be
-/// skipped; `Err` only for store failures.
-fn checkpoint_state<S: Store>(shared: &Shared<S>, v: u64) -> Result<Option<State>> {
+/// Checkpoint `v` (and its size) if it exists and verifies against the log; `Ok(None)` if
+/// it should be skipped; `Err` only for store failures.
+fn checkpoint_state<S: Store>(shared: &Shared<S>, v: u64) -> Result<Option<(State, u64)>> {
     let store = &shared.store;
     let bytes = match store.get(&log::checkpoint_key(v)) {
         Ok(b) => b,
@@ -744,21 +989,91 @@ fn checkpoint_state<S: Store>(shared: &Shared<S>, v: u64) -> Result<Option<State
     if entry_crc != c.entry_crc32c {
         return Ok(None);
     }
-    Ok(State::from_checkpoint(&c).ok())
+    Ok(State::from_checkpoint(&c)
+        .ok()
+        .map(|s| (s, bytes.len() as u64)))
 }
 
-/// Applies every entry after `state.version` until the first missing one.
-fn catch_up<S: Store>(shared: &Shared<S>, mut state: State) -> Result<State> {
+/// What [`catch_up`] read.
+struct CaughtUp {
+    state: State,
+    entries: u64,
+    bytes: u64,
+    /// Just before the read that found the next entry absent.
+    at_head: Instant,
+}
+
+/// Applies every entry after `state.version` until the first missing one, which must be
+/// the head and not a truncation (see [`head_probe`]).
+fn catch_up<S: Store>(shared: &Shared<S>, mut state: State) -> Result<CaughtUp> {
+    let (mut entries, mut bytes) = (0, 0);
     loop {
         let v = state.version + 1;
-        let bytes = match shared.store.get(&log::entry_key(v)) {
+        let probe = Instant::now();
+        let raw = match shared.store.get(&log::entry_key(v)) {
             Ok(b) => b,
-            Err(e) if e.kind() == StoreErrorKind::NotFound => return Ok(state),
+            Err(e) if e.kind() == StoreErrorKind::NotFound => {
+                entry_present(shared, state.version)?;
+                return Ok(CaughtUp {
+                    state,
+                    entries,
+                    bytes,
+                    at_head: probe,
+                });
+            }
             Err(e) => return Err(store_err(&format!("reading log version {v}"), e)),
         };
-        let entry: LogEntry = from_json(&bytes, &format!("log entry {v}"))?;
-        state = state.apply(&entry)?;
+        let entry: LogEntry = from_json(&raw, &format!("log entry {v}"))?;
+        if entry.is_truncation_marker() {
+            return Err(truncated(format!(
+                "entry {v} is the truncation marker (no valid checkpoint was usable)"
+            )));
+        }
+        state = state.apply_owned(&entry)?;
+        entries += 1;
+        bytes += raw.len() as u64;
     }
+}
+
+/// Having found entry `v + 1` absent, proves it was never written (rather than
+/// truncated away): GC removes entries only in ascending order and replaces entry 1 by
+/// the truncation marker instead of deleting it, so if entry `v` is still present (and,
+/// for `v = 1`, not the marker), entry `v + 1` cannot have been removed yet — it did not
+/// exist when we looked (decision 0007).
+fn entry_present<S: Store>(shared: &Shared<S>, v: u64) -> Result<()> {
+    if v == 0 {
+        return Ok(()); // entry 1 is never deleted
+    }
+    match shared.store.get(&log::entry_key(v)) {
+        Ok(b) if v == 1 => {
+            if from_json::<LogEntry>(&b, "log entry 1").is_ok_and(|e| e.is_truncation_marker()) {
+                Err(truncated("entry 1 was replaced by the truncation marker"))
+            } else {
+                Ok(())
+            }
+        }
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == StoreErrorKind::NotFound => {
+            Err(truncated(format!("entry {v} was removed")))
+        }
+        Err(e) => Err(store_err(&format!("reading log version {v}"), e)),
+    }
+}
+
+/// Proves that `v` is the head now: entry `v + 1` absent, then entry `v` present (see
+/// [`entry_present`]). `Conflict` if `v + 1` exists.
+fn head_probe<S: Store>(shared: &Shared<S>, v: u64) -> Result<()> {
+    match shared.store.head(&log::entry_key(v + 1)) {
+        Ok(_) => {
+            return Err(Error::new(
+                ErrorKind::Conflict,
+                format!("log version {} exists", v + 1),
+            ));
+        }
+        Err(e) if e.kind() == StoreErrorKind::NotFound => {}
+        Err(e) => return Err(store_err(&format!("reading log version {}", v + 1), e)),
+    }
+    entry_present(shared, v)
 }
 
 // ---------------------------------------------------------------------------------------
@@ -853,6 +1168,36 @@ impl<S: Store> Database for Engine<S> {
                 .map(CatalogChangeKind::CreateSeries)
         })?;
         st.catalog.series_by_name(&req.name).cloned()
+    }
+
+    fn create_series_batch(&self, reqs: &[CreateSeries]) -> Result<Vec<SeriesDef>> {
+        if reqs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut w = lock(&self.writer);
+        let st = self.fresh(&mut w)?;
+        // Each request is checked against the catalog including the earlier ones, with
+        // the catalog time a sequence of single creations would get.
+        let mut catalog = (*st.catalog).clone();
+        let mut prev = st.last_catalog_time();
+        let mut entry = self.new_entry(&st, "catalog");
+        for req in reqs {
+            let def = catalog.check_create_series(req)?;
+            let change = CatalogChangeKind::CreateSeries(def);
+            catalog.apply(&change)?;
+            let system_time = catalog_time(prev, st.last_system_time, req.clock);
+            prev = Some(system_time);
+            entry
+                .catalog
+                .push(CatalogChangeJson::from_change(&CatalogChange {
+                    system_time,
+                    change,
+                }));
+        }
+        let st = self.commit(&mut w, &st, entry)?;
+        reqs.iter()
+            .map(|r| st.catalog.series_by_name(&r.name).cloned())
+            .collect()
     }
 
     fn write(&self, batch: &WriteBatch) -> Result<WriteResult> {

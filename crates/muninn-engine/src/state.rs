@@ -14,7 +14,9 @@ use muninn_core::{Result, Timestamp};
 use muninn_format::{Partition, TimeBounds};
 use muninn_store::Key;
 
-use crate::log::{CatalogChangeJson, Checkpoint, LOG_FORMAT, LogEntry, SegmentJson, corrupt};
+use crate::log::{
+    CatalogChangeJson, Checkpoint, LOG_FORMAT, LogEntry, SegmentJson, corrupt, format_supported,
+};
 
 /// A live segment: its key and the statistics recorded in the log.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -195,20 +197,35 @@ impl State {
     /// Applies the next log entry, validating it against this state. Used both to commit
     /// and to recover, so a successful `apply` is the definition of a valid entry.
     pub fn apply(&self, e: &LogEntry) -> Result<State> {
-        if e.format != LOG_FORMAT {
+        self.clone().apply_owned(e)
+    }
+
+    /// [`State::apply`] consuming the state, so that parts nobody else shares (the
+    /// catalog, during a replay) are updated in place instead of copied.
+    pub fn apply_owned(self, e: &LogEntry) -> Result<State> {
+        let mut next = self;
+        let (prev_version, prev_next_seq, prev_last) =
+            (next.version, next.next_seq, next.last_system_time);
+        if !format_supported(e.format) {
             return Err(corrupt(format!("log entry format {}", e.format)));
         }
-        if e.version != self.version + 1 {
+        if e.is_truncation_marker() {
             return Err(corrupt(format!(
-                "log entry {} follows version {}",
-                e.version, self.version
+                "entry {} is the truncation marker: the log was truncated and no valid \
+                 checkpoint covers the missing entries",
+                e.version
             )));
         }
-        let mut next = self.clone();
+        if e.version != prev_version + 1 {
+            return Err(corrupt(format!(
+                "log entry {} follows version {prev_version}",
+                e.version
+            )));
+        }
         next.version = e.version;
         if !e.catalog.is_empty() {
-            let mut catalog = (*self.catalog).clone();
-            let mut log = (*self.catalog_log).clone();
+            let catalog = Arc::make_mut(&mut next.catalog);
+            let log = Arc::make_mut(&mut next.catalog_log);
             for c in &e.catalog {
                 let change = c.to_change()?;
                 catalog
@@ -225,11 +242,9 @@ impl State {
                 }
                 log.push(change);
             }
-            next.catalog = Arc::new(catalog);
-            next.catalog_log = Arc::new(log);
         }
         if let Some(id) = &e.batch_id {
-            if id.is_empty() || self.batch_ids.contains(id) {
+            if id.is_empty() || next.batch_ids.contains(id) {
                 return Err(corrupt(format!(
                     "entry {}: batch id {id:?} repeated",
                     e.version
@@ -243,7 +258,7 @@ impl State {
             return Err(corrupt("last_system_time out of range"));
         }
         let last = last.flatten();
-        if e.next_seq < self.next_seq || last < self.last_system_time {
+        if e.next_seq < prev_next_seq || last < prev_last {
             return Err(corrupt(format!(
                 "entry {}: high-water marks went back",
                 e.version
@@ -264,17 +279,16 @@ impl State {
         match e.kind.as_str() {
             "write" | "restore" => {
                 let rows: u64 = e.add.iter().map(|j| j.rows).sum();
-                if !e.remove.is_empty() || rows != e.next_seq - self.next_seq {
+                if !e.remove.is_empty() || rows != e.next_seq - prev_next_seq {
                     return Err(corrupt(format!(
                         "entry {}: {} adds {rows} rows for {} seqs",
                         e.version,
                         e.kind,
-                        e.next_seq - self.next_seq
+                        e.next_seq - prev_next_seq
                     )));
                 }
                 if rows > 0 {
-                    let after_prev =
-                        |t: i64| self.last_system_time.is_none_or(|p| t > p.as_micros());
+                    let after_prev = |t: i64| prev_last.is_none_or(|p| t > p.as_micros());
                     let last_us = last.map(Timestamp::as_micros);
                     let ok = after_prev(last_us.unwrap_or(i64::MIN))
                         && e.add.iter().all(|j| {
@@ -290,7 +304,7 @@ impl State {
                             e.version, e.kind
                         )));
                     }
-                } else if last != self.last_system_time {
+                } else if last != prev_last {
                     return Err(corrupt(format!(
                         "entry {}: {} without rows moves last_system_time",
                         e.version, e.kind
@@ -298,10 +312,22 @@ impl State {
                 }
             }
             "compact" => {
+                // Segments of the added one's partition (a key lies under its own
+                // table/partition prefix, so removed ones of that partition are there).
+                let part: &[Arc<SegmentRef>] = match e.add.as_slice() {
+                    [new] => next
+                        .catalog
+                        .table(&new.table)
+                        .ok()
+                        .and_then(|t| Partition::parse_label(t.partition, &new.partition).ok())
+                        .and_then(|p| next.partitions.get(&(new.table.clone(), p.index)))
+                        .map_or(&[], |v| v.as_slice()),
+                    _ => &[],
+                };
                 let removed: Vec<&Arc<SegmentRef>> = e
                     .remove
                     .iter()
-                    .filter_map(|k| self.segments().find(|s| s.key.as_str() == k))
+                    .filter_map(|k| part.iter().find(|s| s.key.as_str() == k))
                     .collect();
                 let ok = matches!(e.add.as_slice(), [new] if
                     removed.len() == e.remove.len()
@@ -310,13 +336,13 @@ impl State {
                     && removed.iter().map(|s| s.rows).sum::<u64>() == new.rows
                     && removed.iter().map(|s| s.seq.0).min() == Some(new.seq[0])
                     && removed.iter().map(|s| s.seq.1).max() == Some(new.seq[1]))
-                    && e.next_seq == self.next_seq
-                    && last == self.last_system_time;
+                    && e.next_seq == prev_next_seq
+                    && last == prev_last;
                 if !ok {
                     return Err(corrupt(format!("entry {}: invalid compaction", e.version)));
                 }
             }
-            _ => {
+            "catalog" | "gc" => {
                 if !e.add.is_empty() || !e.remove.is_empty() {
                     return Err(corrupt(format!(
                         "entry {}: a {:?} entry cannot add or remove segments",
@@ -324,12 +350,33 @@ impl State {
                     )));
                 }
             }
+            other => {
+                return Err(corrupt(format!(
+                    "entry {}: unknown kind {other:?}",
+                    e.version
+                )));
+            }
         }
 
-        let mut retired = (*self.retired).clone();
+        let mut retired = if e.remove.is_empty() && e.purged.is_empty() {
+            None
+        } else {
+            Some((*next.retired).clone())
+        };
         for k in &e.remove {
             let key = Key::new(k.clone()).map_err(|err| corrupt(format!("removed key: {err}")))?;
-            let found = next.partitions.iter_mut().find_map(|(_, segs)| {
+            // Only a compaction removes, and its removed segments are in the added one's
+            // partition (checked above).
+            let pk = e
+                .add
+                .first()
+                .and_then(|new| {
+                    let t = next.catalog.table(&new.table).ok()?;
+                    let p = Partition::parse_label(t.partition, &new.partition).ok()?;
+                    Some((new.table.clone(), p.index))
+                })
+                .ok_or_else(|| corrupt(format!("entry {} removes without adding", e.version)))?;
+            let found = next.partitions.get_mut(&pk).and_then(|segs| {
                 segs.iter()
                     .position(|s| s.key == key)
                     .map(|i| Arc::make_mut(segs).remove(i))
@@ -340,35 +387,67 @@ impl State {
                     e.version
                 )));
             }
-            retired.push((key, e.wall_time));
+            retired
+                .as_mut()
+                .expect("cloned when removing")
+                .push((key, e.wall_time));
         }
+        // Keys are unique: a key lies under its own table/partition prefix (checked by
+        // `from_json`), so a re-added key could only be in that partition's live list or
+        // among the retired ones.
+        let retired_keys: std::collections::HashSet<&str> = if e.add.is_empty() {
+            Default::default()
+        } else {
+            retired
+                .as_deref()
+                .unwrap_or(&next.retired)
+                .iter()
+                .map(|(k, _)| k.as_str())
+                .collect()
+        };
+        let mut added: Vec<Arc<SegmentRef>> = Vec::with_capacity(e.add.len());
         for j in &e.add {
             let s = SegmentRef::from_json(j, &next.catalog)?;
             if (e.kind == "write" || e.kind == "restore")
-                && !(self.next_seq <= s.seq.0 && s.seq.1 < e.next_seq)
+                && !(prev_next_seq <= s.seq.0 && s.seq.1 < e.next_seq)
             {
                 return Err(corrupt(format!(
                     "entry {}: segment seqs outside the batch",
                     e.version
                 )));
             }
-            if next.segments().any(|x| x.key == s.key) || retired.iter().any(|(k, _)| *k == s.key) {
+            let pk = (s.table.clone(), s.partition.index);
+            if next
+                .partitions
+                .get(&pk)
+                .is_some_and(|v| v.iter().any(|x| x.key == s.key))
+                || retired_keys.contains(s.key.as_str())
+                || added.iter().any(|x| x.key == s.key)
+            {
                 return Err(corrupt(format!(
                     "entry {} re-adds segment {}",
                     e.version, s.key
                 )));
             }
+            added.push(Arc::new(s));
+        }
+        drop(retired_keys);
+        for s in added {
             let segs = next
                 .partitions
                 .entry((s.table.clone(), s.partition.index))
                 .or_default();
-            Arc::make_mut(segs).push(Arc::new(s));
+            Arc::make_mut(segs).push(s);
         }
         next.partitions.retain(|_, v| !v.is_empty());
-        for k in &e.purged {
-            retired.retain(|(r, _)| r.as_str() != k);
+        if let Some(mut retired) = retired {
+            if !e.purged.is_empty() {
+                let purged: std::collections::HashSet<&str> =
+                    e.purged.iter().map(String::as_str).collect();
+                retired.retain(|(r, _)| !purged.contains(r.as_str()));
+            }
+            next.retired = Arc::new(retired);
         }
-        next.retired = Arc::new(retired);
         Ok(next)
     }
 
@@ -398,7 +477,7 @@ impl State {
 
     /// Rebuilds a state from a checkpoint.
     pub fn from_checkpoint(c: &Checkpoint) -> Result<State> {
-        if c.format != LOG_FORMAT {
+        if !format_supported(c.format) {
             return Err(corrupt(format!("checkpoint format {}", c.format)));
         }
         let mut catalog = Catalog::new();

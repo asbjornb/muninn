@@ -208,6 +208,22 @@ pub enum SeriesCmd {
         #[arg(long)]
         resolution: Option<String>,
     },
+    /// Create many series from a CSV or NDJSON file, all in one atomic commit.
+    ///
+    /// CSV: a header with `name` (required), optional `table`, `timezone`, `resolution`;
+    /// every other column is a tag (an empty field = no such tag). NDJSON: one object per
+    /// line with `name`, `table`, optional `tags` (object of strings), `timezone`,
+    /// `resolution`. Either all series are created or, on the first bad line, none.
+    Import {
+        /// Input file; `-` or omitted = stdin.
+        file: Option<PathBuf>,
+        /// Input format (default: from the file extension, else csv).
+        #[arg(long, value_enum)]
+        input: Option<InputFormat>,
+        /// Table for lines that do not name one.
+        #[arg(long)]
+        table: Option<String>,
+    },
     /// List series.
     List {
         /// Only series of this table.

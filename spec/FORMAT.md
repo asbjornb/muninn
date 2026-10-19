@@ -1,4 +1,4 @@
-# Muninn storage format (v1)
+# Muninn storage format (segments v1, log format 2)
 
 This document specifies the bytes a Muninn database leaves on a store, precisely enough
 for a third party to write an independent reader. It complements `SPEC.md`, which defines
@@ -54,9 +54,16 @@ segments/<table>/<partition label>/<name>.seg
 
 Version 0 is the empty database. **The state at version v is the fold of entries
 `1..=v`.** Entries are created with an atomic create-if-absent; a writer only writes `v+1`
-after reading or writing `v`, so the versions present always form a gapless prefix
-`1..=N`. A reader determines the current version by reading `N+1, N+2, …` until one is
-absent. A segment file that no entry (still) references is garbage: it MUST be ignored.
+after reading or writing `v`, so the versions ever written form a gapless prefix `1..=N`.
+A reader determines the current version by reading `N+1, N+2, …` until one is absent. A
+segment file that no entry (still) references is garbage: it MUST be ignored.
+
+Garbage collection may **truncate** the log (§3.6): entry 1 is then replaced by a marker
+and the entries `2..T-1` are deleted, where a valid checkpoint at version `T` or later
+summarises them. The entries present are then `1` (the marker) and the gapless range
+`T..=N`. A reader that finds entry `N+1` absent MUST then also find entry `N` present
+(and, for `N = 1`, not the marker) before concluding that `N` is the head; otherwise its
+state is older than the truncation and it MUST reload from a checkpoint (§3.6).
 
 Segment names written by the reference engine are
 `<creation wall time µs, 20 digits>-<64-bit nonce, 16 lowercase hex>.seg`. Readers MUST
@@ -69,9 +76,9 @@ bumps `format`).
 
 | field | type | meaning |
 | --- | --- | --- |
-| `format` | int | `1` |
+| `format` | int | `1` or `2` (written by engines that may truncate the log, §3.6; the fields are the same) |
 | `version` | int | `v` (must equal the key's number) |
-| `kind` | string | `catalog`, `write`, `restore`, `compact`, `gc` (constrains `add`/`remove`, below) |
+| `kind` | string | `catalog`, `write`, `restore`, `compact`, `gc` (constrains `add`/`remove`, below), or `truncated` for the marker of §3.6, which is not an applicable entry. Readers MUST reject other kinds |
 | `wall_time` | int | writer wall clock, µs (used by GC only) |
 | `catalog` | array, optional | catalog changes, applied in order (§3.2) |
 | `batch_id` | string, optional | batch id recorded by this write (SPEC §4.4) |
@@ -150,7 +157,7 @@ a reader SHOULD verify that when it opens the footer.
 `log/<v>.checkpoint.json` holds the state after entry `v`:
 
 ```jsonc
-{"format": 1, "version": v,
+{"format": 2, "version": v,                   // 1 or 2, as for entries
  "catalog": [<catalog change>, ...],   // the whole catalog change log, in order
  "batch_ids": ["..."], "segments": [<segment record>, ...],
  "retired": [["<key>", <removal wall time>], ...],
@@ -173,6 +180,12 @@ consistent, sealed and bound to the right entry but still wrong is not detectabl
 a full replay; writers never produce one.) `log/_last_checkpoint` (`{"version": v}`)
 names a recent checkpoint. It is only a hint: readers MUST tolerate it being absent,
 stale, unparsable or naming a missing or invalid checkpoint.
+
+When to write a checkpoint is the writer's choice and never changes a state. The
+reference engine writes one when at least `checkpoint_interval` entries (default 100)
+*and* at least `checkpoint_size_factor` (default 1) times the previous checkpoint's
+bytes of entries were committed since it — so checkpoint bytes stay proportional to
+entry bytes rather than to entries × state size — and GC writes one of the head (§3.6).
 
 ### 3.5 Garbage collection and the commit window
 
@@ -197,6 +210,39 @@ process that holds a state no longer at the head can read its segments for at le
 after GC first sees them retired; after that it gets a "missing segment" error, on
 which an engine reloads the head and retries once. `G = 0` disables rules 2–3 (single
 process tests only).
+
+### 3.6 Log truncation (log format 2)
+
+Checkpoints make old entries redundant; GC may remove them so that the log does not grow
+with every commit forever. The rules (decision 0007), with `G` the grace period of §3.5:
+
+1. GC truncates only below the **second-newest** checkpoint `T` (by version, at most the
+   head), and only once the **newest** checkpoint verifies (checksum, version, bound to its
+   entry). The newest one keeps the head cheap to load; `T` with the entries `T+1..` is the
+   fallback if the newest is damaged.
+2. Removable are the entries `< T` and the checkpoints `< T`. GC removes each only after
+   it has itself observed it removable for at least `G` (its own clock).
+3. Entries are removed in **ascending** order, and only after every lower entry is gone:
+   entry 1 is not deleted but overwritten with the **truncation marker**
+   `{"format": 2, "version": 1, "kind": "truncated", "wall_time": t, "next_seq": 1,
+   "last_system_time": null}`, entries `2, 3, …` are then deleted. Entry 1 therefore
+   always exists once written: nobody can create it again, and a reader that replays
+   from the start fails on the marker instead of seeing an empty database.
+4. **Readers** detect a truncation with rule 3: having found entry `v+1` absent, they read
+   entry `v`; if it is absent (or `v = 1` and it is the marker), the entries after their
+   state were removed and they reload from a checkpoint. If `v` is present, `v+1` cannot
+   have been deleted yet (ascending order) — it did not exist when they looked.
+5. **Writers** commit entry `v+1` only after a recent proof that `v` is the head: their own
+   successful commit of `v`, or a read that found `v+1` absent and then `v` present (rule
+   4), younger than `G / 2` by their own clock. Otherwise they repeat that read first, and
+   treat a present `v+1` or a removed `v` as a conflict. Since GC deletes `v+1` no earlier
+   than `G` after it first saw it, which is after `v+1` was created, a lagging writer can
+   never re-create a removed entry (assuming, as in §3.5, that a store call completes
+   within `G / 2`). `G = 0` disables the timing (single process tests only); writers then
+   check the head before every commit.
+
+A reader that only knows format 1 does not know rules 3–5; a log that was ever truncated
+contains format-2 entries and checkpoints, which such a reader rejects (§7).
 
 ## 4. Segment file
 
@@ -370,5 +416,8 @@ predicates (value range, series filter, `t_clock` bounds, `system_time ≤ S`).
 
 ## 7. Versioning
 
-The header version, footer format byte and log `format` field are independent integers,
-all `1` for this document. A reader MUST reject versions it does not know.
+The header version, footer format byte and log `format` field are independent integers.
+This document specifies segment header version `1`, footer format `1` and log formats `1`
+and `2` (§3.6; format 2 entries and checkpoints have the same fields, and a format-2
+writer may truncate the log). Readers of this document MUST accept log formats 1 and 2
+and MUST reject versions they do not know.

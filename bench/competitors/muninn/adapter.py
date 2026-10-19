@@ -52,10 +52,8 @@ class MuninnAdapter(Adapter):
     #: compact + gc every this many writes during the load (bounds segment count and
     #: checkpoint size, like a background merge); 0 = only at the end
     compact_every = 500
-    #: create_series is one commit each and checkpoints carry the whole catalog, so
-    #: catalog creation is quadratic (6k series: 10 s, 49 MB of log). Above this many
-    #: series a dataset is skipped (150k series extrapolates to ~1.7 h and ~30 GB of log).
-    max_series = 50_000
+    #: series are created with create_series_batch, this many per commit
+    series_batch = 50_000
 
     def __init__(self, workdir, threads=6, memory_limit_mb=4096, **kw):
         super().__init__(workdir, threads, memory_limit_mb)
@@ -105,16 +103,14 @@ class MuninnAdapter(Adapter):
                 a = b + 1
             starts, ends = np.array(grp_s), np.array(grp_e)
 
-        if len(catalog["series"]) > self.max_series:
-            raise Unavailable(f"{len(catalog['series']):,} series > {self.max_series:,}: "
-                              "create_series is quadratic in the catalog size (see adapter)")
         t0 = time.perf_counter()
         db = muninn.open(str(self.workdir / "db"), create=True)
         db.create_table(t["name"], columns={c["name"]: c["type"] for c in t["columns"]},
                         default_clock=t["default_clock"], partition=t["partition"])
-        for s in catalog["series"]:
-            db.create_series(s["name"], s["table"], tags=s["tags"] or None,
-                             resolution=s["resolution"])
+        series = [{"name": x["name"], "table": x["table"], "tags": x["tags"] or None,
+                   "resolution": x["resolution"]} for x in catalog["series"]]
+        for k in range(0, len(series), self.series_batch):
+            db.create_series_batch(series[k:k + self.series_batch])
         for i, (a, b) in enumerate(zip(starts.tolist(), ends.tolist())):
             r = db.write(data.slice(a, b - a), clock=int(st[b - 1]))
             assert r.stored == b - a, (r, a, b)

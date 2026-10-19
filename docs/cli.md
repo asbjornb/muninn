@@ -7,7 +7,7 @@ with `cargo build --release -p muninn-cli`; the binary is `target/release/muninn
 | Area | Commands |
 | --- | --- |
 | Setup | `init <dir>` |
-| Catalog | `table create/add-column/list/show`, `series create/list` |
+| Catalog | `table create/add-column/list/show`, `series create/import/list` |
 | Import | `write [file]` (CSV or NDJSON, stdin by default) |
 | Reads (SPEC §6) | `latest`, `history`, `replay`, `grid`, `asof-join`, `query` |
 | Operations | `compact`, `gc`, `info`, `verify` |
@@ -102,6 +102,16 @@ what became visible between two frontiers, in knowledge order.
 
 ## Importing
 
+**Series in bulk.** `muninn series import [FILE|-] [--table T]` creates many series in one
+atomic commit (all or none; an error names the first failing line). CSV has a header with
+`name` (required), optionally `table` (else `--table`), `timezone` and `resolution`; every
+other column is a tag, and an empty field means "no such tag". NDJSON has one object per
+line with `name`, `table`, and optionally `tags` (an object of strings), `timezone`,
+`resolution`. Prefer it to many `series create` calls: each of those is a commit of its
+own.
+
+**Versions.**
+
 `muninn write [FILE|-]` reads CSV (default) or NDJSON (`--input ndjson`, or a `.ndjson` /
 `.jsonl` file).
 
@@ -181,10 +191,15 @@ line. Failures print `{"error": "<code>", "message": ...}` and make the exit cod
 
 - `compact [--table T]` merges each partition's segments into one; results never change.
 - `gc [--grace 1h]` deletes segment files no committed state references (left by failed
-  writes, or retired by compaction) once they are older than the grace period.
-- `info` prints tables, series counts, versions, segments, bytes, log version, next seq.
-- `verify` replays the whole log (checking every entry and every checkpoint against the
-  replay), opens the database with the engine, and reads every live segment completely:
+  writes, or retired by compaction) once they are older than the grace period. It also
+  truncates the commit log: it checkpoints the head and removes the entries and
+  checkpoints older than the second-newest checkpoint (`spec/FORMAT.md` §3.6).
+- `info` prints tables, series counts, versions, segments, bytes (also of the log), log
+  version, next seq.
+- `verify` replays the log (from the start, or from the oldest usable checkpoint of a
+  truncated log; checking every entry and every later checkpoint against the replay, and
+  each checkpoint's checksum and entry binding), opens the database with the engine, and
+  reads every live segment completely:
   header, footer and chunk checksums, statistics against the log, rows against the
   catalog, seq uniqueness. It prints `problem:` lines and exits 1 if anything is wrong.
 

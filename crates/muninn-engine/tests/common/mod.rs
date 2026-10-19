@@ -495,6 +495,8 @@ pub fn setup_ops() -> Vec<Op> {
 pub fn test_options(block_rows: usize, checkpoint_interval: u64, compress: bool) -> EngineOptions {
     EngineOptions {
         checkpoint_interval,
+        // By count alone, so that checkpoints (and log truncation) happen often.
+        checkpoint_size_factor: 0.0,
         segment: WriteOptions {
             block_rows,
             compress,

@@ -603,6 +603,41 @@ def test_series_id_value_column_is_never_clobbered():
     assert miss.schema.remove_metadata() == j.schema.remove_metadata()
 
 
+def test_create_series_batch_is_atomic(db):
+    made = db.create_series_batch(
+        ["s0", {"name": "s1", "tags": {"k": "v"}, "resolution": "15m"},
+         {"name": "s2", "table": "prices", "timezone": "Europe/Oslo"}],
+        table="prices",
+    )
+    assert [s.name for s in made] == ["s0", "s1", "s2"]
+    assert [s.id for s in made] == [3, 4, 5]
+    assert made[1].tags == {"k": "v"} and made[2].timezone == "Europe/Oslo"
+    assert {s.name for s in db.series("prices")} == {"DK1", "DK2", "s0", "s1", "s2"}
+    v = db.version
+    with pytest.raises(muninn.AlreadyExistsError):
+        db.create_series_batch(["x", "y", "x"], table="prices")
+    with pytest.raises(muninn.UnknownTableError):
+        db.create_series_batch(["z", {"name": "w", "table": "nope"}], table="prices")
+    with pytest.raises(muninn.InvalidArgumentError):
+        db.create_series_batch([{"name": "q", "table": "prices", "colour": "red"}])
+    assert db.version == v and len(db.series("prices")) == 5
+    assert db.create_series_batch([]) == []
+
+
+def test_gc_truncates_the_log(tmp_path):
+    d = muninn.open(tmp_path / "db", create=True)
+    d.create_table("t", columns={"x": "f64"})
+    d.create_series_batch([f"s{i}" for i in range(100)], table="t")
+    for i in range(6):
+        d.write([{"series": f"s{i}", "value_time": i, "received_time": i, "x": 1.0}],
+                clock=T0 + i * H)
+        r = d.gc(grace="0s")
+    assert r.log_deleted > 0
+    assert not (tmp_path / "db" / "log" / "00000000000000000002.json").exists()
+    d2 = muninn.open(tmp_path / "db")
+    assert d2.latest("t").num_rows == 6 and len(d2.series("t")) == 100
+
+
 def test_pandas_fallback_reports_spec_codes(db):
     with pytest.raises(muninn.TypeMismatchError):
         db.write(pd.DataFrame({"series": ["DK1"], "value_time": [T0], "received_time": [T0],

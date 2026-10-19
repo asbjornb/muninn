@@ -170,6 +170,37 @@ fn perf_create_series() {
     .unwrap();
     eprintln!("reopen: {:?}", t.elapsed());
     assert_eq!(e.table_series("fc").unwrap().len(), n);
+    drop(e);
+    // The same as one batch per 10 000 series.
+    let dir = tempfile::tempdir().unwrap();
+    let e = Engine::open(
+        Arc::new(LocalFsStore::open(dir.path()).unwrap()),
+        EngineOptions::default(),
+    )
+    .unwrap();
+    setup(&e, 0);
+    let t = Instant::now();
+    let reqs: Vec<CreateSeries> = (0..n)
+        .map(|s| CreateSeries::new(format!("series-{s:06}"), "fc"))
+        .collect();
+    for chunk in reqs.chunks(10_000) {
+        e.create_series_batch(chunk).unwrap();
+    }
+    eprintln!(
+        "batched: {n} series in {:?}; log {} B",
+        t.elapsed(),
+        dir_bytes(dir.path(), "log")
+    );
+    e.gc().unwrap();
+    eprintln!("after gc: log {} B", dir_bytes(dir.path(), "log"));
+    let t = Instant::now();
+    let e = Engine::open(
+        Arc::new(LocalFsStore::open(dir.path()).unwrap()),
+        EngineOptions::default(),
+    )
+    .unwrap();
+    eprintln!("reopen: {:?}", t.elapsed());
+    assert_eq!(e.table_series("fc").unwrap().len(), n);
 }
 
 /// A forecast-like table: `runs` hourly runs of `nseries` series, compacted.

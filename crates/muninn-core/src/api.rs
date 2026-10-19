@@ -471,6 +471,11 @@ pub trait Database: Reader {
     /// SPEC §2.2. Check order (§10.4): empty name `invalid_name`, `unknown_table`,
     /// `already_exists`.
     fn create_series(&self, req: &CreateSeries) -> Result<SeriesDef>;
+    /// Several `create_series` as one atomic change: the same checks and results as
+    /// calling [`Database::create_series`] for each request in order (later requests see
+    /// the series created by earlier ones, so a repeated name is `already_exists`), but
+    /// either every series is created or — on the first failing request — none.
+    fn create_series_batch(&self, reqs: &[CreateSeries]) -> Result<Vec<SeriesDef>>;
     /// SPEC §4. Check order per §10.4: empty batch id (`invalid_argument`), known batch id
     /// (no-op), writer clock (`invalid_timestamp`), then §4.1 steps 1–5 per row.
     fn write(&self, batch: &WriteBatch) -> Result<WriteResult>;

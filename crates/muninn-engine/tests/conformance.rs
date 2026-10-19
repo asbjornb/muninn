@@ -136,6 +136,9 @@ impl Database for Hooked {
     fn create_series(&self, req: &CreateSeries) -> Result<SeriesDef> {
         self.engine().create_series(req)
     }
+    fn create_series_batch(&self, reqs: &[CreateSeries]) -> Result<Vec<SeriesDef>> {
+        self.engine().create_series_batch(reqs)
+    }
     fn write(&self, batch: &WriteBatch) -> Result<WriteResult> {
         self.engine().write(batch)
     }

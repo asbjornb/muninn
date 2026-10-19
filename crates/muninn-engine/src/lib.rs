@@ -51,8 +51,14 @@ pub type WallClock = Arc<dyn Fn() -> i64 + Send + Sync>;
 /// Engine settings. None of them changes a query result.
 #[derive(Clone)]
 pub struct EngineOptions {
-    /// Write a checkpoint every this many log versions (0 = never automatically).
+    /// Write a checkpoint at most every this many log versions (0 = never
+    /// automatically) ...
     pub checkpoint_interval: u64,
+    /// ... and only once the log entries since the last checkpoint add up to at least
+    /// this many times its size (0 = by count alone). Keeps checkpoint bytes linear in
+    /// the log bytes instead of quadratic, while recovery reads at most about this
+    /// factor times a checkpoint's size of entries.
+    pub checkpoint_size_factor: f64,
     /// Segment writer settings (block size, compression).
     pub segment: WriteOptions,
     /// GC deletes an unreferenced segment only when it is at least this old.
@@ -75,6 +81,7 @@ impl Default for EngineOptions {
     fn default() -> EngineOptions {
         EngineOptions {
             checkpoint_interval: 100,
+            checkpoint_size_factor: 1.0,
             segment: WriteOptions::default(),
             gc_grace: std::time::Duration::from_secs(3600),
             wall_clock: Arc::new(system_wall_clock),
@@ -89,6 +96,7 @@ impl std::fmt::Debug for EngineOptions {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("EngineOptions")
             .field("checkpoint_interval", &self.checkpoint_interval)
+            .field("checkpoint_size_factor", &self.checkpoint_size_factor)
             .field("segment", &self.segment)
             .field("gc_grace", &self.gc_grace)
             .field("footer_cache_entries", &self.footer_cache_entries)
