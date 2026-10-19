@@ -14,6 +14,11 @@ uv run --project bench pytest
 uv run --project bench python bench/run.py --scale small
 uv run --project bench python bench/run.py --scale medium --systems duckdb-native,clickhouse
 
+# ingest: every system in per-batch and bulk mode -> results/<date>-<host>/ingest-<scale>.{json,md}
+uv run --project bench python bench/ingest.py --scale small
+uv run --project bench python bench/ingest.py --scale small --systems muninn,duckdb-native \
+    --workdir /dev/shm/muninn-ingest            # the same on tmpfs (no real disk syncs)
+
 # just the data
 uv run --project bench python -m datagen --scale medium --out bench/data/medium-s1
 ```
@@ -44,6 +49,7 @@ Large data, work directories and the ClickHouse binary live under `bench/data/` 
 | `competitors/registry.py` | system name -> adapter factory |
 | `tests/` | correctness against the oracle, write-stream round trip through the reference |
 | `run.py` | the end-to-end runner and report writer |
+| `ingest.py`, `fsyncstat.c` | the ingest benchmark (per-batch and bulk modes) and its fsync counter (LD_PRELOAD shim) |
 | `results/` | committed reports |
 
 ## Datasets
@@ -119,7 +125,8 @@ any (query, instance) where systems disagree.
 ## Measurement
 
 `run.py` per system and dataset: load (ingest time includes the system's sort/merge/
-compression into its tuned layout; bytes on disk as the system reports them), then per
+compression into its tuned layout; bytes on disk as the system reports them; the load
+paths differ per system, so these times are not an ingest comparison, see below), then per
 query template one **cold** run (after `Adapter.cold()`: fresh DuckDB connection; ClickHouse
 cache drops; the OS page cache is *not* dropped, which needs root) and `--warm-runs` passes
 over all instances (**warm** p50/p99; a per-template time budget caps slow ones; the sample
@@ -127,6 +134,22 @@ count is in the JSON). Latency is end to end through the Python client into the 
 Arrow result (series names included). Threads are capped (default 6) so a concurrent build on
 the same machine doesn't make results meaningless; numbers are for one laptop and are
 meant for *relative* comparisons.
+
+**Ingest** is measured separately by `ingest.py`, because the query runs load each system
+its own way (Muninn one commit per original batch to reproduce `system_time`, DuckDB and
+ClickHouse one bulk statement), which makes their load times incomparable. `ingest.py`
+loads every dataset in two modes for every system: **per-batch** (one transaction/commit
+per original batch, in arrival order: Muninn `write`, DuckDB `BEGIN/INSERT/COMMIT` on a
+database file, ClickHouse one synchronous `INSERT`, with and without
+`fsync_after_insert`) and **bulk** (as few writes as possible; Muninn in 1M-row writes,
+`muninn-100k` in 100k-row writes). Each includes the system's finalisation (compact+gc,
+CHECKPOINT, OPTIMIZE FINAL). Where a full per-batch load would take too long (`--prefix`,
+by default the sparse dataset's 1-row batches), all systems load the same first N batches
+and the report gives rates for that prefix. Reported: wall, write and finalisation time,
+writes/s, rows/s, per-write p50/p99, size on disk, and fsync calls and time per kind of
+file (`fsyncstat.c`, preloaded automatically; it sees the benchmark process only, so not
+the ClickHouse server). `Adapter.ingest` is checked against the oracle like `load`
+(`tests/test_ingest.py`).
 
 Not yet measured (notes/09): trickle ingest latency and write amplification, mixed
 ingest+read load, object storage, weather ensembles, forward curves, UMM-style outages with
@@ -153,7 +176,8 @@ irregular intervals beyond `sparse`.
    `competitors/base.py`): `load(dataset_dir, catalog)` ingests `versions.parquet` into the
    system's tuned layout and returns `{"ingest_seconds", "bytes_on_disk"}`; `run(query)`
    returns the canonical Arrow result; `cold()` drops caches; `close()`. Raise
-   `Unavailable` if the runtime is missing.
+   `Unavailable` if the runtime is missing. For `ingest.py`, also `ingest(dataset_dir,
+   catalog, mode, max_batches)` (see `Adapter.ingest`).
 2. Add one line to `competitors/registry.py`.
 3. `MUNINN_BENCH_SYSTEMS=<system> uv run --project bench pytest` until it matches the oracle,
    then `bench/run.py --systems <system>`.

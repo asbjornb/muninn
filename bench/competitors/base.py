@@ -65,6 +65,9 @@ class Adapter(ABC):
     name: str = "?"
     #: free-text notes for the report (what "cold" means here, versions, settings)
     notes: str = ""
+    #: set by bench/ingest.py when the fsync counter shim is loaded: returns a numpy array
+    #: of cumulative (count, ns) per fsync category; adapters may sample it around writes
+    probe = None
 
     def __init__(self, workdir: Path, threads: int = 6, memory_limit_mb: int = 4096):
         self.workdir = Path(workdir)
@@ -89,6 +92,67 @@ class Adapter(ABC):
 
     def version(self) -> str:
         return "?"
+
+    def ingest(self, dataset_dir: Path, catalog: dict, mode: str, max_batches: int | None = None) -> dict:
+        """Ingest benchmark (``bench/ingest.py``), one of :data:`INGEST_MODES`:
+
+        * ``per-batch`` -- one transaction/commit per original write batch (= per distinct
+          ``system_time``), in seq order; only the first ``max_batches`` batches if given;
+        * ``bulk`` -- everything in as few large writes as the system allows.
+
+        Afterwards the adapter must be queryable (``run``) on what was loaded. Returns at
+        least ``mode, writes, rows, batches_total, rows_total, complete, write_seconds,
+        finalize_seconds, wall_seconds, bytes_on_disk``; ``write_latency_ms`` (p50/p99/max
+        per write, ``None`` when there is one write) where the adapter times writes."""
+        raise Unavailable(f"{self.name}: ingest modes not implemented")
+
+
+INGEST_MODES = ("per-batch", "bulk")
+
+
+def batch_bounds(system_time) -> tuple:
+    """(starts, ends) of the original write batches in a seq-ordered ``system_time`` array:
+    §4.2 makes system_time unique per batch, so a batch is a run of equal values."""
+    import numpy as np
+
+    st = np.asarray(system_time)
+    bounds = np.flatnonzero(np.diff(st)) + 1
+    return np.concatenate([[0], bounds]), np.concatenate([bounds, [len(st)]])
+
+
+def engine_rows(dataset_dir: Path, catalog: dict):
+    """versions.parquet as the SQL baselines store it: ``series_id, value_time,
+    published_time, received_time, system_time, seq, deleted, <cols>`` with timestamps as
+    int64 µs, in seq order (the per-batch ingest source; prepared outside any timing)."""
+    import pyarrow.parquet as pq
+
+    t = catalog["tables"][0]
+    types = {c["name"]: c["type"] for c in t["columns"]}
+    names = ["series_id", "value_time", "published_time", "received_time", "system_time",
+             "seq", "deleted"] + list(types)
+    v = pq.read_table(Path(dataset_dir) / "versions.parquet", columns=names)
+    cols = []
+    for n in names:
+        c = v.column(n)
+        if pa.types.is_timestamp(c.type):
+            c = c.cast(pa.int64())
+        cols.append(c)
+    return pa.table(cols, names=names).combine_chunks()
+
+
+def latency_summary(seconds: list[float]) -> dict | None:
+    """p50/p99/max per write in ms (``None`` for fewer than two writes)."""
+    if len(seconds) < 2:
+        return None
+    import numpy as np
+
+    a = np.asarray(seconds) * 1e3
+    return {"p50": round(float(np.percentile(a, 50)), 3), "p99": round(float(np.percentile(a, 99)), 3),
+            "max": round(float(a.max()), 3), "mean": round(float(a.mean()), 3)}
+
+
+def dir_bytes(path: Path) -> int:
+    return sum(p.stat().st_size for p in Path(path).rglob("*") if p.is_file())
 
 
 class SeriesMap:

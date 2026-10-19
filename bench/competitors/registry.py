@@ -22,11 +22,11 @@ def _clickhouse(**kw):
     return make
 
 
-def _muninn():
+def _muninn(**kw):
     def make(workdir, threads, memory_limit_mb):
         from .muninn.adapter import MuninnAdapter
 
-        return MuninnAdapter(workdir, threads, memory_limit_mb)
+        return MuninnAdapter(workdir, threads, memory_limit_mb, **kw)
     return make
 
 
@@ -37,7 +37,11 @@ SYSTEMS = {
     "duckdb-native-window": _duckdb("native", latest_strategy="window", grid_strategy="window"),
     "clickhouse": _clickhouse(),
     "clickhouse-arrayjoin": _clickhouse(grid_strategy="arrayjoin"),
+    # parts fsynced on insert (ClickHouse's default does not); used by bench/ingest.py
+    "clickhouse-fsync": _clickhouse(fsync=True),
     "muninn": _muninn(),
+    # bulk ingest in writes of 100k rows instead of 1M (faster per row, bench/ingest.py)
+    "muninn-100k": _muninn(bulk_rows=100_000),
 }
 
 DEFAULT_SYSTEMS = ["muninn", "duckdb-native", "duckdb-parquet", "clickhouse"]

@@ -33,7 +33,7 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
-from ..base import Adapter, Unavailable, result_fields
+from ..base import Adapter, Unavailable, batch_bounds, dir_bytes, latency_summary, result_fields
 
 try:
     import muninn
@@ -57,6 +57,8 @@ class MuninnAdapter(Adapter):
     #: lead-time filters are passed to the engine (history(lead=...)) instead of being
     #: applied to the full history on the client
     lead_pushdown = True
+    #: rows per write in the ``bulk`` ingest mode (bench/ingest.py)
+    bulk_rows = 1_000_000
 
     def __init__(self, workdir, threads=6, memory_limit_mb=4096, **kw):
         super().__init__(workdir, threads, memory_limit_mb)
@@ -68,7 +70,9 @@ class MuninnAdapter(Adapter):
                       "one write per original batch (coalesced for datasets with > "
                       f"{self.max_exact_batches:,} batches), compact()+gc() every "
                       f"{self.compact_every} writes and at the end. Cold = database "
-                      "reopened (OS page cache not dropped). Engine thread count not configurable.")
+                      "reopened (OS page cache not dropped). Engine thread count not configurable. "
+                      f"Bulk ingest mode (bench/ingest.py): writes of {self.bulk_rows:,} rows, "
+                      "compact()+gc() at the end.")
         self.db = None
 
     def version(self):
@@ -77,7 +81,9 @@ class MuninnAdapter(Adapter):
     def _open(self):
         self.db = muninn.open(str(self.workdir / "db"))
 
-    def load(self, dataset_dir: Path, catalog: dict) -> dict:
+    def _prepare(self, dataset_dir: Path, catalog: dict):
+        """Reads versions.parquet into the write shape (outside any timing). Returns
+        (write table, system_time, seq, batch starts, batch ends)."""
         t = catalog["tables"][0]
         self.table = t["name"]
         self.columns = [c["name"] for c in t["columns"]]
@@ -91,9 +97,58 @@ class MuninnAdapter(Adapter):
         st = v.column("system_time").cast(pa.int64()).to_numpy()
         seq = v.column("seq").to_numpy()
         assert (np.diff(seq) == 1).all() and seq[0] == 1, "versions.parquet must be in seq order"
-        bounds = np.flatnonzero(np.diff(st)) + 1
-        starts = np.concatenate([[0], bounds])
-        ends = np.concatenate([bounds, [len(st)]])
+        starts, ends = batch_bounds(st)
+        return data, st, seq, starts, ends
+
+    def _create(self, catalog: dict):
+        t = catalog["tables"][0]
+        db = muninn.open(str(self.workdir / "db"), create=True)
+        db.create_table(t["name"], columns={c["name"]: c["type"] for c in t["columns"]},
+                        default_clock=t["default_clock"], partition=t["partition"])
+        series = [{"name": x["name"], "table": x["table"], "tags": x["tags"] or None,
+                   "resolution": x["resolution"]} for x in catalog["series"]]
+        for k in range(0, len(series), self.series_batch):
+            db.create_series_batch(series[k:k + self.series_batch])
+        return db
+
+    def _write_loop(self, db, data, starts, ends, clocks, compact_every):
+        """One ``write`` per (start, end) with the given writer clocks. Returns per-write
+        latencies (s) and the time spent in the periodic compact+gc."""
+        lats, maint = [], 0.0
+        probe = self.probe
+        self.write_fsync = None if probe is None else probe() * 0
+        for i, (a, b) in enumerate(zip(starts.tolist(), ends.tolist())):
+            p0 = probe() if probe is not None else None
+            t0 = time.perf_counter()
+            r = db.write(data.slice(a, b - a), clock=int(clocks[i]))
+            lats.append(time.perf_counter() - t0)
+            if probe is not None:
+                self.write_fsync += probe() - p0
+            assert r.stored == b - a, (r, a, b)
+            if compact_every and (i + 1) % compact_every == 0:
+                t1 = time.perf_counter()
+                db.compact()
+                db.gc(grace="0s")
+                maint += time.perf_counter() - t1
+        return lats, maint
+
+    def _sizes(self):
+        root = self.workdir / "db"
+        size = dir_bytes(root)
+        seg_bytes = dir_bytes(root / "segments") if (root / "segments").exists() else 0
+        nfiles = sum(1 for p in root.rglob("*") if p.is_file())
+        return size, seg_bytes, nfiles
+
+    def _verify_system_time(self, seq, st):
+        """Checks that the engine assigned exactly the dataset's system_time/seq."""
+        h = self.db.history(self.table)
+        got = pa.table({"seq": h.column("seq").cast(pa.int64()),
+                        "st": h.column("system_time").cast(pa.int64())}).sort_by("seq")
+        assert got.num_rows == len(seq)
+        assert (got.column("st").to_numpy() == st).all(), "system_time differs"
+
+    def load(self, dataset_dir: Path, catalog: dict) -> dict:
+        data, st, seq, starts, ends = self._prepare(dataset_dir, catalog)
         self.exact = len(starts) <= self.max_exact_batches
         if not self.exact:  # group whole batches into writes of ~coalesce_rows rows
             grp_s, grp_e, a = [], [], 0
@@ -107,39 +162,67 @@ class MuninnAdapter(Adapter):
             starts, ends = np.array(grp_s), np.array(grp_e)
 
         t0 = time.perf_counter()
-        db = muninn.open(str(self.workdir / "db"), create=True)
-        db.create_table(t["name"], columns={c["name"]: c["type"] for c in t["columns"]},
-                        default_clock=t["default_clock"], partition=t["partition"])
-        series = [{"name": x["name"], "table": x["table"], "tags": x["tags"] or None,
-                   "resolution": x["resolution"]} for x in catalog["series"]]
-        for k in range(0, len(series), self.series_batch):
-            db.create_series_batch(series[k:k + self.series_batch])
-        for i, (a, b) in enumerate(zip(starts.tolist(), ends.tolist())):
-            r = db.write(data.slice(a, b - a), clock=int(st[b - 1]))
-            assert r.stored == b - a, (r, a, b)
-            if self.compact_every and (i + 1) % self.compact_every == 0:
-                db.compact()
-                db.gc(grace="0s")
+        db = self._create(catalog)
+        self._write_loop(db, data, starts, ends, st[ends - 1], self.compact_every)
         write_s = time.perf_counter() - t0
         db.compact()
         db.gc(grace="0s")
         ingest = time.perf_counter() - t0
-        size = sum(p.stat().st_size for p in (self.workdir / "db").rglob("*") if p.is_file())
-        nfiles = sum(1 for p in (self.workdir / "db").rglob("*") if p.is_file())
-        seg_bytes = sum(p.stat().st_size for p in (self.workdir / "db" / "segments").rglob("*")
-                        if p.is_file())
+        size, seg_bytes, nfiles = self._sizes()
         del db
         self._open()
-        if self.exact:  # verify the engine assigned exactly the dataset's system_time/seq
-            h = self.db.history(self.table)
-            got = pa.table({"seq": h.column("seq").cast(pa.int64()),
-                            "st": h.column("system_time").cast(pa.int64())}).sort_by("seq")
-            assert got.num_rows == len(seq)
-            assert (got.column("st").to_numpy() == st).all(), "system_time differs"
+        if self.exact:
+            self._verify_system_time(seq, st)
         self.notes_load = {"writes": int(len(starts)), "write_seconds": round(write_s, 3),
                            "files": nfiles, "segment_bytes": seg_bytes,
                            "log_bytes": size - seg_bytes, "exact_system_time": self.exact}
         return {"ingest_seconds": ingest, "bytes_on_disk": size, **self.notes_load}
+
+    def ingest(self, dataset_dir: Path, catalog: dict, mode: str, max_batches: int | None = None) -> dict:
+        """``per-batch``: the same writes as ``load`` (one per original batch, writer clock =
+        its system_time, compact+gc every ``compact_every`` writes) but never coalesced;
+        ``max_batches`` cuts it to a prefix. ``bulk``: writes of ``bulk_rows`` rows in seq
+        order (cut regardless of batch boundaries, so system_time values differ from the
+        dataset's), one compact+gc at the end."""
+        data, st, seq, starts, ends = self._prepare(dataset_dir, catalog)
+        n_batches = len(starts)
+        if mode == "per-batch":
+            if max_batches is not None:
+                starts, ends = starts[:max_batches], ends[:max_batches]
+            compact_every = self.compact_every
+        elif mode == "bulk":
+            n = len(st)
+            starts = np.arange(0, n, self.bulk_rows)
+            ends = np.minimum(starts + self.bulk_rows, n)
+            compact_every = 0
+        else:
+            raise ValueError(mode)
+        rows = int(ends[-1])
+        t0 = time.perf_counter()
+        db = self._create(catalog)
+        setup_s = time.perf_counter() - t0
+        lats, maint = self._write_loop(db, data, starts, ends, st[ends - 1], compact_every)
+        t1 = time.perf_counter()
+        db.compact()
+        db.gc(grace="0s")
+        t2 = time.perf_counter()
+        size, seg_bytes, nfiles = self._sizes()
+        del db
+        self._open()
+        complete = rows == len(st)
+        self.exact = mode == "per-batch" and complete
+        if self.exact:
+            self._verify_system_time(seq, st)
+        return {"mode": mode, "writes": int(len(starts)), "rows": rows,
+                "batches_total": int(n_batches), "rows_total": int(len(st)), "complete": complete,
+                "setup_seconds": round(setup_s, 3),
+                "write_seconds": t1 - t0, "finalize_seconds": t2 - t1, "wall_seconds": t2 - t0,
+                "maintenance_seconds": round(maint, 3),
+                "write_latency_ms": latency_summary(lats),
+                "bytes_on_disk": size, "segment_bytes": seg_bytes, "log_bytes": size - seg_bytes,
+                "files": nfiles, "exact_system_time": self.exact,
+                # fsync (count, ns) per category inside db.write only (bench/fsyncstat.c)
+                "write_fsync": None if self.write_fsync is None else self.write_fsync.tolist()}
 
     def cold(self):
         self.db = None

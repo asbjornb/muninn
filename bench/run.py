@@ -201,7 +201,7 @@ def fmt_ms(x):
     return f"{x:.2f}" if x < 10 else f"{x:.0f}"
 
 
-def markdown(report) -> str:
+def markdown(report, ingest_dir: Path | None = None) -> str:
     L = []
     m = report["machine"]
     L.append(f"# Muninn benchmark — {report['scale']} scale, seed {report['seed']}")
@@ -229,9 +229,19 @@ def markdown(report) -> str:
                  f"{st['tombstones']:,} | {st['null_published']:,} | {fmt_bytes(st['parquet_bytes'])} |")
     L.append("")
     systems = [s for s, v in report["systems"].items() if "datasets" in v]
-    L.append("## Ingest and size on disk")
+    ing = ingest_dir / f"ingest-{report['scale']}.json" if ingest_dir else None
+    if ing is not None and ing.exists():
+        from ingest import summary_markdown
+
+        L += summary_markdown(json.loads(ing.read_text()), ing.with_suffix(".md").name)
+    L.append("## Load for the query runs, and size on disk")
     L.append("")
-    L.append("| dataset | " + " | ".join(f"{s} ingest s | {s} size (B/version)" for s in systems) + " |")
+    L.append("How each system was loaded for the query measurements below: Muninn one write per "
+             "original batch (the per-batch mode, so `system_time` is reproduced exactly), DuckDB "
+             "and ClickHouse in bulk. **These ingest times are not comparable across systems**; "
+             "see Ingest for that.")
+    L.append("")
+    L.append("| dataset | " + " | ".join(f"{s} load s | {s} size (B/version)" for s in systems) + " |")
     L.append("| --- |" + " ---: | ---: |" * len(systems))
     for ds in report["datasets"]:
         cells = []
@@ -342,10 +352,18 @@ def main(argv=None):
     ap.add_argument("--workdir", default=str(HERE / "data" / "work"))
     ap.add_argument("--out", default=None, help="report directory (default results/<date>-<host>)")
     ap.add_argument("--check", action="store_true", help="also compare with the reference (tiny only)")
+    ap.add_argument("--render", default=None,
+                    help="only re-render <dir>/<scale>.md from <dir>/<scale>.json (and "
+                         "ingest-<scale>.json if present)")
     ap.add_argument("--merge", default=None,
                     help="report directory whose <scale>.json gets the systems of this run "
                          "(replacing their earlier results; the others are kept)")
     args = ap.parse_args(argv)
+    if args.render:
+        d = Path(args.render)
+        rep = json.loads((d / f"{args.scale}.json").read_text())
+        (d / f"{args.scale}.md").write_text(markdown(rep, d))
+        return 0
 
     data_dir = Path(args.data) / f"{args.scale}-s{args.seed}"
     datasets = args.datasets.split(",")
@@ -378,7 +396,7 @@ def main(argv=None):
     out = Path(args.out) if args.out else HERE / "results" / f"{date}-{socket.gethostname()}"
     out.mkdir(parents=True, exist_ok=True)
     (out / f"{args.scale}.json").write_text(json.dumps(report, indent=1))
-    (out / f"{args.scale}.md").write_text(markdown(report))
+    (out / f"{args.scale}.md").write_text(markdown(report, out))
     print(f"report: {out / (args.scale + '.md')}")
     if report["cross_check"]["disagreements"] or (args.check and report["oracle_check"]["mismatches"]):
         print("WARNING: systems disagree / oracle mismatches, see report", file=sys.stderr)
