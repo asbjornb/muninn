@@ -1,6 +1,6 @@
 # 0004: Commit log on the store; no separate WAL in v1
 
-- Status: accepted
+- Status: accepted; amended by 0009 (rows go into the log entry, group commit, memtable)
 - Date: 2026-10-18
 
 ## Context
