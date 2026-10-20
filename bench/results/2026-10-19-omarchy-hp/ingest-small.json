@@ -7638,6 +7638,3132 @@
     "rows_per_second": 944836,
     "bytes_per_version": 6.22
    }
+  },
+  {
+   "storage": "tmpfs",
+   "workdir": "/dev/shm/muninn-ingest-a80f",
+   "system": "muninn (post-0009 rerun)",
+   "dataset": "da_prices",
+   "mode": "per-batch",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "per-batch",
+    "writes": 7723,
+    "rows": 453060,
+    "batches_total": 7723,
+    "rows_total": 453060,
+    "complete": true,
+    "setup_seconds": 0.001,
+    "write_seconds": 1.611,
+    "finalize_seconds": 0.025,
+    "wall_seconds": 1.636,
+    "maintenance_seconds": 0.354,
+    "write_latency_ms": {
+     "p50": 0.156,
+     "p99": 0.231,
+     "max": 1.725,
+     "mean": 0.152
+    },
+    "bytes_on_disk": 2329203,
+    "segment_bytes": 1678367,
+    "log_bytes": 650836,
+    "files": 45,
+    "exact_system_time": true,
+    "write_fsync": {
+     "log file": {
+      "count": 7812,
+      "seconds": 0.005
+     },
+     "log dir": {
+      "count": 7807,
+      "seconds": 0.003
+     }
+    },
+    "group": 1,
+    "producers": 1,
+    "calls": null,
+    "fast_write_path": true,
+    "process_cpu_seconds": 2.052,
+    "fsync": {
+     "segment file": {
+      "count": 55,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 84,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 7899,
+      "seconds": 0.005
+     },
+     "log dir": {
+      "count": 7915,
+      "seconds": 0.003
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.0
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 4793.92,
+    "rows_per_second": 276932,
+    "bytes_per_version": 5.14
+   }
+  },
+  {
+   "storage": "tmpfs",
+   "workdir": "/dev/shm/muninn-ingest-a80f",
+   "system": "muninn-wm64 (post-0009 rerun)",
+   "dataset": "da_prices",
+   "mode": "per-batch",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "per-batch",
+    "writes": 7723,
+    "rows": 453060,
+    "batches_total": 7723,
+    "rows_total": 453060,
+    "complete": true,
+    "setup_seconds": 0.001,
+    "write_seconds": 0.447,
+    "finalize_seconds": 0.064,
+    "wall_seconds": 0.511,
+    "maintenance_seconds": 0.0,
+    "write_latency_ms": {
+     "p50": 2.798,
+     "p99": 8.257,
+     "max": 12.374,
+     "mean": 3.461
+    },
+    "bytes_on_disk": 4793755,
+    "segment_bytes": 1668634,
+    "log_bytes": 3125121,
+    "files": 45,
+    "exact_system_time": true,
+    "write_fsync": null,
+    "group": 64,
+    "producers": 1,
+    "calls": 121,
+    "fast_write_path": true,
+    "process_cpu_seconds": 0.944,
+    "fsync": {
+     "segment file": {
+      "count": 19,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 34,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 134,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 135,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.0
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 17277.4,
+    "rows_per_second": 886614,
+    "bytes_per_version": 10.58
+   }
+  },
+  {
+   "storage": "tmpfs",
+   "workdir": "/dev/shm/muninn-ingest-a80f",
+   "system": "muninn (post-0009 rerun)",
+   "dataset": "da_prices",
+   "mode": "bulk",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "bulk",
+    "writes": 1,
+    "rows": 453060,
+    "batches_total": 7723,
+    "rows_total": 453060,
+    "complete": true,
+    "setup_seconds": 0.001,
+    "write_seconds": 0.44,
+    "finalize_seconds": 0.0,
+    "wall_seconds": 0.441,
+    "maintenance_seconds": 0.0,
+    "write_latency_ms": null,
+    "bytes_on_disk": 1632710,
+    "segment_bytes": 1615337,
+    "log_bytes": 17373,
+    "files": 17,
+    "exact_system_time": false,
+    "write_fsync": {
+     "segment file": {
+      "count": 12,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 25,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 1,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 1,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 1,
+      "seconds": 0.0
+     }
+    },
+    "group": 1,
+    "producers": 1,
+    "calls": null,
+    "fast_write_path": true,
+    "process_cpu_seconds": 0.663,
+    "fsync": {
+     "segment file": {
+      "count": 12,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 25,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 5,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 5,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.0
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 2.27,
+    "rows_per_second": 1027347,
+    "bytes_per_version": 3.6
+   }
+  },
+  {
+   "storage": "tmpfs",
+   "workdir": "/dev/shm/muninn-ingest-a80f",
+   "system": "muninn-100k (post-0009 rerun)",
+   "dataset": "da_prices",
+   "mode": "bulk",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "bulk",
+    "writes": 5,
+    "rows": 453060,
+    "batches_total": 7723,
+    "rows_total": 453060,
+    "complete": true,
+    "setup_seconds": 0.001,
+    "write_seconds": 0.305,
+    "finalize_seconds": 0.062,
+    "wall_seconds": 0.366,
+    "maintenance_seconds": 0.0,
+    "write_latency_ms": {
+     "p50": 66.903,
+     "p99": 69.413,
+     "max": 69.487,
+     "mean": 60.766
+    },
+    "bytes_on_disk": 1639485,
+    "segment_bytes": 1616417,
+    "log_bytes": 23068,
+    "files": 26,
+    "exact_system_time": false,
+    "write_fsync": {
+     "segment file": {
+      "count": 16,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 29,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 5,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 5,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 1,
+      "seconds": 0.0
+     }
+    },
+    "group": 1,
+    "producers": 1,
+    "calls": null,
+    "fast_write_path": true,
+    "process_cpu_seconds": 0.482,
+    "fsync": {
+     "segment file": {
+      "count": 20,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 37,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 14,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 14,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.0
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 100,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 16.39,
+    "rows_per_second": 1237869,
+    "bytes_per_version": 3.62
+   }
+  },
+  {
+   "storage": "tmpfs",
+   "workdir": "/dev/shm/muninn-ingest-a80f",
+   "system": "muninn (post-0009 rerun)",
+   "dataset": "forecasts",
+   "mode": "per-batch",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "per-batch",
+    "writes": 2857,
+    "rows": 2741768,
+    "batches_total": 2857,
+    "rows_total": 2741768,
+    "complete": true,
+    "setup_seconds": 0.0,
+    "write_seconds": 3.065,
+    "finalize_seconds": 0.086,
+    "wall_seconds": 3.152,
+    "maintenance_seconds": 0.438,
+    "write_latency_ms": {
+     "p50": 0.825,
+     "p99": 2.601,
+     "max": 15.658,
+     "mean": 0.906
+    },
+    "bytes_on_disk": 9546182,
+    "segment_bytes": 8353680,
+    "log_bytes": 1192502,
+    "files": 748,
+    "exact_system_time": true,
+    "write_fsync": {
+     "segment file": {
+      "count": 819,
+      "seconds": 0.001
+     },
+     "segment dir": {
+      "count": 883,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 2923,
+      "seconds": 0.002
+     },
+     "log dir": {
+      "count": 2921,
+      "seconds": 0.001
+     },
+     "other dir": {
+      "count": 1,
+      "seconds": 0.0
+     }
+    },
+    "group": 1,
+    "producers": 1,
+    "calls": null,
+    "fast_write_path": true,
+    "process_cpu_seconds": 7.164,
+    "fsync": {
+     "segment file": {
+      "count": 1307,
+      "seconds": 0.001
+     },
+     "segment dir": {
+      "count": 1495,
+      "seconds": 0.001
+     },
+     "log file": {
+      "count": 3258,
+      "seconds": 0.002
+     },
+     "log dir": {
+      "count": 3264,
+      "seconds": 0.001
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.0
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 932.14,
+    "rows_per_second": 869850,
+    "bytes_per_version": 3.48
+   }
+  },
+  {
+   "storage": "tmpfs",
+   "workdir": "/dev/shm/muninn-ingest-a80f",
+   "system": "muninn-wm64 (post-0009 rerun)",
+   "dataset": "forecasts",
+   "mode": "per-batch",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "per-batch",
+    "writes": 2857,
+    "rows": 2741768,
+    "batches_total": 2857,
+    "rows_total": 2741768,
+    "complete": true,
+    "setup_seconds": 0.0,
+    "write_seconds": 3.317,
+    "finalize_seconds": 0.041,
+    "wall_seconds": 3.358,
+    "maintenance_seconds": 0.0,
+    "write_latency_ms": {
+     "p50": 70.99,
+     "p99": 83.77,
+     "max": 84.147,
+     "mean": 73.184
+    },
+    "bytes_on_disk": 130879408,
+    "segment_bytes": 8171166,
+    "log_bytes": 122708242,
+    "files": 598,
+    "exact_system_time": true,
+    "write_fsync": null,
+    "group": 64,
+    "producers": 1,
+    "calls": 45,
+    "fast_write_path": true,
+    "process_cpu_seconds": 7.542,
+    "fsync": {
+     "segment file": {
+      "count": 550,
+      "seconds": 0.001
+     },
+     "segment dir": {
+      "count": 635,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 76,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 76,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.0
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 861.32,
+    "rows_per_second": 816488,
+    "bytes_per_version": 47.74
+   }
+  },
+  {
+   "storage": "tmpfs",
+   "workdir": "/dev/shm/muninn-ingest-a80f",
+   "system": "muninn (post-0009 rerun)",
+   "dataset": "forecasts",
+   "mode": "bulk",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "bulk",
+    "writes": 3,
+    "rows": 2741768,
+    "batches_total": 2857,
+    "rows_total": 2741768,
+    "complete": true,
+    "setup_seconds": 0.0,
+    "write_seconds": 6.355,
+    "finalize_seconds": 0.014,
+    "wall_seconds": 6.369,
+    "maintenance_seconds": 0.0,
+    "write_latency_ms": {
+     "p50": 2298.805,
+     "p99": 2400.188,
+     "max": 2402.257,
+     "mean": 2118.006
+    },
+    "bytes_on_disk": 7633416,
+    "segment_bytes": 7553218,
+    "log_bytes": 80198,
+    "files": 100,
+    "exact_system_time": false,
+    "write_fsync": {
+     "segment file": {
+      "count": 92,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 163,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 3,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 3,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 1,
+      "seconds": 0.0
+     }
+    },
+    "group": 1,
+    "producers": 1,
+    "calls": null,
+    "fast_write_path": true,
+    "process_cpu_seconds": 9.906,
+    "fsync": {
+     "segment file": {
+      "count": 93,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 165,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 9,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 9,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.0
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 0.47,
+    "rows_per_second": 430486,
+    "bytes_per_version": 2.78
+   }
+  },
+  {
+   "storage": "tmpfs",
+   "workdir": "/dev/shm/muninn-ingest-a80f",
+   "system": "muninn-100k (post-0009 rerun)",
+   "dataset": "forecasts",
+   "mode": "bulk",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "bulk",
+    "writes": 28,
+    "rows": 2741768,
+    "batches_total": 2857,
+    "rows_total": 2741768,
+    "complete": true,
+    "setup_seconds": 0.001,
+    "write_seconds": 2.565,
+    "finalize_seconds": 0.065,
+    "wall_seconds": 2.63,
+    "maintenance_seconds": 0.0,
+    "write_latency_ms": {
+     "p50": 93.269,
+     "p99": 99.846,
+     "max": 100.375,
+     "mean": 91.535
+    },
+    "bytes_on_disk": 8049651,
+    "segment_bytes": 7728397,
+    "log_bytes": 321254,
+    "files": 397,
+    "exact_system_time": false,
+    "write_fsync": {
+     "segment file": {
+      "count": 364,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 435,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 28,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 28,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 1,
+      "seconds": 0.0
+     }
+    },
+    "group": 1,
+    "producers": 1,
+    "calls": null,
+    "fast_write_path": true,
+    "process_cpu_seconds": 4.214,
+    "fsync": {
+     "segment file": {
+      "count": 385,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 477,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 54,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 54,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.0
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 100,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 10.92,
+    "rows_per_second": 1042497,
+    "bytes_per_version": 2.94
+   }
+  },
+  {
+   "storage": "tmpfs",
+   "workdir": "/dev/shm/muninn-ingest-a80f",
+   "system": "muninn (post-0009 rerun)",
+   "dataset": "settlement",
+   "mode": "per-batch",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "per-batch",
+    "writes": 10000,
+    "rows": 960000,
+    "batches_total": 10000,
+    "rows_total": 960000,
+    "complete": true,
+    "setup_seconds": 0.001,
+    "write_seconds": 2.913,
+    "finalize_seconds": 0.0,
+    "wall_seconds": 2.913,
+    "maintenance_seconds": 0.819,
+    "write_latency_ms": {
+     "p50": 0.192,
+     "p99": 0.279,
+     "max": 4.927,
+     "mean": 0.198
+    },
+    "bytes_on_disk": 5191041,
+    "segment_bytes": 3458286,
+    "log_bytes": 1732755,
+    "files": 124,
+    "exact_system_time": true,
+    "write_fsync": {
+     "log file": {
+      "count": 10116,
+      "seconds": 0.006
+     },
+     "log dir": {
+      "count": 10110,
+      "seconds": 0.004
+     }
+    },
+    "group": 1,
+    "producers": 1,
+    "calls": null,
+    "fast_write_path": true,
+    "process_cpu_seconds": 3.947,
+    "fsync": {
+     "segment file": {
+      "count": 84,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 123,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 10228,
+      "seconds": 0.006
+     },
+     "log dir": {
+      "count": 10248,
+      "seconds": 0.005
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.0
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 3432.89,
+    "rows_per_second": 329557,
+    "bytes_per_version": 5.41
+   }
+  },
+  {
+   "storage": "tmpfs",
+   "workdir": "/dev/shm/muninn-ingest-a80f",
+   "system": "muninn-wm64 (post-0009 rerun)",
+   "dataset": "settlement",
+   "mode": "per-batch",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "per-batch",
+    "writes": 10000,
+    "rows": 960000,
+    "batches_total": 10000,
+    "rows_total": 960000,
+    "complete": true,
+    "setup_seconds": 0.001,
+    "write_seconds": 1.173,
+    "finalize_seconds": 0.138,
+    "wall_seconds": 1.311,
+    "maintenance_seconds": 0.0,
+    "write_latency_ms": {
+     "p50": 6.516,
+     "p99": 16.858,
+     "max": 19.574,
+     "mean": 7.136
+    },
+    "bytes_on_disk": 13443154,
+    "segment_bytes": 3485660,
+    "log_bytes": 9957494,
+    "files": 103,
+    "exact_system_time": true,
+    "write_fsync": null,
+    "group": 64,
+    "producers": 1,
+    "calls": 157,
+    "fast_write_path": true,
+    "process_cpu_seconds": 2.599,
+    "fsync": {
+     "segment file": {
+      "count": 44,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 63,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 176,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 177,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.0
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 8525.15,
+    "rows_per_second": 732265,
+    "bytes_per_version": 14.0
+   }
+  },
+  {
+   "storage": "tmpfs",
+   "workdir": "/dev/shm/muninn-ingest-a80f",
+   "system": "muninn (post-0009 rerun)",
+   "dataset": "settlement",
+   "mode": "bulk",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "bulk",
+    "writes": 1,
+    "rows": 960000,
+    "batches_total": 10000,
+    "rows_total": 960000,
+    "complete": true,
+    "setup_seconds": 0.001,
+    "write_seconds": 0.878,
+    "finalize_seconds": 0.0,
+    "wall_seconds": 0.878,
+    "maintenance_seconds": 0.0,
+    "write_latency_ms": null,
+    "bytes_on_disk": 3211359,
+    "segment_bytes": 3196831,
+    "log_bytes": 14528,
+    "files": 17,
+    "exact_system_time": false,
+    "write_fsync": {
+     "segment file": {
+      "count": 12,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 25,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 1,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 1,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 1,
+      "seconds": 0.0
+     }
+    },
+    "group": 1,
+    "producers": 1,
+    "calls": null,
+    "fast_write_path": true,
+    "process_cpu_seconds": 1.876,
+    "fsync": {
+     "segment file": {
+      "count": 12,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 25,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 5,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 5,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.0
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 1.14,
+    "rows_per_second": 1093394,
+    "bytes_per_version": 3.35
+   }
+  },
+  {
+   "storage": "tmpfs",
+   "workdir": "/dev/shm/muninn-ingest-a80f",
+   "system": "muninn-100k (post-0009 rerun)",
+   "dataset": "settlement",
+   "mode": "bulk",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "bulk",
+    "writes": 10,
+    "rows": 960000,
+    "batches_total": 10000,
+    "rows_total": 960000,
+    "complete": true,
+    "setup_seconds": 0.001,
+    "write_seconds": 0.88,
+    "finalize_seconds": 0.073,
+    "wall_seconds": 0.952,
+    "maintenance_seconds": 0.0,
+    "write_latency_ms": {
+     "p50": 90.248,
+     "p99": 99.197,
+     "max": 99.737,
+     "mean": 87.861
+    },
+    "bytes_on_disk": 3418708,
+    "segment_bytes": 3382314,
+    "log_bytes": 36394,
+    "files": 49,
+    "exact_system_time": false,
+    "write_fsync": {
+     "segment file": {
+      "count": 34,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 47,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 10,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 10,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 1,
+      "seconds": 0.0
+     }
+    },
+    "group": 1,
+    "producers": 1,
+    "calls": null,
+    "fast_write_path": true,
+    "process_cpu_seconds": 1.195,
+    "fsync": {
+     "segment file": {
+      "count": 39,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 57,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 20,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 20,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.0
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 100,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 11.36,
+    "rows_per_second": 1008403,
+    "bytes_per_version": 3.56
+   }
+  },
+  {
+   "storage": "tmpfs",
+   "workdir": "/dev/shm/muninn-ingest-a80f",
+   "system": "muninn (post-0009 rerun)",
+   "dataset": "backfill",
+   "mode": "per-batch",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "per-batch",
+    "writes": 610,
+    "rows": 460135,
+    "batches_total": 610,
+    "rows_total": 460135,
+    "complete": true,
+    "setup_seconds": 0.001,
+    "write_seconds": 0.558,
+    "finalize_seconds": 0.17,
+    "wall_seconds": 0.729,
+    "maintenance_seconds": 0.152,
+    "write_latency_ms": {
+     "p50": 0.619,
+     "p99": 1.621,
+     "max": 2.221,
+     "mean": 0.653
+    },
+    "bytes_on_disk": 5665830,
+    "segment_bytes": 2876177,
+    "log_bytes": 2789653,
+    "files": 37,
+    "exact_system_time": true,
+    "write_fsync": {
+     "segment file": {
+      "count": 20,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 26,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 618,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 618,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 1,
+      "seconds": 0.0
+     }
+    },
+    "group": 1,
+    "producers": 1,
+    "calls": null,
+    "fast_write_path": true,
+    "process_cpu_seconds": 1.262,
+    "fsync": {
+     "segment file": {
+      "count": 60,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 76,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 653,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 655,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.0
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 1093.19,
+    "rows_per_second": 631187,
+    "bytes_per_version": 12.31
+   }
+  },
+  {
+   "storage": "tmpfs",
+   "workdir": "/dev/shm/muninn-ingest-a80f",
+   "system": "muninn-wm64 (post-0009 rerun)",
+   "dataset": "backfill",
+   "mode": "per-batch",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "per-batch",
+    "writes": 610,
+    "rows": 460135,
+    "batches_total": 610,
+    "rows_total": 460135,
+    "complete": true,
+    "setup_seconds": 0.001,
+    "write_seconds": 0.984,
+    "finalize_seconds": 0.191,
+    "wall_seconds": 1.175,
+    "maintenance_seconds": 0.0,
+    "write_latency_ms": {
+     "p50": 102.618,
+     "p99": 123.752,
+     "max": 123.998,
+     "mean": 97.955
+    },
+    "bytes_on_disk": 17356147,
+    "segment_bytes": 2839219,
+    "log_bytes": 14516928,
+    "files": 27,
+    "exact_system_time": true,
+    "write_fsync": null,
+    "group": 64,
+    "producers": 1,
+    "calls": 10,
+    "fast_write_path": true,
+    "process_cpu_seconds": 1.712,
+    "fsync": {
+     "segment file": {
+      "count": 15,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 26,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 22,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 22,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.0
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 619.92,
+    "rows_per_second": 391604,
+    "bytes_per_version": 37.72
+   }
+  },
+  {
+   "storage": "tmpfs",
+   "workdir": "/dev/shm/muninn-ingest-a80f",
+   "system": "muninn (post-0009 rerun)",
+   "dataset": "backfill",
+   "mode": "bulk",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "bulk",
+    "writes": 1,
+    "rows": 460135,
+    "batches_total": 610,
+    "rows_total": 460135,
+    "complete": true,
+    "setup_seconds": 0.001,
+    "write_seconds": 0.327,
+    "finalize_seconds": 0.0,
+    "wall_seconds": 0.328,
+    "maintenance_seconds": 0.0,
+    "write_latency_ms": null,
+    "bytes_on_disk": 2845126,
+    "segment_bytes": 2836366,
+    "log_bytes": 8760,
+    "files": 10,
+    "exact_system_time": false,
+    "write_fsync": {
+     "segment file": {
+      "count": 5,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 11,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 1,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 1,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 1,
+      "seconds": 0.0
+     }
+    },
+    "group": 1,
+    "producers": 1,
+    "calls": null,
+    "fast_write_path": true,
+    "process_cpu_seconds": 0.557,
+    "fsync": {
+     "segment file": {
+      "count": 5,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 11,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 5,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 5,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.0
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 3.06,
+    "rows_per_second": 1402851,
+    "bytes_per_version": 6.18
+   }
+  },
+  {
+   "storage": "tmpfs",
+   "workdir": "/dev/shm/muninn-ingest-a80f",
+   "system": "muninn-100k (post-0009 rerun)",
+   "dataset": "backfill",
+   "mode": "bulk",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "bulk",
+    "writes": 5,
+    "rows": 460135,
+    "batches_total": 610,
+    "rows_total": 460135,
+    "complete": true,
+    "setup_seconds": 0.001,
+    "write_seconds": 0.326,
+    "finalize_seconds": 0.157,
+    "wall_seconds": 0.483,
+    "maintenance_seconds": 0.0,
+    "write_latency_ms": {
+     "p50": 71.129,
+     "p99": 75.163,
+     "max": 75.261,
+     "mean": 65.077
+    },
+    "bytes_on_disk": 2860267,
+    "segment_bytes": 2836601,
+    "log_bytes": 23666,
+    "files": 20,
+    "exact_system_time": false,
+    "write_fsync": {
+     "segment file": {
+      "count": 25,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 31,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 5,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 5,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 1,
+      "seconds": 0.0
+     }
+    },
+    "group": 1,
+    "producers": 1,
+    "calls": null,
+    "fast_write_path": true,
+    "process_cpu_seconds": 0.626,
+    "fsync": {
+     "segment file": {
+      "count": 30,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 41,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 15,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 15,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.0
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 100,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 15.34,
+    "rows_per_second": 952660,
+    "bytes_per_version": 6.22
+   }
+  },
+  {
+   "storage": "btrfs",
+   "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a80f9d676e729c0de/bench/data/work",
+   "system": "muninn (post-0009 rerun)",
+   "dataset": "forecasts",
+   "mode": "per-batch",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "per-batch",
+    "writes": 2857,
+    "rows": 2741768,
+    "batches_total": 2857,
+    "rows_total": 2741768,
+    "complete": true,
+    "setup_seconds": 0.005,
+    "write_seconds": 9.208,
+    "finalize_seconds": 0.209,
+    "wall_seconds": 9.416,
+    "maintenance_seconds": 1.481,
+    "write_latency_ms": {
+     "p50": 2.496,
+     "p99": 6.225,
+     "max": 15.207,
+     "mean": 2.687
+    },
+    "bytes_on_disk": 10429391,
+    "segment_bytes": 8353680,
+    "log_bytes": 2075711,
+    "files": 770,
+    "exact_system_time": true,
+    "write_fsync": {
+     "segment file": {
+      "count": 771,
+      "seconds": 1.038
+     },
+     "segment dir": {
+      "count": 831,
+      "seconds": 0.985
+     },
+     "log file": {
+      "count": 2922,
+      "seconds": 2.663
+     },
+     "log dir": {
+      "count": 2922,
+      "seconds": 2.181
+     },
+     "other dir": {
+      "count": 1,
+      "seconds": 0.001
+     }
+    },
+    "group": 1,
+    "producers": 1,
+    "calls": null,
+    "fast_write_path": true,
+    "process_cpu_seconds": 9.513,
+    "fsync": {
+     "segment file": {
+      "count": 1219,
+      "seconds": 1.465
+     },
+     "segment dir": {
+      "count": 1403,
+      "seconds": 1.461
+     },
+     "log file": {
+      "count": 3220,
+      "seconds": 2.885
+     },
+     "log dir": {
+      "count": 3226,
+      "seconds": 2.418
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.003
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 310.27,
+    "rows_per_second": 291182,
+    "bytes_per_version": 3.8
+   }
+  },
+  {
+   "storage": "btrfs",
+   "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a80f9d676e729c0de/bench/data/work",
+   "system": "muninn-wm64 (post-0009 rerun)",
+   "dataset": "forecasts",
+   "mode": "per-batch",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "per-batch",
+    "writes": 2857,
+    "rows": 2741768,
+    "batches_total": 2857,
+    "rows_total": 2741768,
+    "complete": true,
+    "setup_seconds": 0.007,
+    "write_seconds": 3.513,
+    "finalize_seconds": 0.139,
+    "wall_seconds": 3.652,
+    "maintenance_seconds": 0.0,
+    "write_latency_ms": {
+     "p50": 73.665,
+     "p99": 93.727,
+     "max": 94.673,
+     "mean": 77.442
+    },
+    "bytes_on_disk": 130879407,
+    "segment_bytes": 8171166,
+    "log_bytes": 122708241,
+    "files": 598,
+    "exact_system_time": true,
+    "write_fsync": null,
+    "group": 64,
+    "producers": 1,
+    "calls": 45,
+    "fast_write_path": true,
+    "process_cpu_seconds": 8.458,
+    "fsync": {
+     "segment file": {
+      "count": 550,
+      "seconds": 0.774
+     },
+     "segment dir": {
+      "count": 635,
+      "seconds": 0.736
+     },
+     "log file": {
+      "count": 76,
+      "seconds": 0.167
+     },
+     "log dir": {
+      "count": 76,
+      "seconds": 0.052
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.005
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 813.27,
+    "rows_per_second": 750758,
+    "bytes_per_version": 47.74
+   }
+  },
+  {
+   "storage": "btrfs",
+   "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a80f9d676e729c0de/bench/data/work",
+   "system": "muninn (post-0009 rerun)",
+   "dataset": "da_prices",
+   "mode": "per-batch",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "per-batch",
+    "writes": 7723,
+    "rows": 453060,
+    "batches_total": 7723,
+    "rows_total": 453060,
+    "complete": true,
+    "setup_seconds": 0.006,
+    "write_seconds": 36.596,
+    "finalize_seconds": 0.115,
+    "wall_seconds": 36.711,
+    "maintenance_seconds": 1.39,
+    "write_latency_ms": {
+     "p50": 1.873,
+     "p99": 12.307,
+     "max": 137.721,
+     "mean": 4.533
+    },
+    "bytes_on_disk": 2329870,
+    "segment_bytes": 1678367,
+    "log_bytes": 651503,
+    "files": 50,
+    "exact_system_time": true,
+    "write_fsync": {
+     "log file": {
+      "count": 7817,
+      "seconds": 15.872
+     },
+     "log dir": {
+      "count": 7817,
+      "seconds": 16.548
+     }
+    },
+    "group": 1,
+    "producers": 1,
+    "calls": null,
+    "fast_write_path": true,
+    "process_cpu_seconds": 8.337,
+    "fsync": {
+     "segment file": {
+      "count": 55,
+      "seconds": 0.172
+     },
+     "segment dir": {
+      "count": 84,
+      "seconds": 0.236
+     },
+     "log file": {
+      "count": 7899,
+      "seconds": 16.051
+     },
+     "log dir": {
+      "count": 7915,
+      "seconds": 16.819
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.003
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 211.03,
+    "rows_per_second": 12341,
+    "bytes_per_version": 5.14
+   }
+  },
+  {
+   "storage": "btrfs",
+   "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a80f9d676e729c0de/bench/data/work",
+   "system": "muninn-wm64 (post-0009 rerun)",
+   "dataset": "da_prices",
+   "mode": "per-batch",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "per-batch",
+    "writes": 7723,
+    "rows": 453060,
+    "batches_total": 7723,
+    "rows_total": 453060,
+    "complete": true,
+    "setup_seconds": 0.026,
+    "write_seconds": 1.584,
+    "finalize_seconds": 0.177,
+    "wall_seconds": 1.76,
+    "maintenance_seconds": 0.0,
+    "write_latency_ms": {
+     "p50": 12.81,
+     "p99": 22.811,
+     "max": 24.757,
+     "mean": 12.548
+    },
+    "bytes_on_disk": 4793755,
+    "segment_bytes": 1668634,
+    "log_bytes": 3125121,
+    "files": 45,
+    "exact_system_time": true,
+    "write_fsync": null,
+    "group": 64,
+    "producers": 1,
+    "calls": 121,
+    "fast_write_path": true,
+    "process_cpu_seconds": 1.086,
+    "fsync": {
+     "segment file": {
+      "count": 19,
+      "seconds": 0.131
+     },
+     "segment dir": {
+      "count": 34,
+      "seconds": 0.208
+     },
+     "log file": {
+      "count": 134,
+      "seconds": 0.587
+     },
+     "log dir": {
+      "count": 135,
+      "seconds": 0.553
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.013
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 4875.63,
+    "rows_per_second": 257420,
+    "bytes_per_version": 10.58
+   }
+  },
+  {
+   "storage": "tmpfs",
+   "workdir": "/dev/shm/muninn-ingest-a80f",
+   "system": "muninn (post-fixes)",
+   "dataset": "da_prices",
+   "mode": "per-batch",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "per-batch",
+    "writes": 7723,
+    "rows": 453060,
+    "batches_total": 7723,
+    "rows_total": 453060,
+    "complete": true,
+    "setup_seconds": 0.001,
+    "write_seconds": 1.477,
+    "finalize_seconds": 0.026,
+    "wall_seconds": 1.502,
+    "maintenance_seconds": 0.354,
+    "write_latency_ms": {
+     "p50": 0.133,
+     "p99": 0.182,
+     "max": 1.707,
+     "mean": 0.134
+    },
+    "bytes_on_disk": 1705139,
+    "segment_bytes": 1678367,
+    "log_bytes": 26772,
+    "files": 29,
+    "exact_system_time": true,
+    "write_fsync": {
+     "log file": {
+      "count": 7812,
+      "seconds": 0.005
+     },
+     "log dir": {
+      "count": 7810,
+      "seconds": 0.003
+     }
+    },
+    "group": 1,
+    "producers": 1,
+    "calls": null,
+    "fast_write_path": true,
+    "process_cpu_seconds": 1.903,
+    "fsync": {
+     "segment file": {
+      "count": 55,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 84,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 7947,
+      "seconds": 0.005
+     },
+     "log dir": {
+      "count": 7963,
+      "seconds": 0.003
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.0
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 5228.84,
+    "rows_per_second": 301638,
+    "bytes_per_version": 3.76
+   }
+  },
+  {
+   "storage": "tmpfs",
+   "workdir": "/dev/shm/muninn-ingest-a80f",
+   "system": "muninn-wm64 (post-fixes)",
+   "dataset": "da_prices",
+   "mode": "per-batch",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "per-batch",
+    "writes": 7723,
+    "rows": 453060,
+    "batches_total": 7723,
+    "rows_total": 453060,
+    "complete": true,
+    "setup_seconds": 0.001,
+    "write_seconds": 0.293,
+    "finalize_seconds": 0.065,
+    "wall_seconds": 0.358,
+    "maintenance_seconds": 0.0,
+    "write_latency_ms": {
+     "p50": 1.992,
+     "p99": 4.499,
+     "max": 5.394,
+     "mean": 2.197
+    },
+    "bytes_on_disk": 1688938,
+    "segment_bytes": 1668634,
+    "log_bytes": 20304,
+    "files": 21,
+    "exact_system_time": true,
+    "write_fsync": null,
+    "group": 64,
+    "producers": 1,
+    "calls": 121,
+    "fast_write_path": true,
+    "process_cpu_seconds": 0.813,
+    "fsync": {
+     "segment file": {
+      "count": 19,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 34,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 137,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 138,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.0
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 26358.36,
+    "rows_per_second": 1265531,
+    "bytes_per_version": 3.73
+   }
+  },
+  {
+   "storage": "tmpfs",
+   "workdir": "/dev/shm/muninn-ingest-a80f",
+   "system": "muninn (post-fixes)",
+   "dataset": "da_prices",
+   "mode": "bulk",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "bulk",
+    "writes": 1,
+    "rows": 453060,
+    "batches_total": 7723,
+    "rows_total": 453060,
+    "complete": true,
+    "setup_seconds": 0.001,
+    "write_seconds": 0.122,
+    "finalize_seconds": 0.001,
+    "wall_seconds": 0.123,
+    "maintenance_seconds": 0.0,
+    "write_latency_ms": null,
+    "bytes_on_disk": 1637860,
+    "segment_bytes": 1615337,
+    "log_bytes": 22523,
+    "files": 18,
+    "exact_system_time": false,
+    "write_fsync": {
+     "segment file": {
+      "count": 12,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 25,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 1,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 1,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 1,
+      "seconds": 0.0
+     }
+    },
+    "group": 1,
+    "producers": 1,
+    "calls": null,
+    "fast_write_path": true,
+    "process_cpu_seconds": 0.361,
+    "fsync": {
+     "segment file": {
+      "count": 12,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 25,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 9,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 10,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.0
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 8.2,
+    "rows_per_second": 3683415,
+    "bytes_per_version": 3.62
+   }
+  },
+  {
+   "storage": "tmpfs",
+   "workdir": "/dev/shm/muninn-ingest-a80f",
+   "system": "muninn-100k (post-fixes)",
+   "dataset": "da_prices",
+   "mode": "bulk",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "bulk",
+    "writes": 5,
+    "rows": 453060,
+    "batches_total": 7723,
+    "rows_total": 453060,
+    "complete": true,
+    "setup_seconds": 0.001,
+    "write_seconds": 0.121,
+    "finalize_seconds": 0.061,
+    "wall_seconds": 0.182,
+    "maintenance_seconds": 0.0,
+    "write_latency_ms": {
+     "p50": 26.54,
+     "p99": 28.552,
+     "max": 28.576,
+     "mean": 24.113
+    },
+    "bytes_on_disk": 1634531,
+    "segment_bytes": 1616417,
+    "log_bytes": 18114,
+    "files": 18,
+    "exact_system_time": false,
+    "write_fsync": {
+     "segment file": {
+      "count": 16,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 29,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 5,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 5,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 1,
+      "seconds": 0.0
+     }
+    },
+    "group": 1,
+    "producers": 1,
+    "calls": null,
+    "fast_write_path": true,
+    "process_cpu_seconds": 0.277,
+    "fsync": {
+     "segment file": {
+      "count": 20,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 37,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 18,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 19,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.0
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 100,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 41.32,
+    "rows_per_second": 2489341,
+    "bytes_per_version": 3.61
+   }
+  },
+  {
+   "storage": "tmpfs",
+   "workdir": "/dev/shm/muninn-ingest-a80f",
+   "system": "muninn (post-fixes)",
+   "dataset": "forecasts",
+   "mode": "per-batch",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "per-batch",
+    "writes": 2857,
+    "rows": 2741768,
+    "batches_total": 2857,
+    "rows_total": 2741768,
+    "complete": true,
+    "setup_seconds": 0.0,
+    "write_seconds": 1.991,
+    "finalize_seconds": 0.082,
+    "wall_seconds": 2.073,
+    "maintenance_seconds": 0.465,
+    "write_latency_ms": {
+     "p50": 0.471,
+     "p99": 1.352,
+     "max": 11.331,
+     "mean": 0.521
+    },
+    "bytes_on_disk": 8967105,
+    "segment_bytes": 8353680,
+    "log_bytes": 613425,
+    "files": 717,
+    "exact_system_time": true,
+    "write_fsync": {
+     "segment file": {
+      "count": 642,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 687,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 2912,
+      "seconds": 0.002
+     },
+     "log dir": {
+      "count": 2912,
+      "seconds": 0.001
+     },
+     "other dir": {
+      "count": 1,
+      "seconds": 0.0
+     }
+    },
+    "group": 1,
+    "producers": 1,
+    "calls": null,
+    "fast_write_path": true,
+    "process_cpu_seconds": 6.108,
+    "fsync": {
+     "segment file": {
+      "count": 1215,
+      "seconds": 0.001
+     },
+     "segment dir": {
+      "count": 1400,
+      "seconds": 0.001
+     },
+     "log file": {
+      "count": 3216,
+      "seconds": 0.002
+     },
+     "log dir": {
+      "count": 3222,
+      "seconds": 0.001
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.0
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 1434.96,
+    "rows_per_second": 1322609,
+    "bytes_per_version": 3.27
+   }
+  },
+  {
+   "storage": "tmpfs",
+   "workdir": "/dev/shm/muninn-ingest-a80f",
+   "system": "muninn-wm64 (post-fixes)",
+   "dataset": "forecasts",
+   "mode": "per-batch",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "per-batch",
+    "writes": 2857,
+    "rows": 2741768,
+    "batches_total": 2857,
+    "rows_total": 2741768,
+    "complete": true,
+    "setup_seconds": 0.0,
+    "write_seconds": 1.158,
+    "finalize_seconds": 0.086,
+    "wall_seconds": 1.244,
+    "maintenance_seconds": 0.0,
+    "write_latency_ms": {
+     "p50": 22.246,
+     "p99": 35.063,
+     "max": 35.258,
+     "mean": 25.107
+    },
+    "bytes_on_disk": 8614531,
+    "segment_bytes": 8171166,
+    "log_bytes": 443365,
+    "files": 528,
+    "exact_system_time": true,
+    "write_fsync": null,
+    "group": 64,
+    "producers": 1,
+    "calls": 45,
+    "fast_write_path": true,
+    "process_cpu_seconds": 5.606,
+    "fsync": {
+     "segment file": {
+      "count": 550,
+      "seconds": 0.001
+     },
+     "segment dir": {
+      "count": 635,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 80,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 81,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.0
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 2467.18,
+    "rows_per_second": 2203994,
+    "bytes_per_version": 3.14
+   }
+  },
+  {
+   "storage": "tmpfs",
+   "workdir": "/dev/shm/muninn-ingest-a80f",
+   "system": "muninn (post-fixes)",
+   "dataset": "forecasts",
+   "mode": "bulk",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "bulk",
+    "writes": 3,
+    "rows": 2741768,
+    "batches_total": 2857,
+    "rows_total": 2741768,
+    "complete": true,
+    "setup_seconds": 0.0,
+    "write_seconds": 0.997,
+    "finalize_seconds": 0.015,
+    "wall_seconds": 1.012,
+    "maintenance_seconds": 0.0,
+    "write_latency_ms": {
+     "p50": 364.615,
+     "p99": 367.784,
+     "max": 367.849,
+     "mean": 332.06
+    },
+    "bytes_on_disk": 7632061,
+    "segment_bytes": 7553218,
+    "log_bytes": 78843,
+    "files": 97,
+    "exact_system_time": false,
+    "write_fsync": {
+     "segment file": {
+      "count": 92,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 163,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 3,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 3,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 1,
+      "seconds": 0.0
+     }
+    },
+    "group": 1,
+    "producers": 1,
+    "calls": null,
+    "fast_write_path": true,
+    "process_cpu_seconds": 4.683,
+    "fsync": {
+     "segment file": {
+      "count": 93,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 165,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 13,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 14,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.0
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 3.01,
+    "rows_per_second": 2709257,
+    "bytes_per_version": 2.78
+   }
+  },
+  {
+   "storage": "tmpfs",
+   "workdir": "/dev/shm/muninn-ingest-a80f",
+   "system": "muninn-100k (post-fixes)",
+   "dataset": "forecasts",
+   "mode": "bulk",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "bulk",
+    "writes": 28,
+    "rows": 2741768,
+    "batches_total": 2857,
+    "rows_total": 2741768,
+    "complete": true,
+    "setup_seconds": 0.0,
+    "write_seconds": 0.644,
+    "finalize_seconds": 0.064,
+    "wall_seconds": 0.709,
+    "maintenance_seconds": 0.0,
+    "write_latency_ms": {
+     "p50": 23.447,
+     "p99": 24.515,
+     "max": 24.551,
+     "mean": 22.941
+    },
+    "bytes_on_disk": 8022304,
+    "segment_bytes": 7728397,
+    "log_bytes": 293907,
+    "files": 349,
+    "exact_system_time": false,
+    "write_fsync": {
+     "segment file": {
+      "count": 364,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 435,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 28,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 28,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 1,
+      "seconds": 0.0
+     }
+    },
+    "group": 1,
+    "producers": 1,
+    "calls": null,
+    "fast_write_path": true,
+    "process_cpu_seconds": 2.232,
+    "fsync": {
+     "segment file": {
+      "count": 385,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 477,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 58,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 59,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.0
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 100,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 43.48,
+    "rows_per_second": 3867092,
+    "bytes_per_version": 2.93
+   }
+  },
+  {
+   "storage": "tmpfs",
+   "workdir": "/dev/shm/muninn-ingest-a80f",
+   "system": "muninn (post-fixes)",
+   "dataset": "settlement",
+   "mode": "per-batch",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "per-batch",
+    "writes": 10000,
+    "rows": 960000,
+    "batches_total": 10000,
+    "rows_total": 960000,
+    "complete": true,
+    "setup_seconds": 0.001,
+    "write_seconds": 2.535,
+    "finalize_seconds": 0.0,
+    "wall_seconds": 2.535,
+    "maintenance_seconds": 0.82,
+    "write_latency_ms": {
+     "p50": 0.155,
+     "p99": 0.205,
+     "max": 4.237,
+     "mean": 0.16
+    },
+    "bytes_on_disk": 3489998,
+    "segment_bytes": 3458286,
+    "log_bytes": 31712,
+    "files": 38,
+    "exact_system_time": true,
+    "write_fsync": {
+     "log file": {
+      "count": 10108,
+      "seconds": 0.006
+     },
+     "log dir": {
+      "count": 10115,
+      "seconds": 0.004
+     }
+    },
+    "group": 1,
+    "producers": 1,
+    "calls": null,
+    "fast_write_path": true,
+    "process_cpu_seconds": 3.519,
+    "fsync": {
+     "segment file": {
+      "count": 84,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 123,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 10288,
+      "seconds": 0.006
+     },
+     "log dir": {
+      "count": 10308,
+      "seconds": 0.005
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.0
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 3944.77,
+    "rows_per_second": 378698,
+    "bytes_per_version": 3.64
+   }
+  },
+  {
+   "storage": "tmpfs",
+   "workdir": "/dev/shm/muninn-ingest-a80f",
+   "system": "muninn-wm64 (post-fixes)",
+   "dataset": "settlement",
+   "mode": "per-batch",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "per-batch",
+    "writes": 10000,
+    "rows": 960000,
+    "batches_total": 10000,
+    "rows_total": 960000,
+    "complete": true,
+    "setup_seconds": 0.001,
+    "write_seconds": 0.678,
+    "finalize_seconds": 0.139,
+    "wall_seconds": 0.817,
+    "maintenance_seconds": 0.0,
+    "write_latency_ms": {
+     "p50": 3.693,
+     "p99": 9.449,
+     "max": 11.226,
+     "mean": 4.013
+    },
+    "bytes_on_disk": 3517949,
+    "segment_bytes": 3485660,
+    "log_bytes": 32289,
+    "files": 38,
+    "exact_system_time": true,
+    "write_fsync": null,
+    "group": 64,
+    "producers": 1,
+    "calls": 157,
+    "fast_write_path": true,
+    "process_cpu_seconds": 2.209,
+    "fsync": {
+     "segment file": {
+      "count": 44,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 63,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 179,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 180,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.0
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 14749.26,
+    "rows_per_second": 1175031,
+    "bytes_per_version": 3.66
+   }
+  },
+  {
+   "storage": "tmpfs",
+   "workdir": "/dev/shm/muninn-ingest-a80f",
+   "system": "muninn (post-fixes)",
+   "dataset": "settlement",
+   "mode": "bulk",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "bulk",
+    "writes": 1,
+    "rows": 960000,
+    "batches_total": 10000,
+    "rows_total": 960000,
+    "complete": true,
+    "setup_seconds": 0.001,
+    "write_seconds": 0.399,
+    "finalize_seconds": 0.001,
+    "wall_seconds": 0.4,
+    "maintenance_seconds": 0.0,
+    "write_latency_ms": null,
+    "bytes_on_disk": 3216549,
+    "segment_bytes": 3196831,
+    "log_bytes": 19718,
+    "files": 18,
+    "exact_system_time": false,
+    "write_fsync": {
+     "segment file": {
+      "count": 12,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 25,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 1,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 1,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 1,
+      "seconds": 0.0
+     }
+    },
+    "group": 1,
+    "producers": 1,
+    "calls": null,
+    "fast_write_path": true,
+    "process_cpu_seconds": 1.402,
+    "fsync": {
+     "segment file": {
+      "count": 12,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 25,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 9,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 10,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.0
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 2.51,
+    "rows_per_second": 2400000,
+    "bytes_per_version": 3.35
+   }
+  },
+  {
+   "storage": "tmpfs",
+   "workdir": "/dev/shm/muninn-ingest-a80f",
+   "system": "muninn-100k (post-fixes)",
+   "dataset": "settlement",
+   "mode": "bulk",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "bulk",
+    "writes": 10,
+    "rows": 960000,
+    "batches_total": 10000,
+    "rows_total": 960000,
+    "complete": true,
+    "setup_seconds": 0.001,
+    "write_seconds": 0.346,
+    "finalize_seconds": 0.071,
+    "wall_seconds": 0.418,
+    "maintenance_seconds": 0.0,
+    "write_latency_ms": {
+     "p50": 35.95,
+     "p99": 38.471,
+     "max": 38.483,
+     "mean": 34.531
+    },
+    "bytes_on_disk": 3411955,
+    "segment_bytes": 3382314,
+    "log_bytes": 29641,
+    "files": 35,
+    "exact_system_time": false,
+    "write_fsync": {
+     "segment file": {
+      "count": 34,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 47,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 10,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 10,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 1,
+      "seconds": 0.0
+     }
+    },
+    "group": 1,
+    "producers": 1,
+    "calls": null,
+    "fast_write_path": true,
+    "process_cpu_seconds": 0.668,
+    "fsync": {
+     "segment file": {
+      "count": 39,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 57,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 24,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 25,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.0
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 100,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 28.9,
+    "rows_per_second": 2296651,
+    "bytes_per_version": 3.55
+   }
+  },
+  {
+   "storage": "tmpfs",
+   "workdir": "/dev/shm/muninn-ingest-a80f",
+   "system": "muninn (post-fixes)",
+   "dataset": "backfill",
+   "mode": "per-batch",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "per-batch",
+    "writes": 610,
+    "rows": 460135,
+    "batches_total": 610,
+    "rows_total": 460135,
+    "complete": true,
+    "setup_seconds": 0.001,
+    "write_seconds": 0.442,
+    "finalize_seconds": 0.172,
+    "wall_seconds": 0.614,
+    "maintenance_seconds": 0.145,
+    "write_latency_ms": {
+     "p50": 0.403,
+     "p99": 1.149,
+     "max": 3.966,
+     "mean": 0.473
+    },
+    "bytes_on_disk": 2890514,
+    "segment_bytes": 2876177,
+    "log_bytes": 14337,
+    "files": 16,
+    "exact_system_time": true,
+    "write_fsync": {
+     "segment file": {
+      "count": 20,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 26,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 618,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 618,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 1,
+      "seconds": 0.0
+     }
+    },
+    "group": 1,
+    "producers": 1,
+    "calls": null,
+    "fast_write_path": true,
+    "process_cpu_seconds": 1.134,
+    "fsync": {
+     "segment file": {
+      "count": 60,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 76,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 657,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 659,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.0
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 1380.09,
+    "rows_per_second": 749406,
+    "bytes_per_version": 6.28
+   }
+  },
+  {
+   "storage": "tmpfs",
+   "workdir": "/dev/shm/muninn-ingest-a80f",
+   "system": "muninn-wm64 (post-fixes)",
+   "dataset": "backfill",
+   "mode": "per-batch",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "per-batch",
+    "writes": 610,
+    "rows": 460135,
+    "batches_total": 610,
+    "rows_total": 460135,
+    "complete": true,
+    "setup_seconds": 0.001,
+    "write_seconds": 0.228,
+    "finalize_seconds": 0.193,
+    "wall_seconds": 0.421,
+    "maintenance_seconds": 0.0,
+    "write_latency_ms": {
+     "p50": 21.31,
+     "p99": 41.318,
+     "max": 42.773,
+     "mean": 22.38
+    },
+    "bytes_on_disk": 2848823,
+    "segment_bytes": 2839219,
+    "log_bytes": 9604,
+    "files": 11,
+    "exact_system_time": true,
+    "write_fsync": null,
+    "group": 64,
+    "producers": 1,
+    "calls": 10,
+    "fast_write_path": true,
+    "process_cpu_seconds": 0.991,
+    "fsync": {
+     "segment file": {
+      "count": 15,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 26,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 26,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 27,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.0
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 2675.44,
+    "rows_per_second": 1092957,
+    "bytes_per_version": 6.19
+   }
+  },
+  {
+   "storage": "tmpfs",
+   "workdir": "/dev/shm/muninn-ingest-a80f",
+   "system": "muninn (post-fixes)",
+   "dataset": "backfill",
+   "mode": "bulk",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "bulk",
+    "writes": 1,
+    "rows": 460135,
+    "batches_total": 610,
+    "rows_total": 460135,
+    "complete": true,
+    "setup_seconds": 0.001,
+    "write_seconds": 0.117,
+    "finalize_seconds": 0.001,
+    "wall_seconds": 0.118,
+    "maintenance_seconds": 0.0,
+    "write_latency_ms": null,
+    "bytes_on_disk": 2847327,
+    "segment_bytes": 2836366,
+    "log_bytes": 10961,
+    "files": 11,
+    "exact_system_time": false,
+    "write_fsync": {
+     "segment file": {
+      "count": 5,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 11,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 1,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 1,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 1,
+      "seconds": 0.0
+     }
+    },
+    "group": 1,
+    "producers": 1,
+    "calls": null,
+    "fast_write_path": true,
+    "process_cpu_seconds": 0.345,
+    "fsync": {
+     "segment file": {
+      "count": 5,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 11,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 9,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 10,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.0
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 8.55,
+    "rows_per_second": 3899449,
+    "bytes_per_version": 6.19
+   }
+  },
+  {
+   "storage": "tmpfs",
+   "workdir": "/dev/shm/muninn-ingest-a80f",
+   "system": "muninn-100k (post-fixes)",
+   "dataset": "backfill",
+   "mode": "bulk",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "bulk",
+    "writes": 5,
+    "rows": 460135,
+    "batches_total": 610,
+    "rows_total": 460135,
+    "complete": true,
+    "setup_seconds": 0.001,
+    "write_seconds": 0.138,
+    "finalize_seconds": 0.155,
+    "wall_seconds": 0.294,
+    "maintenance_seconds": 0.0,
+    "write_latency_ms": {
+     "p50": 31.112,
+     "p99": 35.426,
+     "max": 35.605,
+     "mean": 27.504
+    },
+    "bytes_on_disk": 2847210,
+    "segment_bytes": 2836601,
+    "log_bytes": 10609,
+    "files": 11,
+    "exact_system_time": false,
+    "write_fsync": {
+     "segment file": {
+      "count": 25,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 31,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 5,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 5,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 1,
+      "seconds": 0.0
+     }
+    },
+    "group": 1,
+    "producers": 1,
+    "calls": null,
+    "fast_write_path": true,
+    "process_cpu_seconds": 0.437,
+    "fsync": {
+     "segment file": {
+      "count": 30,
+      "seconds": 0.0
+     },
+     "segment dir": {
+      "count": 41,
+      "seconds": 0.0
+     },
+     "log file": {
+      "count": 19,
+      "seconds": 0.0
+     },
+     "log dir": {
+      "count": 20,
+      "seconds": 0.0
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.0
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 100,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 36.23,
+    "rows_per_second": 1565085,
+    "bytes_per_version": 6.19
+   }
+  },
+  {
+   "storage": "btrfs",
+   "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a80f9d676e729c0de/bench/data/work",
+   "system": "muninn (post-fixes)",
+   "dataset": "forecasts",
+   "mode": "per-batch",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "per-batch",
+    "writes": 2857,
+    "rows": 2741768,
+    "batches_total": 2857,
+    "rows_total": 2741768,
+    "complete": true,
+    "setup_seconds": 0.011,
+    "write_seconds": 8.21,
+    "finalize_seconds": 0.224,
+    "wall_seconds": 8.434,
+    "maintenance_seconds": 1.453,
+    "write_latency_ms": {
+     "p50": 2.159,
+     "p99": 5.646,
+     "max": 13.704,
+     "mean": 2.346
+    },
+    "bytes_on_disk": 8947063,
+    "segment_bytes": 8353680,
+    "log_bytes": 593383,
+    "files": 703,
+    "exact_system_time": true,
+    "write_fsync": {
+     "segment file": {
+      "count": 786,
+      "seconds": 1.066
+     },
+     "segment dir": {
+      "count": 852,
+      "seconds": 0.996
+     },
+     "log file": {
+      "count": 2924,
+      "seconds": 2.73
+     },
+     "log dir": {
+      "count": 2924,
+      "seconds": 2.207
+     },
+     "other dir": {
+      "count": 1,
+      "seconds": 0.002
+     }
+    },
+    "group": 1,
+    "producers": 1,
+    "calls": null,
+    "fast_write_path": true,
+    "process_cpu_seconds": 8.68,
+    "fsync": {
+     "segment file": {
+      "count": 1219,
+      "seconds": 1.483
+     },
+     "segment dir": {
+      "count": 1404,
+      "seconds": 1.427
+     },
+     "log file": {
+      "count": 3227,
+      "seconds": 2.945
+     },
+     "log dir": {
+      "count": 3233,
+      "seconds": 2.442
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.009
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 347.99,
+    "rows_per_second": 325085,
+    "bytes_per_version": 3.26
+   }
+  },
+  {
+   "storage": "btrfs",
+   "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a80f9d676e729c0de/bench/data/work",
+   "system": "muninn-wm64 (post-fixes)",
+   "dataset": "forecasts",
+   "mode": "per-batch",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "per-batch",
+    "writes": 2857,
+    "rows": 2741768,
+    "batches_total": 2857,
+    "rows_total": 2741768,
+    "complete": true,
+    "setup_seconds": 0.007,
+    "write_seconds": 1.316,
+    "finalize_seconds": 0.163,
+    "wall_seconds": 1.48,
+    "maintenance_seconds": 0.0,
+    "write_latency_ms": {
+     "p50": 26.696,
+     "p99": 38.164,
+     "max": 38.632,
+     "mean": 28.519
+    },
+    "bytes_on_disk": 8614530,
+    "segment_bytes": 8171166,
+    "log_bytes": 443364,
+    "files": 528,
+    "exact_system_time": true,
+    "write_fsync": null,
+    "group": 64,
+    "producers": 1,
+    "calls": 45,
+    "fast_write_path": true,
+    "process_cpu_seconds": 5.819,
+    "fsync": {
+     "segment file": {
+      "count": 550,
+      "seconds": 0.829
+     },
+     "segment dir": {
+      "count": 635,
+      "seconds": 0.774
+     },
+     "log file": {
+      "count": 80,
+      "seconds": 0.16
+     },
+     "log dir": {
+      "count": 81,
+      "seconds": 0.054
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.005
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 2170.97,
+    "rows_per_second": 1852546,
+    "bytes_per_version": 3.14
+   }
+  },
+  {
+   "storage": "btrfs",
+   "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a80f9d676e729c0de/bench/data/work",
+   "system": "muninn (post-fixes)",
+   "dataset": "da_prices",
+   "mode": "per-batch",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "per-batch",
+    "writes": 7723,
+    "rows": 453060,
+    "batches_total": 7723,
+    "rows_total": 453060,
+    "complete": true,
+    "setup_seconds": 0.006,
+    "write_seconds": 32.175,
+    "finalize_seconds": 0.126,
+    "wall_seconds": 32.301,
+    "maintenance_seconds": 1.4,
+    "write_latency_ms": {
+     "p50": 1.632,
+     "p99": 11.215,
+     "max": 18.751,
+     "mean": 3.968
+    },
+    "bytes_on_disk": 1705140,
+    "segment_bytes": 1678367,
+    "log_bytes": 26773,
+    "files": 29,
+    "exact_system_time": true,
+    "write_fsync": {
+     "log file": {
+      "count": 7817,
+      "seconds": 14.258
+     },
+     "log dir": {
+      "count": 7817,
+      "seconds": 14.556
+     }
+    },
+    "group": 1,
+    "producers": 1,
+    "calls": null,
+    "fast_write_path": true,
+    "process_cpu_seconds": 7.043,
+    "fsync": {
+     "segment file": {
+      "count": 55,
+      "seconds": 0.149
+     },
+     "segment dir": {
+      "count": 84,
+      "seconds": 0.196
+     },
+     "log file": {
+      "count": 7947,
+      "seconds": 14.505
+     },
+     "log dir": {
+      "count": 7963,
+      "seconds": 14.868
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.003
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 240.03,
+    "rows_per_second": 14026,
+    "bytes_per_version": 3.76
+   }
+  },
+  {
+   "storage": "btrfs",
+   "workdir": "/home/abr/Projects/muninn/.claude/worktrees/agent-a80f9d676e729c0de/bench/data/work",
+   "system": "muninn-wm64 (post-fixes)",
+   "dataset": "da_prices",
+   "mode": "per-batch",
+   "date": "2026-10-20",
+   "host": "omarchy-hp",
+   "result": {
+    "mode": "per-batch",
+    "writes": 7723,
+    "rows": 453060,
+    "batches_total": 7723,
+    "rows_total": 453060,
+    "complete": true,
+    "setup_seconds": 0.024,
+    "write_seconds": 1.408,
+    "finalize_seconds": 0.202,
+    "wall_seconds": 1.61,
+    "maintenance_seconds": 0.0,
+    "write_latency_ms": {
+     "p50": 10.837,
+     "p99": 18.48,
+     "max": 19.735,
+     "mean": 11.086
+    },
+    "bytes_on_disk": 1688939,
+    "segment_bytes": 1668634,
+    "log_bytes": 20305,
+    "files": 21,
+    "exact_system_time": true,
+    "write_fsync": null,
+    "group": 64,
+    "producers": 1,
+    "calls": 121,
+    "fast_write_path": true,
+    "process_cpu_seconds": 0.918,
+    "fsync": {
+     "segment file": {
+      "count": 19,
+      "seconds": 0.129
+     },
+     "segment dir": {
+      "count": 34,
+      "seconds": 0.206
+     },
+     "log file": {
+      "count": 137,
+      "seconds": 0.581
+     },
+     "log dir": {
+      "count": 138,
+      "seconds": 0.572
+     },
+     "other dir": {
+      "count": 4,
+      "seconds": 0.014
+     }
+    },
+    "version": "0.1.0",
+    "notes": "Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.",
+    "writes_per_second": 5485.09,
+    "rows_per_second": 281404,
+    "bytes_per_version": 3.73
+   }
   }
  ],
  "machine": {

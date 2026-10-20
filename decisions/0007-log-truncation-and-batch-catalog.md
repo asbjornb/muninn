@@ -68,4 +68,6 @@ below the old head is truncatable (after the grace period, as before). The extra
 checkpoint is written only when it lets GC remove more than it costs, so a second GC
 finds a short tail and does nothing; the format is unchanged (an empty `gc` entry was
 always valid). Regression test: `log_is_small_after_a_write_many_load_flush_and_gc`
-(`crates/muninn-engine/tests/log_gc.rs`).
+(`crates/muninn-engine/tests/log_gc.rs`). Measured (bench, `post-fixes`): small forecasts
+via `write_many` 122.7 MB → 0.44 MB of log after flush + compact + gc; what remains after
+a load is essentially the two checkpoints of the state.

@@ -6,6 +6,79 @@ everything measured (per-instance result hashes included). Regenerate with
 `ingest-<scale>.{md,json}` (`bench/ingest.py`), summarised in the `## Ingest` section of
 `<scale>.md`.
 
+## Ingest, 2026-10-20, omarchy-hp: write-path fixes (`post-fixes` build)
+
+The ingest benchmark below (2026-10-19/20) found three problems in the write path. A new
+build, `(post-fixes)`, fixes them; the build before it was re-measured in the same session
+as `(post-0009 rerun)` so that the comparison is same-time (the machine was quiet: load
+~1, nothing else using the disk; the rerun matches the earlier post-0009 numbers within
+~10% on tmpfs, while the disk was ~3x faster than during the earlier sessions, e.g. small
+forecasts per-batch 9.4 s vs 27 s). Same datasets (seed 1), `bench/ingest.py`, rows in
+`2026-10-19-omarchy-hp/ingest-{small,medium}.{md,json}`. tmpfs = `/dev/shm`, so no disk
+syncs (CPU only). Competitor numbers are unchanged from the earlier sessions.
+
+| measurement | post-0009 rerun | post-fixes |
+| --- | ---: | ---: |
+| medium forecasts bulk, 1M-row writes, tmpfs (wall s; rows/s) | 67.1 (0.37M) | **10.1** (2.48M) |
+| medium forecasts bulk, 100k-row writes, tmpfs | 24.4 (1.03M) | **6.1** (4.08M) |
+| the same on btrfs: 1M / 100k | 65.2 / 24.6 | **9.8 / 8.1** |
+| medium forecasts per-batch, tmpfs: wall s; CPU per `write` (ms) | 32.9; 0.99 | **22.2; 0.57** |
+| medium forecasts per-batch `write_many` x64, tmpfs | 30.0 | **11.7** |
+| medium da_prices per-batch, tmpfs: wall s; ms per `write` | 7.6; 0.16 | 7.0; 0.14 |
+| small forecasts / settlement / da_prices / backfill bulk 1M, tmpfs | 6.37 / 0.88 / 0.44 / 0.33 | 1.01 / 0.40 / 0.12 / 0.12 |
+| log after load + flush + compact + gc, small forecasts `write_many` x64 | 122.7 MB (8.2 MB segments) | **0.44 MB** |
+| ... small settlement / backfill / da_prices `write_many` x64 | 10.0 / 14.5 / 3.1 MB | 0.03 / 0.01 / 0.02 MB |
+| ... small per-batch (compact+gc every 500): forecasts / settlement / da_prices | 1.19 / 1.73 / 0.65 MB | 0.61 / 0.03 / 0.03 MB |
+| ... medium forecasts per-batch / bulk 100k | 4.65 / 2.64 MB | 4.65 / 2.64 MB (75 / 71 MB segments) |
+
+Bulk medium forecasts is now about ClickHouse's bulk time (9.2 s) and 1.2-2x DuckDB's
+(4.9 s, which includes its sort), from 13x before. On disk, durable per-batch writes are
+still bound by one file + directory fsync per commit (small forecasts 2.69 → 2.35 ms per
+write, of which 1.7 ms log fsync), so the per-batch disk numbers move little; grouped
+commits (`write_many`) move a lot (small forecasts on btrfs 3.65 → 1.48 s).
+
+What changed, per problem:
+
+1. **Log not truncated after a `write_many` load** (finding 5 below). Cause: GC truncates
+   only below the *second-newest* checkpoint (ADR 0007), and a load with fewer than
+   `checkpoint_interval` entries and no GC in between ends with a single checkpoint (GC's
+   own, of the head), so nothing was truncated and every entry, with its inline rows,
+   stayed. Not the inline rows as such, not checkpoints carrying the memtable (the final
+   flush empties it), and flush entries were not special. Fix: GC *re-anchors* — after
+   checkpointing the head, if the entries after the second-newest checkpoint hold more
+   bytes than that checkpoint, it commits an empty `gc` entry and checkpoints it too, so
+   the old head becomes the fallback checkpoint and everything below it goes (ADR 0007
+   amendment, FORMAT.md §3.6; no format change). Regression test
+   `log_is_small_after_a_write_many_load_flush_and_gc` asserts log < 5% of segments. What
+   remains after a load is two checkpoints of the state (catalog and segment list), e.g.
+   4.65 MB for the 4 400 segments of medium forecasts per-batch.
+2. **Quadratic in-batch duplicate check** (finding 4). The in-batch check walked a chain of
+   every kept row of the same point; the group commit compared rows with every stored and
+   earlier-batch version of their point the same way. Now: `Version::content_hash` (exactly
+   the fields `content_identical` compares, f64 by bit pattern) — in-batch duplicates by
+   sorting `(hash, position)` and comparing equal hashes only; stored versions and rows of
+   earlier batches of a group through a hash index (`ContentIndex`). Semantics unchanged
+   (property tests against a literal SPEC §4.3 implementation and the model).
+3. **Ingest CPU**. Arrow input is no longer turned into one `WriteRow` (a `String` and a
+   `BTreeMap<String, InputValue>`) per row: the binding builds a `WriteColumns` (series
+   names dictionary-encoded, times as µs, values as typed vectors), and
+   `Catalog::validate_columns` resolves series, tables and column indexes once per batch
+   and copies typed values into the versions. Any row the fast path does not accept is
+   validated by the unchanged row path, which decides the error, so codes, the SPEC §10.4
+   check order and messages are identical (differential tests in Rust and Python). In a
+   py-spy profile of small forecasts per-batch on tmpfs, functions of input conversion
+   and validation are in 32% of the samples inside `write` for the old build and 6% for
+   the new one (native stacks are sampled approximately; the earlier 46% figure used
+   another attribution). Bulk writes also no longer regrow their per-partition vectors.
+
+Not solved: 1M-row writes are still ~1.6x slower than 100k-row writes (10.1 vs 6.1 s on
+tmpfs). It is no longer quadratic; a profile shows memory-bound work that grows with the
+batch — sorting a million dedup keys, a heap-allocated value vector per `Version` (built
+and freed per row), dropping the batch — rather than one hot spot. Per-batch writes on
+disk remain fsync-bound (1 file + directory sync per commit, ADR 0009). Checkpoints still
+grow with the number of segments and series, and the log after a load is two of them.
+Finding 6 below (sparse compaction during the load) was not looked at.
+
 ## Ingest, 2026-10-19/20, omarchy-hp
 
 **Why a separate ingest benchmark.** The query runs load each system its own way: Muninn
@@ -110,13 +183,15 @@ Findings:
    transaction; 8 producer threads give 3-5x over one. No competitor was given the same
    advantage here (ClickHouse async inserts or batched DuckDB transactions would be the
    counterparts).
-4. **Bulk: Muninn ~0.4-1.4M rows/s vs DuckDB 4-6M and ClickHouse 1-3M.** 1M-row writes
+4. **Bulk: Muninn ~0.4-1.4M rows/s vs DuckDB 4-6M and ClickHouse 1-3M** (fixed in the
+   `post-fixes` build, see above: 2.5-4M rows/s). 1M-row writes
    are *slower* than 100k-row writes on forecasts (62 s vs 25 s at medium, both builds):
    in a 1M-row write each point has hundreds of versions in the same batch, and
    `Version::content_identical` (in-batch duplicate check, quadratic per point) takes
    ~48% of the samples (pre-0009 profile; post-0009 shows the same 1M-vs-100k gap).
    Input conversion is most of the rest.
-5. **Size after a post-0009 load includes un-truncated log**: e.g. small forecasts via
+5. **Size after a post-0009 load includes un-truncated log** (fixed in `post-fixes`, see
+   above): e.g. small forecasts via
    `write_many` 125 MB on disk for 8 MB of segments (`log_bytes` in the JSON), da_prices
    per-batch 2.3 vs 1.8 MB. The inline rows stay in log entries and checkpoints until later
    checkpoints let GC truncate them; the end-of-load flush+compact+gc does not get there.

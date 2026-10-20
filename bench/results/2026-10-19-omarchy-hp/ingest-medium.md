@@ -6,7 +6,7 @@ AMD Ryzen 5 PRO 5650U with Radeon Graphics, 12 logical CPUs, 14.9 GB RAM, Linux-
 * **bulk**: as few writes as possible (DuckDB one `CREATE TABLE AS ... ORDER BY`, ClickHouse one `INSERT ... SELECT`, Muninn writes of 1M rows).
 * Times include the system's finalisation (Muninn compact+gc, DuckDB CHECKPOINT, ClickHouse OPTIMIZE FINAL); **writes/s** is over the write phase, **rows/s** over the whole wall time. **prefix** = only the first N batches were loaded (same N for every system), rates are for that prefix. Size = on disk after finalisation.
 * **fsyncs**: calls to fsync/fdatasync in the benchmark process and the time spent in them (`bench/fsyncstat.c`); ClickHouse runs as its own server process, so not counted. Summed over threads, so with background flushes the total can exceed the wall time.
-* **Muninn builds**: `(pre-0009)` = before the fast write path (one segment file per touched partition plus a log entry per write, ~4-25 fsyncs); `(post-0009)` = ADR 0009 (rows inline in the commit entry, group commit, memtable, background flush; ~2 fsyncs per commit). Per-batch variants of the post-0009 build: `muninn-wm64` submits 64 original batches per `write_many` call (one durable commit per 64 batches, each batch still its own transaction and system_time), `muninn-8p` has 8 producer threads calling `write` (the engine groups concurrent writes). Neither has a competitor counterpart here: DuckDB and ClickHouse were measured with one client committing one batch at a time.
+* **Muninn builds**: `(pre-0009)` = before the fast write path (one segment file per touched partition plus a log entry per write, ~4-25 fsyncs); `(post-0009)` = ADR 0009 (rows inline in the commit entry, group commit, memtable, background flush; ~2 fsyncs per commit); `(post-0009 rerun)` = the same build re-measured on 2026-10-20 in the session of the next one, for a same-time comparison; `(post-fixes)` = post-0009 plus the three write path fixes of 2026-10-20 (GC re-anchors log truncation after a memtable load, ADR 0007 amendment; linear in-batch dedup; columnar Arrow input and validation). Per-batch variants: `muninn-wm64` submits 64 original batches per `write_many` call (one durable commit per 64 batches, each batch still its own transaction and system_time), `muninn-8p` has 8 producer threads calling `write` (the engine groups concurrent writes). Neither has a competitor counterpart here: DuckDB and ClickHouse were measured with one client committing one batch at a time.
 
 ## Storage: btrfs (`/home/abr/Projects/muninn/.claude/worktrees/agent-a52a9f0264c1178b5/bench/data/work`)
 
@@ -35,8 +35,12 @@ AMD Ryzen 5 PRO 5650U with Radeon Graphics, 12 logical CPUs, 14.9 GB RAM, Linux-
 | forecasts | per-batch | clickhouse-fsync | 26,030 | 24,975,472 | 645 | 641 | 3.62 | 40.6 | 39k | 25.92 / 41.31 | 72.4 MB (3.04) | n/a |
 | forecasts | bulk | muninn (pre-0009) | 25 | 24,975,472 | 60 | 60 | 0.05 | 0.4 | 413k | 2394.79 / 2783.86 | 65.1 MB (2.73) | 1,717 (1.42 s, 68.7/write) |
 | forecasts | bulk | muninn (post-0009) | 25 | 24,975,472 | 62 | 62 | 0.04 | 0.4 | 402k | 2479.10 / 2683.99 | 65.1 MB (2.73) | 1,717 (2.40 s, 68.7/write) |
+| forecasts | bulk | muninn (post-0009 rerun) | 25 | 24,975,472 | 65 | 65 | 0.04 | 0.4 | 383k | 2500.29 / 3348.91 | 65.1 MB (2.73) | 1,717 (2.95 s, 68.7/write) |
+| forecasts | bulk | muninn (post-fixes) | 25 | 24,975,472 | 9.83 | 9.78 | 0.05 | 2.6 | 2.54M | 387.16 / 437.88 | 65.1 MB (2.73) | 1,726 (5.45 s, 69.0/write) |
 | forecasts | bulk | muninn-100k (pre-0009) | 250 | 24,975,472 | 36 | 36 | 0.09 | 7.0 | 698k | 142.98 / 153.67 | 69.8 MB (2.93) | 7,133 (5.28 s, 28.5/write) |
 | forecasts | bulk | muninn-100k (post-0009) | 250 | 24,975,472 | 25 | 24 | 0.08 | 10.2 | 1.02M | 97.26 / 109.89 | 69.8 MB (2.93) | 7,133 (8.29 s, 28.5/write) |
+| forecasts | bulk | muninn-100k (post-0009 rerun) | 250 | 24,975,472 | 25 | 25 | 0.08 | 10.2 | 1.01M | 97.75 / 106.44 | 69.8 MB (2.93) | 7,133 (8.40 s, 28.5/write) |
+| forecasts | bulk | muninn-100k (post-fixes) | 250 | 24,975,472 | 8.13 | 8.04 | 0.09 | 31.1 | 3.07M | 31.31 / 43.01 | 69.8 MB (2.93) | 7,133 (8.62 s, 28.5/write) |
 | forecasts | bulk | duckdb-native | 1 | 24,975,472 | 4.87 | 4.87 | 0.00 | - | 5.13M | - | 568.0 MB (23.85) | 6 (0.03 s) |
 | forecasts | bulk | clickhouse | 1 | 24,975,472 | 9.18 | 9.18 | 0.00 | - | 2.72M | - | 71.2 MB (2.99) | n/a |
 | forecasts | bulk | clickhouse-fsync | 1 | 24,975,472 | 9.42 | 9.42 | 0.00 | - | 2.65M | - | 71.2 MB (2.99) | n/a |
@@ -104,7 +108,11 @@ Muninn per-batch, inside `write` only (excludes the periodic compact+gc): mean l
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | da_prices | per-batch | muninn (pre-0009) | 30,960 | 1,808,140 | 9.56 | 9.51 | 0.05 | 3,256 | 189k | 0.23 / 0.48 | 6.7 MB (3.88) | 125,590 (0.06 s, 4.1/write) |
 | da_prices | per-batch | muninn (post-0009) | 30,960 | 1,808,140 | 7.14 | 7.08 | 0.06 | 4,370 | 253k | 0.16 / 0.23 | 7.7 MB (4.44) | 63,806 (0.03 s, 2.1/write) |
+| da_prices | per-batch | muninn (post-0009 rerun) | 30,960 | 1,808,140 | 7.58 | 7.53 | 0.06 | 4,113 | 238k | 0.16 / 0.23 | 7.7 MB (4.44) | 63,806 (0.03 s, 2.1/write) |
+| da_prices | per-batch | muninn (post-fixes) | 30,960 | 1,808,140 | 7.01 | 6.95 | 0.06 | 4,455 | 258k | 0.14 / 0.20 | 6.4 MB (3.73) | 64,178 (0.03 s, 2.1/write) |
 | da_prices | per-batch | muninn-wm64 (post-0009) | 30,960 | 1,808,140 | 2.20 | 1.93 | 0.27 | 16k | 822k | 4.21 / 9.68 | 14.0 MB (8.13) | 1,186 (0.00 s, 0.0/write) |
+| da_prices | per-batch | muninn-wm64 (post-0009 rerun) | 30,960 | 1,808,140 | 2.26 | 1.96 | 0.30 | 16k | 800k | 4.29 / 10.18 | 12.1 MB (6.99) | 1,191 (0.00 s, 0.0/write) |
+| da_prices | per-batch | muninn-wm64 (post-fixes) | 30,960 | 1,808,140 | 1.68 | 1.37 | 0.31 | 23k | 1.07M | 2.72 / 6.00 | 6.4 MB (3.72) | 1,197 (0.00 s, 0.0/write) |
 | da_prices | per-batch | muninn-8p (post-0009) | 30,960 | 1,808,140 | 3.08 | 2.32 | 0.77 | 13k | 586k | 0.54 / 1.49 | 8.5 MB (4.94) | 27,223 (0.02 s, 0.9/write) |
 | da_prices | per-batch | duckdb-native | 30,960 | 1,808,140 | 48 | 48 | 0.01 | 651 | 38k | 1.51 / 1.78 | 15.5 MB (9.0) | 30,983 (0.02 s, 1.0/write) |
 | da_prices | bulk | muninn (pre-0009) | 2 | 1,808,140 | 2.40 | 2.36 | 0.03 | 0.8 | 755k | 1179.85 / 1444.32 | 6.2 MB (3.59) | 98 (0.00 s, 49.0/write) |
@@ -114,13 +122,21 @@ Muninn per-batch, inside `write` only (excludes the periodic compact+gc): mean l
 | da_prices | bulk | duckdb-native | 1 | 1,808,140 | 0.33 | 0.33 | 0.00 | - | 5.50M | - | 17.5 MB (10.16) | 6 (0.00 s) |
 | forecasts | per-batch | muninn (pre-0009) | 26,030 | 24,975,472 | 69 | 69 | 0.06 | 379 | 363k | 1.95 / 2.81 | 75.2 MB (3.16) | 643,322 (0.30 s, 24.7/write) |
 | forecasts | per-batch | muninn (post-0009) | 26,030 | 24,975,472 | 31 | 31 | 0.06 | 829 | 794k | 0.84 / 3.00 | 75.5 MB (3.17) | 78,809 (0.04 s, 3.0/write) |
+| forecasts | per-batch | muninn (post-0009 rerun) | 26,030 | 24,975,472 | 33 | 33 | 0.06 | 792 | 759k | 0.91 / 2.91 | 75.5 MB (3.17) | 78,650 (0.04 s, 3.0/write) |
+| forecasts | per-batch | muninn (post-fixes) | 26,030 | 24,975,472 | 22 | 22 | 0.06 | 1,178 | 1.13M | 0.51 / 1.60 | 75.5 MB (3.17) | 77,657 (0.04 s, 3.0/write) |
 | forecasts | per-batch | muninn-wm64 (post-0009) | 26,030 | 24,975,472 | 30 | 29 | 0.59 | 897 | 843k | 68.91 / 89.45 | 74.8 MB (3.14) | 11,097 (0.01 s, 0.4/write) |
+| forecasts | per-batch | muninn-wm64 (post-0009 rerun) | 26,030 | 24,975,472 | 30 | 29 | 0.60 | 884 | 831k | 69.74 / 93.53 | 74.8 MB (3.14) | 11,097 (0.01 s, 0.4/write) |
+| forecasts | per-batch | muninn-wm64 (post-fixes) | 26,030 | 24,975,472 | 12 | 11 | 0.51 | 2,337 | 2.14M | 25.49 / 42.17 | 74.8 MB (3.14) | 10,878 (0.01 s, 0.4/write) |
 | forecasts | per-batch | muninn-8p (post-0009) | 26,030 | 24,975,472 | 19 | 16 | 3.50 | 1,671 | 1.31M | 4.07 / 16.80 | 77.9 MB (3.27) | 41,776 (0.03 s, 1.6/write) |
 | forecasts | per-batch | duckdb-native | 26,030 | 24,975,472 | 57 | 57 | 0.06 | 460 | 441k | 1.97 / 3.08 | 207.3 MB (8.7) | 26,308 (0.02 s, 1.0/write) |
 | forecasts | bulk | muninn (pre-0009) | 25 | 24,975,472 | 56 | 56 | 0.03 | 0.5 | 446k | 2225.60 / 2497.28 | 65.1 MB (2.73) | 1,717 (0.00 s, 68.7/write) |
 | forecasts | bulk | muninn (post-0009) | 25 | 24,975,472 | 62 | 62 | 0.03 | 0.4 | 401k | 2480.05 / 2606.68 | 65.1 MB (2.73) | 1,717 (0.00 s, 68.7/write) |
+| forecasts | bulk | muninn (post-0009 rerun) | 25 | 24,975,472 | 67 | 67 | 0.03 | 0.4 | 372k | 2523.74 / 3598.16 | 65.1 MB (2.73) | 1,717 (0.00 s, 68.7/write) |
+| forecasts | bulk | muninn (post-fixes) | 25 | 24,975,472 | 10 | 10 | 0.03 | 2.5 | 2.48M | 400.79 / 425.47 | 65.1 MB (2.73) | 1,726 (0.00 s, 69.0/write) |
 | forecasts | bulk | muninn-100k (pre-0009) | 250 | 24,975,472 | 29 | 29 | 0.03 | 8.5 | 848k | 117.32 / 123.70 | 69.8 MB (2.93) | 7,133 (0.00 s, 28.5/write) |
 | forecasts | bulk | muninn-100k (post-0009) | 250 | 24,975,472 | 23 | 23 | 0.03 | 11.0 | 1.10M | 90.43 / 95.53 | 69.8 MB (2.93) | 7,133 (0.01 s, 28.5/write) |
+| forecasts | bulk | muninn-100k (post-0009 rerun) | 250 | 24,975,472 | 24 | 24 | 0.03 | 10.3 | 1.03M | 95.96 / 104.80 | 69.8 MB (2.93) | 7,133 (0.01 s, 28.5/write) |
+| forecasts | bulk | muninn-100k (post-fixes) | 250 | 24,975,472 | 6.12 | 6.09 | 0.03 | 41.0 | 4.08M | 24.22 / 26.48 | 69.8 MB (2.93) | 7,133 (0.01 s, 28.5/write) |
 | forecasts | bulk | duckdb-native | 1 | 24,975,472 | 4.22 | 4.22 | 0.00 | - | 5.92M | - | 568.0 MB (23.85) | 6 (0.00 s) |
 | settlement | per-batch | muninn (pre-0009) | 40,000 | 3,840,000 | 19 | 19 | 0.00 | 2,091 | 201k | 0.30 / 0.58 | 13.6 MB (3.7) | 162,167 (0.08 s, 4.1/write) |
 | settlement | per-batch | muninn (post-0009) | 40,000 | 3,840,000 | 15 | 15 | 0.00 | 2,627 | 252k | 0.20 / 0.27 | 14.9 MB (4.07) | 82,430 (0.04 s, 2.1/write) |
@@ -159,8 +175,12 @@ Muninn per-batch, inside `write` only (excludes the periodic compact+gc): mean l
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | da_prices | muninn (pre-0009) | 30,960 | 0.23 | 4.0 | 0.00 | 0.00 | 0.23 |
 | da_prices | muninn (post-0009) | 30,960 | 0.15 | 2.0 | 0.00 | 0.00 | 0.15 |
+| da_prices | muninn (post-0009 rerun) | 30,960 | 0.16 | 2.0 | 0.00 | 0.00 | 0.16 |
+| da_prices | muninn (post-fixes) | 30,960 | 0.14 | 2.0 | 0.00 | 0.00 | 0.14 |
 | forecasts | muninn (pre-0009) | 26,030 | 2.00 | 23.9 | 0.01 | 0.00 | 1.99 |
 | forecasts | muninn (post-0009) | 26,030 | 0.93 | 2.4 | 0.00 | 0.00 | 0.93 |
+| forecasts | muninn (post-0009 rerun) | 26,030 | 0.99 | 2.4 | 0.00 | 0.00 | 0.99 |
+| forecasts | muninn (post-fixes) | 26,030 | 0.57 | 2.4 | 0.00 | 0.00 | 0.57 |
 | settlement | muninn (pre-0009) | 40,000 | 0.31 | 4.0 | 0.00 | 0.00 | 0.31 |
 | settlement | muninn (post-0009) | 40,000 | 0.20 | 2.0 | 0.00 | 0.00 | 0.20 |
 | sparse | muninn (pre-0009) | 10,000 | 0.20 | 4.0 | 0.00 | 0.00 | 0.20 |
@@ -179,5 +199,11 @@ Muninn per-batch, inside `write` only (excludes the periodic compact+gc): mean l
 - **muninn-wm64 (post-0009)** (0.1.0): Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.
 - **muninn-8p (post-0009)** (0.1.0): Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.
 - **muninn-100k (post-0009)** (0.1.0): Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 100,000 rows, compact()+gc() at the end.
+- **muninn (post-0009 rerun)** (0.1.0): Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.
+- **muninn-100k (post-0009 rerun)** (0.1.0): Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 100,000 rows, compact()+gc() at the end.
+- **muninn-wm64 (post-0009 rerun)** (0.1.0): Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.
+- **muninn (post-fixes)** (0.1.0): Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.
+- **muninn-100k (post-fixes)** (0.1.0): Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 100,000 rows, compact()+gc() at the end.
+- **muninn-wm64 (post-fixes)** (0.1.0): Muninn engine (Python binding, release build), local directory store; one write per original batch (coalesced for datasets with > 200,000 batches), compact()+gc() every 500 writes and at the end. Cold = database reopened (OS page cache not dropped). Engine thread count not configurable. Bulk ingest mode (bench/ingest.py): writes of 1,000,000 rows, compact()+gc() at the end.
 
 Run dates: 2026-10-19, 2026-10-20.
