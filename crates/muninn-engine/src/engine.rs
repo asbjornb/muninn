@@ -890,14 +890,14 @@ impl<S: Store> Core<S> {
     }
 
     /// The stored versions of the given points (for dedup) whose received time is one of
-    /// the given ones (only those can be content-identical to a row), keyed by point.
+    /// the given ones (only those can be content-identical to a row), indexed by content.
     fn load_points(
         &self,
         st: &State,
         points: &BTreeMap<String, FxHashMap<SeriesId, BTreeSet<Timestamp>>>,
         rts: &FxHashSet<(SeriesId, Timestamp, Timestamp)>,
-    ) -> Result<FxHashMap<(SeriesId, Timestamp), Vec<Version>>> {
-        let mut out: FxHashMap<(SeriesId, Timestamp), Vec<Version>> = FxHashMap::default();
+    ) -> Result<write::StoredVersions> {
+        let mut out = write::StoredVersions::default();
         for (table, pts) in points {
             let table = st.catalog.table(table)?;
             let ids: BTreeSet<SeriesId> = pts.keys().copied().collect();
@@ -929,7 +929,7 @@ impl<S: Store> Core<S> {
             })?;
             cands.retain(|c| rts.contains(&(c.series, c.vt, c.rt)));
             for v in scanner.materialize(table.columns.len(), &cands)? {
-                out.entry((v.series, v.value_time)).or_default().push(v);
+                out.push(v);
             }
         }
         Ok(out)

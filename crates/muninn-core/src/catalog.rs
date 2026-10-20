@@ -19,7 +19,7 @@ use crate::api::{
 use crate::error::{Error, ErrorKind, Result};
 use crate::time::Timestamp;
 use crate::types::{
-    Clock, ColumnDef, SeriesDef, SeriesId, TableDef, TimeRange, Version, Visibility,
+    Clock, ColumnDef, ContentIndex, SeriesDef, SeriesId, TableDef, TimeRange, Version, Visibility,
     validate_column_name, validate_series_name, validate_table_name,
 };
 
@@ -595,28 +595,22 @@ pub fn plan_dedup(
     let mut kept: Vec<Version> = Vec::with_capacity(candidates.len());
     // Only versions of the same point can be content-identical. Batches usually list
     // each point once, in order: then no row can duplicate an earlier one and the
-    // per-point index is not needed.
+    // index is not needed.
     let distinct_points = candidates
         .windows(2)
         .all(|w| (w[0].series, w[0].value_time) < (w[1].series, w[1].value_time));
-    // Kept rows by point: the first kept index, then a chain through `next_same`.
-    let mut first: HashMap<(SeriesId, Timestamp), usize> = HashMap::new();
-    let mut next_same: Vec<usize> = Vec::new();
+    // Kept rows by content hash: expected O(1) per row however many versions of one
+    // point the batch holds (a bulk load holds hundreds; a per-point chain made that
+    // quadratic).
+    let mut index = if distinct_points {
+        ContentIndex::default()
+    } else {
+        ContentIndex::with_capacity(candidates.len())
+    };
     let mut duplicates = 0u64;
     for mut v in candidates {
-        let point = (v.series, v.value_time);
-        let dup_in_batch = !distinct_points && {
-            let mut at = first.get(&point).copied();
-            let mut found = false;
-            while let Some(i) = at {
-                if kept[i].content_identical(&v) {
-                    found = true;
-                    break;
-                }
-                at = (next_same[i] != usize::MAX).then_some(next_same[i]);
-            }
-            found
-        };
+        let hash = if distinct_points { 0 } else { v.content_hash() };
+        let dup_in_batch = !distinct_points && index.find(&kept, &v, hash).is_some();
         if dup_in_batch || is_stored(&v)? {
             duplicates += 1;
             continue;
@@ -624,10 +618,97 @@ pub fn plan_dedup(
         v.system_time = system_time;
         v.seq = next_seq + kept.len() as u64;
         if !distinct_points {
-            let i = kept.len();
-            next_same.push(first.insert(point, i).unwrap_or(usize::MAX));
+            index.push(hash);
         }
         kept.push(v);
     }
     Ok(DedupPlan { kept, duplicates })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::Value;
+    use proptest::prelude::*;
+
+    fn v(series: u32, vt: i64, rt: i64, x: f64) -> Version {
+        Version {
+            series: SeriesId(series),
+            value_time: Timestamp::from_micros(vt).unwrap(),
+            published_time: None,
+            received_time: Timestamp::from_micros(rt).unwrap(),
+            deleted: false,
+            values: vec![Some(Value::F64(x))],
+            system_time: Timestamp::MIN,
+            seq: 0,
+        }
+    }
+
+    /// SPEC §4.3 literally: a row is dropped if it is content-identical to a stored
+    /// version or to an earlier kept row.
+    fn naive(candidates: &[Version], stored: &[Version]) -> (Vec<Version>, u64) {
+        let mut kept: Vec<Version> = Vec::new();
+        let mut dups = 0;
+        for c in candidates {
+            if stored.iter().chain(&kept).any(|k| k.content_identical(c)) {
+                dups += 1;
+            } else {
+                kept.push(c.clone());
+            }
+        }
+        (kept, dups)
+    }
+
+    proptest! {
+        #[test]
+        fn plan_dedup_matches_the_spec(
+            rows in prop::collection::vec(
+                (1u32..3, 0i64..3, 0i64..3,
+                 prop::sample::select(vec![0.0f64, -0.0, 1.0, f64::NAN])),
+                0..60),
+            stored in prop::collection::vec((1u32..3, 0i64..3, 0i64..3), 0..6),
+            sorted in any::<bool>(),
+        ) {
+            let mut cands: Vec<Version> =
+                rows.iter().map(|&(s, vt, rt, x)| v(s, vt, rt, x)).collect();
+            if sorted {
+                // The distinct-points fast path.
+                cands.sort_by_key(|c| (c.series, c.value_time));
+                cands.dedup_by_key(|c| (c.series, c.value_time));
+            }
+            let stored: Vec<Version> =
+                stored.iter().map(|&(s, vt, rt)| v(s, vt, rt, 1.0)).collect();
+            let st = Timestamp::from_micros(77).unwrap();
+            let plan = plan_dedup(cands.clone(), st, 10, |c| {
+                Ok(stored.iter().any(|s| s.content_identical(c)))
+            })
+            .unwrap();
+            let (kept, dups) = naive(&cands, &stored);
+            prop_assert_eq!(plan.duplicates, dups);
+            prop_assert_eq!(plan.kept.len(), kept.len());
+            for (i, (a, b)) in plan.kept.iter().zip(&kept).enumerate() {
+                prop_assert!(a.content_identical(b));
+                prop_assert_eq!(a.seq, 10 + i as u64);
+                prop_assert_eq!(a.system_time, st);
+            }
+        }
+    }
+
+    /// A bulk batch holding many versions of one point (a forecast series loaded in one
+    /// write) is deduplicated in linear time: 200k versions of one point, every other one
+    /// a duplicate. The per-point chain this replaced needed ~10^10 comparisons here.
+    #[test]
+    fn many_versions_of_one_point_are_linear() {
+        let n = 200_000i64;
+        let cands: Vec<Version> = (0..n).map(|i| v(1, 0, i / 2, (i / 2) as f64)).collect();
+        let t0 = std::time::Instant::now();
+        let plan = plan_dedup(cands, Timestamp::from_micros(1).unwrap(), 1, |_| Ok(false)).unwrap();
+        assert_eq!(plan.kept.len() as i64, n / 2);
+        assert_eq!(plan.duplicates as i64, n / 2);
+        assert!(
+            t0.elapsed() < std::time::Duration::from_secs(20),
+            "{:?}",
+            t0.elapsed()
+        );
+    }
 }

@@ -957,6 +957,55 @@ fn write_many_is_writes_one_after_another() {
 proptest! {
     #![proptest_config(ProptestConfig { cases: cases(64), ..ProptestConfig::default() })]
 
+    /// Deduplication through the content index: groups of batches over a tiny domain
+    /// (many versions of few points, `NaN`/`-0.0`, rows repeated within a batch, across
+    /// the group's batches and against stored versions — memtable and files) give the
+    /// results of committing the batches one by one in the model.
+    #[test]
+    fn group_dedup_matches_model(
+        groups in prop::collection::vec(
+            prop::collection::vec(
+                prop::collection::vec(
+                    (0usize..2, 0i64..3, 0i64..3,
+                     prop::sample::select(vec![0.0f64, -0.0, 1.5, f64::NAN])),
+                    0..12),
+                1..6),
+            1..5),
+        inline in prop_oneof![Just(0usize), Just(1_000_000)],
+        flush_between in any::<bool>(),
+    ) {
+        let o = EngineOptions { inline_max_rows: inline, ..test_options(4, 0, false) };
+        let e = Engine::open(Arc::new(MemoryStore::new()), o).unwrap();
+        let m = ModelDb::new();
+        setup(&e);
+        setup(&m);
+        let mut clock = 0;
+        for g in &groups {
+            let batches: Vec<WriteBatch> = g
+                .iter()
+                .map(|rows| {
+                    clock += 1;
+                    WriteBatch::new(
+                        h(clock),
+                        rows.iter()
+                            .map(|&(s, vt, rt, x)| {
+                                WriteRow::new(["s0", "s1"][s], h(vt), h(rt))
+                                    .value("value", Value::F64(x))
+                            })
+                            .collect(),
+                    )
+                })
+                .collect();
+            let got: Vec<_> = e.write_many(&batches).into_iter().map(|r| r.unwrap()).collect();
+            let want: Vec<_> = batches.iter().map(|b| m.write(b).unwrap()).collect();
+            prop_assert_eq!(got, want);
+            if flush_between {
+                e.flush().unwrap();
+            }
+        }
+        prop_assert_eq!(fingerprint(&e), fingerprint(&m));
+    }
+
     /// The differential workload with other inline/flush settings: never inline, always
     /// inline, a flush after almost every write, and an index that is always cold.
     #[test]
