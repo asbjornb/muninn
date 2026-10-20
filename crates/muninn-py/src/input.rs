@@ -631,6 +631,51 @@ pub(crate) fn rows_from_arrow(batches: &[RecordBatch], assume_utc: bool) -> Resu
 // Arrow, columnar
 // ---------------------------------------------------------------------------------------
 
+/// Appends the cells of a plain timestamp (with a zone, or any with `assume_utc`) or
+/// int32/int64 array as microseconds (`None` = null), as [`arrow_time`] would give them;
+/// `false` (with `out` partly extended) if the array is of another type or a cell would
+/// not be a plain microsecond value (overflow, sub-microsecond part).
+fn micros_of(arr: &dyn Array, assume_utc: bool, out: &mut Vec<Option<i64>>) -> bool {
+    macro_rules! prim {
+        ($t:ty, $f:expr) => {{
+            let p = arr.as_primitive::<$t>();
+            if p.null_count() == 0 {
+                out.extend(p.values().iter().map(|&v| Some($f(v))));
+            } else {
+                out.extend(p.iter().map(|v| v.map($f)));
+            }
+            true
+        }};
+    }
+    match arr.data_type() {
+        DataType::Timestamp(_, None) if !assume_utc => false,
+        DataType::Timestamp(TimeUnit::Microsecond, _) => {
+            prim!(TimestampMicrosecondType, |v: i64| v)
+        }
+        DataType::Timestamp(TimeUnit::Millisecond, _) => {
+            let p = arr.as_primitive::<TimestampMillisecondType>();
+            let ok = p.iter().flatten().all(|v| v.checked_mul(1_000).is_some());
+            ok && prim!(TimestampMillisecondType, |v: i64| v * 1_000)
+        }
+        DataType::Timestamp(TimeUnit::Second, _) => {
+            let p = arr.as_primitive::<TimestampSecondType>();
+            let ok = p
+                .iter()
+                .flatten()
+                .all(|v| v.checked_mul(1_000_000).is_some());
+            ok && prim!(TimestampSecondType, |v: i64| v * 1_000_000)
+        }
+        DataType::Timestamp(TimeUnit::Nanosecond, _) => {
+            let p = arr.as_primitive::<TimestampNanosecondType>();
+            let ok = p.iter().flatten().all(|v| v % 1_000 == 0);
+            ok && prim!(TimestampNanosecondType, |v: i64| v / 1_000)
+        }
+        DataType::Int64 => prim!(Int64Type, |v: i64| v),
+        DataType::Int32 => prim!(Int32Type, i64::from),
+        _ => false,
+    }
+}
+
 /// The time column `name` across `batches` (`None` if absent). Plain timestamp and
 /// integer arrays become microseconds directly; anything else (strings, naive timestamps
 /// without `assume_utc`, sub-microsecond values, dictionaries) goes cell by cell through
@@ -642,46 +687,9 @@ fn time_column(batches: &[RecordBatch], name: &str, assume_utc: bool) -> Option<
         .collect::<Option<_>>()?;
     let n: usize = arrays.iter().map(|a| a.len()).sum();
     let mut micros: Vec<Option<i64>> = Vec::with_capacity(n);
-    let fast = arrays.iter().all(|arr| {
-        macro_rules! prim {
-            ($t:ty, $f:expr) => {{
-                let p = arr.as_primitive::<$t>();
-                if p.null_count() == 0 {
-                    micros.extend(p.values().iter().map(|&v| Some($f(v))));
-                } else {
-                    micros.extend(p.iter().map(|v| v.map($f)));
-                }
-                true
-            }};
-        }
-        match arr.data_type() {
-            DataType::Timestamp(_, None) if !assume_utc => false,
-            DataType::Timestamp(TimeUnit::Microsecond, _) => {
-                prim!(TimestampMicrosecondType, |v: i64| v)
-            }
-            DataType::Timestamp(TimeUnit::Millisecond, _) => {
-                let p = arr.as_primitive::<TimestampMillisecondType>();
-                let ok = p.iter().flatten().all(|v| v.checked_mul(1_000).is_some());
-                ok && prim!(TimestampMillisecondType, |v: i64| v * 1_000)
-            }
-            DataType::Timestamp(TimeUnit::Second, _) => {
-                let p = arr.as_primitive::<TimestampSecondType>();
-                let ok = p
-                    .iter()
-                    .flatten()
-                    .all(|v| v.checked_mul(1_000_000).is_some());
-                ok && prim!(TimestampSecondType, |v: i64| v * 1_000_000)
-            }
-            DataType::Timestamp(TimeUnit::Nanosecond, _) => {
-                let p = arr.as_primitive::<TimestampNanosecondType>();
-                let ok = p.iter().flatten().all(|v| v % 1_000 == 0);
-                ok && prim!(TimestampNanosecondType, |v: i64| v / 1_000)
-            }
-            DataType::Int64 => prim!(Int64Type, |v: i64| v),
-            DataType::Int32 => prim!(Int32Type, i64::from),
-            _ => false,
-        }
-    });
+    let fast = arrays
+        .iter()
+        .all(|arr| micros_of(*arr, assume_utc, &mut micros));
     if fast {
         return Some(TimeColumn::Micros(micros));
     }
@@ -741,19 +749,24 @@ fn value_column(arrays: &[&dyn Array], assume_utc: bool) -> ValueColumn {
                     true
                 }
             ),
+            // A timestamp value column: a valid timestamp per cell, else type_mismatch
+            // (the generic path decides).
             Some(DataType::Timestamp(_, _)) => {
                 typed!(Timestamp, muninn_core::Timestamp, |arr: &dyn Array,
                                                            out: &mut Vec<
                     Option<muninn_core::Timestamp>,
                 >| {
-                    for i in 0..arr.len() {
-                        match arrow_value(arr, i, assume_utc) {
-                            InputValue::Null => out.push(None),
-                            InputValue::Value(Value::Timestamp(t)) => out.push(Some(t)),
-                            _ => return false,
-                        }
-                    }
-                    true
+                    let mut us = Vec::with_capacity(arr.len());
+                    micros_of(arr, assume_utc, &mut us)
+                        && us.into_iter().all(|v| match v {
+                            None => {
+                                out.push(None);
+                                true
+                            }
+                            Some(v) => muninn_core::Timestamp::from_micros(v)
+                                .map(|t| out.push(Some(t)))
+                                .is_some(),
+                        })
                 })
             }
             _ => None,
@@ -811,15 +824,19 @@ pub(crate) fn columns_from_arrow(
                     ))
                 });
             };
-            let code = match codes.get(name) {
-                Some(&k) => k,
-                None => {
-                    let k = u32::try_from(cols.series_names.len())
-                        .map_err(|_| invalid("too many series names in one batch"))?;
-                    codes.insert(name.to_owned(), k);
-                    cols.series_names.push(name.to_owned());
-                    k
-                }
+            let last = cols.series_codes.last().copied();
+            let code = match last.filter(|&k| cols.series_names[k as usize] == name) {
+                Some(k) => k, // the same series as the previous row (the common case)
+                None => match codes.get(name) {
+                    Some(&k) => k,
+                    None => {
+                        let k = u32::try_from(cols.series_names.len())
+                            .map_err(|_| invalid("too many series names in one batch"))?;
+                        codes.insert(name.to_owned(), k);
+                        cols.series_names.push(name.to_owned());
+                        k
+                    }
+                },
             };
             cols.series_codes.push(code);
         }

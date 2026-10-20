@@ -20,8 +20,8 @@ use crate::api::{
 use crate::error::{Error, ErrorKind, Result};
 use crate::time::Timestamp;
 use crate::types::{
-    Clock, ColumnDef, ColumnType, ContentIndex, SeriesDef, SeriesId, TableDef, TimeRange, Value,
-    Version, Visibility, validate_column_name, validate_series_name, validate_table_name,
+    Clock, ColumnDef, ColumnType, SeriesDef, SeriesId, TableDef, TimeRange, Value, Version,
+    Visibility, validate_column_name, validate_series_name, validate_table_name,
 };
 
 /// One entry of the catalog change log (SPEC §2.3).
@@ -732,37 +732,66 @@ pub fn plan_dedup(
     next_seq: u64,
     mut is_stored: impl FnMut(&Version) -> Result<bool>,
 ) -> Result<DedupPlan> {
-    let mut kept: Vec<Version> = Vec::with_capacity(candidates.len());
     // Only versions of the same point can be content-identical. Batches usually list
-    // each point once, in order: then no row can duplicate an earlier one and the
-    // index is not needed.
+    // each point once, in order: then no row can duplicate an earlier one.
     let distinct_points = candidates
         .windows(2)
         .all(|w| (w[0].series, w[0].value_time) < (w[1].series, w[1].value_time));
-    // Kept rows by content hash: expected O(1) per row however many versions of one
-    // point the batch holds (a bulk load holds hundreds; a per-point chain made that
-    // quadratic).
-    let mut index = if distinct_points {
-        ContentIndex::default()
+    let dup_in_batch = if distinct_points {
+        Vec::new()
     } else {
-        ContentIndex::with_capacity(candidates.len())
+        in_batch_duplicates(&candidates)
     };
+    let mut kept: Vec<Version> = Vec::with_capacity(candidates.len());
     let mut duplicates = 0u64;
-    for mut v in candidates {
-        let hash = if distinct_points { 0 } else { v.content_hash() };
-        let dup_in_batch = !distinct_points && index.find(&kept, &v, hash).is_some();
-        if dup_in_batch || is_stored(&v)? {
+    for (i, mut v) in candidates.into_iter().enumerate() {
+        if dup_in_batch.get(i).copied().unwrap_or(false) || is_stored(&v)? {
             duplicates += 1;
             continue;
         }
         v.system_time = system_time;
         v.seq = next_seq + kept.len() as u64;
-        if !distinct_points {
-            index.push(hash);
-        }
         kept.push(v);
     }
     Ok(DedupPlan { kept, duplicates })
+}
+
+/// For each candidate: is it content-identical to an *earlier* candidate of the batch?
+///
+/// That is the same as "to an earlier kept row" (SPEC §4.3): content identity is an
+/// equivalence, so a row identical to a dropped row is identical to what that row was
+/// dropped for — an earlier kept row, or a stored version (and then it is dropped as
+/// a stored duplicate anyway). O(n log n) whatever the number of versions per point:
+/// the rows are sorted by content hash (ties by position), and only rows with equal
+/// hashes are compared.
+fn in_batch_duplicates(candidates: &[Version]) -> Vec<bool> {
+    let mut keys: Vec<(u64, usize)> = candidates
+        .iter()
+        .enumerate()
+        .map(|(i, v)| (v.content_hash(), i))
+        .collect();
+    keys.sort_unstable();
+    let mut dup = vec![false; candidates.len()];
+    // First rows of the distinct contents seen within one hash group (more than one
+    // only on a hash collision).
+    let mut reps: Vec<usize> = Vec::new();
+    for group in keys.chunk_by(|a, b| a.0 == b.0) {
+        if group.len() == 1 {
+            continue;
+        }
+        reps.clear();
+        for &(_, j) in group {
+            if reps
+                .iter()
+                .any(|&r| candidates[r].content_identical(&candidates[j]))
+            {
+                dup[j] = true;
+            } else {
+                reps.push(j);
+            }
+        }
+    }
+    dup
 }
 
 #[cfg(test)]

@@ -432,7 +432,11 @@ impl<S: Store> Core<S> {
                     group_index.push(v.content_hash());
                 }
             }
-            kept.extend(plan.kept);
+            if kept.is_empty() {
+                kept = plan.kept; // no copy (a bulk write is one big batch)
+            } else {
+                kept.extend(plan.kept);
+            }
             outcomes.push((req.id, Outcome::IfCommitted(result)));
         }
         drop(group_index);
@@ -544,21 +548,17 @@ impl<S: Store> Core<S> {
         let mut files: Groups<'_> = BTreeMap::new();
         let mut inline_rows = 0;
         let mut placer = Placer::new(st);
-        let mut last_key: Option<(bool, &str, Partition)> = None;
-        let mut run: Vec<Version> = Vec::new();
         let mut bulk_at = bulk.iter().peekable();
-        fn flush_run<'a>(
-            key: Option<(bool, &'a str, Partition)>,
-            run: &mut Vec<Version>,
-            inline: &mut Groups<'a>,
-            files: &mut Groups<'a>,
-        ) {
-            if let Some((is_bulk, t, p)) = key {
-                let to = if is_bulk { files } else { inline };
-                to.entry((t, p)).or_default().append(run);
-            }
-        }
-        for (i, v) in kept.into_iter().enumerate() {
+        // Two passes, so that every group's vector is allocated once at its final size
+        // (a bulk write moves a million versions; growing the vectors copied them over
+        // and over): the group of each row, then the moves.
+        type Key<'a> = (bool, &'a str, Partition);
+        let mut keys: Vec<Key<'_>> = Vec::new();
+        let mut index: FxHashMap<Key<'_>, u32> = FxHashMap::default();
+        let mut counts: Vec<usize> = Vec::new();
+        let mut of_row: Vec<u32> = Vec::with_capacity(kept.len());
+        let mut prev: Option<(Key<'_>, u32)> = None;
+        for (i, v) in kept.iter().enumerate() {
             let i = i as u32;
             while bulk_at.peek().is_some_and(|r| r.1 <= i) {
                 bulk_at.next();
@@ -567,15 +567,28 @@ impl<S: Store> Core<S> {
             if !is_bulk {
                 inline_rows += 1;
             }
-            let (t, p) = placer.place(&v)?;
+            let (t, p) = placer.place(v)?;
             let key = (is_bulk, t.name.as_str(), p);
-            if last_key != Some(key) {
-                flush_run(last_key, &mut run, &mut inline, &mut files);
-                last_key = Some(key);
-            }
-            run.push(v);
+            let k = match prev {
+                Some((lk, k)) if lk == key => k,
+                _ => *index.entry(key).or_insert_with(|| {
+                    keys.push(key);
+                    counts.push(0);
+                    (keys.len() - 1) as u32
+                }),
+            };
+            prev = Some((key, k));
+            counts[k as usize] += 1;
+            of_row.push(k);
         }
-        flush_run(last_key, &mut run, &mut inline, &mut files);
+        let mut groups: Vec<Vec<Version>> = counts.iter().map(|&n| Vec::with_capacity(n)).collect();
+        for (v, k) in kept.into_iter().zip(of_row) {
+            groups[k as usize].push(v);
+        }
+        for ((is_bulk, t, p), vs) in keys.into_iter().zip(groups) {
+            let to = if is_bulk { &mut files } else { &mut inline };
+            to.insert((t, p), vs);
+        }
         let mut entry = self.new_entry(st, "write");
         entry.batch_ids = batch_ids;
         entry.next_seq = next_seq;

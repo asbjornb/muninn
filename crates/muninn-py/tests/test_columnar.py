@@ -51,10 +51,11 @@ def batches(draw):
         rows.append(r)
     chunks = draw(st.integers(1, 2))
     dictionary = draw(st.booleans())
-    return rows, has, time_kind, chunks, dictionary
+    unit = draw(st.sampled_from(["s", "ms", "us", "ns"]))
+    return rows, has, time_kind, chunks, dictionary, unit
 
 
-def to_arrow(rows, has, time_kind, chunks, dictionary):
+def to_arrow(rows, has, time_kind, chunks, dictionary, unit="us"):
     def tcol(vals):
         if time_kind == "int":
             return pa.array(vals, pa.int64())
@@ -74,7 +75,8 @@ def to_arrow(rows, has, time_kind, chunks, dictionary):
     for c, ty in types.items():
         if has[c]:
             vals = [r.get(c) for r in rows]
-            cols[c] = (pa.array(vals, pa.int64()).cast(TS) if c == "c" else pa.array(vals, ty))
+            cols[c] = (pa.array(vals, pa.int64()).cast(TS).cast(pa.timestamp(unit, tz="UTC"))
+                       if c == "c" else pa.array(vals, ty))
     t = pa.table(cols)
     if chunks == 2 and t.num_rows > 1:
         k = t.num_rows // 2
@@ -127,8 +129,8 @@ def state(db):
 @given(st.lists(batches(), min_size=1, max_size=4))
 def test_arrow_writes_behave_like_dict_rows(bs):
     a, b = fresh(), fresh()
-    for rows, has, time_kind, chunks, dictionary in bs:
-        got = outcome(a, to_arrow(rows, has, time_kind, chunks, dictionary))
+    for rows, has, time_kind, chunks, dictionary, unit in bs:
+        got = outcome(a, to_arrow(rows, has, time_kind, chunks, dictionary, unit))
         want = outcome(b, to_dicts(rows, has, time_kind))
         assert got == want
     assert state(a) == state(b)
