@@ -14,13 +14,14 @@ use std::sync::Arc;
 
 use crate::api::{
     AddColumn, AsofJoinRequest, CreateSeries, CreateTable, GridRequest, GridWindow, LatestRequest,
-    ReplayRequest, VersionRow, WriteBatch, WriteResult, WriteRow,
+    ReplayRequest, TimeColumn, ValueColumn, VersionRow, WriteBatch, WriteColumns, WriteResult,
+    WriteRow,
 };
 use crate::error::{Error, ErrorKind, Result};
 use crate::time::Timestamp;
 use crate::types::{
-    Clock, ColumnDef, ContentIndex, SeriesDef, SeriesId, TableDef, TimeRange, Version, Visibility,
-    validate_column_name, validate_series_name, validate_table_name,
+    Clock, ColumnDef, ColumnType, ContentIndex, SeriesDef, SeriesId, TableDef, TimeRange, Value,
+    Version, Visibility, validate_column_name, validate_series_name, validate_table_name,
 };
 
 /// One entry of the catalog change log (SPEC §2.3).
@@ -329,14 +330,148 @@ impl Catalog {
             .clock
             .resolve()
             .map_err(|e| Error::new(e.kind(), format!("writer clock: {}", e.message())))?;
-        let mut rows = Vec::with_capacity(batch.rows.len());
+        let mut rows = Vec::with_capacity(batch.len());
         for (i, row) in batch.rows.iter().enumerate() {
-            let v = self
-                .validate_row(row)
-                .map_err(|e| Error::new(e.kind(), format!("row {i}: {}", e.message())))?;
+            let v = self.validate_row(row).map_err(|e| row_error(i, &e))?;
             rows.push(v);
         }
+        if let Some(c) = &batch.columns {
+            self.validate_columns(c, batch.rows.len(), &mut rows)?;
+        }
         Ok(BatchPlan::Candidates { clock, rows })
+    }
+
+    /// SPEC §4.1 for columnar rows (rows `offset..` of the batch), appending the versions
+    /// to `out`. The result is by definition that of [`Catalog::validate_row`] on each
+    /// [`WriteColumns::row`] in order: the fast path below handles the common, valid
+    /// cases straight from the columns (series and column names resolved once per batch,
+    /// values copied by type) and hands any row it does not accept to `validate_row`,
+    /// which then decides — so error codes, check order and messages are the row path's.
+    fn validate_columns(
+        &self,
+        c: &WriteColumns,
+        offset: usize,
+        out: &mut Vec<Version>,
+    ) -> Result<()> {
+        let slow = |i: usize, out: &mut Vec<Version>| -> Result<()> {
+            let v = self
+                .validate_row(&c.row(i))
+                .map_err(|e| row_error(offset + i, &e))?;
+            out.push(v);
+            Ok(())
+        };
+        let distinct_names = {
+            let mut names: Vec<&str> = c.values.iter().map(|(n, _)| n.as_str()).collect();
+            names.sort_unstable();
+            names.windows(2).all(|w| w[0] != w[1])
+        };
+        if !distinct_names {
+            for i in 0..c.len {
+                slow(i, out)?;
+            }
+            return Ok(());
+        }
+        // Per distinct series name: (series id, index into `tables`), resolved once.
+        struct TableMap<'a> {
+            def: &'a TableDef,
+            /// For each input value column: its column index in the table.
+            cols: Vec<Option<usize>>,
+        }
+        let mut tables: Vec<TableMap<'_>> = Vec::new();
+        let series: Vec<Option<(SeriesId, usize)>> = c
+            .series_names
+            .iter()
+            .map(|name| {
+                let s = self.series_by_name(name).ok()?;
+                let t = self.table(&s.table).ok()?;
+                let ti = match tables.iter().position(|m| std::ptr::eq(m.def, t)) {
+                    Some(ti) => ti,
+                    None => {
+                        tables.push(TableMap {
+                            def: t,
+                            cols: c.values.iter().map(|(n, _)| t.column_index(n)).collect(),
+                        });
+                        tables.len() - 1
+                    }
+                };
+                Some((s.id, ti))
+            })
+            .collect();
+        let time = |col: &Option<TimeColumn>, i: usize| -> Option<Timestamp> {
+            match col.as_ref()? {
+                TimeColumn::Micros(v) => Timestamp::from_micros(v[i]?),
+                TimeColumn::Inputs(v) => v[i].as_ref()?.resolve().ok(),
+            }
+        };
+        out.reserve(c.len);
+        'rows: for i in 0..c.len {
+            let Some((id, ti)) = series[c.series_codes[i] as usize] else {
+                slow(i, out)?;
+                continue;
+            };
+            let t = &tables[ti];
+            let deleted = c.deleted.as_ref().is_some_and(|d| d[i]);
+            let mut values: Vec<Option<Value>> = vec![None; t.def.columns.len()];
+            for ((_, col), &idx) in c.values.iter().zip(&t.cols) {
+                if col.is_null(i) {
+                    continue;
+                }
+                let (Some(idx), false) = (idx, deleted) else {
+                    slow(i, out)?;
+                    continue 'rows;
+                };
+                let ty = t.def.columns[idx].ty;
+                let v = match (col, ty) {
+                    (ValueColumn::F64(v), ColumnType::F64) => v[i].map(Value::F64),
+                    (ValueColumn::I64(v), ColumnType::I64) => v[i].map(Value::I64),
+                    (ValueColumn::I64(v), ColumnType::F64) => v[i].map(|n| Value::F64(n as f64)),
+                    (ValueColumn::Bool(v), ColumnType::Bool) => v[i].map(Value::Bool),
+                    (ValueColumn::Timestamp(v), ColumnType::Timestamp) => {
+                        v[i].map(Value::Timestamp)
+                    }
+                    (ValueColumn::Inputs(v), ty) => v[i].coerce_to(ty).ok().flatten(),
+                    _ => None,
+                };
+                if v.is_none() {
+                    slow(i, out)?;
+                    continue 'rows;
+                }
+                values[idx] = v;
+            }
+            let (Some(value_time), Some(received_time)) =
+                (time(&c.value_time, i), time(&c.received_time, i))
+            else {
+                slow(i, out)?;
+                continue;
+            };
+            let published_null = match c.published_time.as_ref() {
+                None => true,
+                Some(TimeColumn::Micros(v)) => v[i].is_none(),
+                Some(TimeColumn::Inputs(v)) => v[i].is_none(),
+            };
+            let published_time = if published_null {
+                None
+            } else {
+                match time(&c.published_time, i) {
+                    Some(t) => Some(t),
+                    None => {
+                        slow(i, out)?;
+                        continue;
+                    }
+                }
+            };
+            out.push(Version {
+                series: id,
+                value_time,
+                published_time,
+                received_time,
+                deleted,
+                values,
+                system_time: Timestamp::MIN, // placeholder, set by `plan_dedup`
+                seq: 0,                      // placeholder, set by `plan_dedup`
+            });
+        }
+        Ok(())
     }
 
     // -----------------------------------------------------------------------------------
@@ -578,6 +713,11 @@ impl DedupPlan {
             first_seq: self.kept.first().map(|v| v.seq),
         }
     }
+}
+
+/// A row's validation error, prefixed with its index in the batch.
+fn row_error(i: usize, e: &Error) -> Error {
+    Error::new(e.kind(), format!("row {i}: {}", e.message()))
 }
 
 /// SPEC §4.3 + §4.2: drops candidates content-identical to a stored version

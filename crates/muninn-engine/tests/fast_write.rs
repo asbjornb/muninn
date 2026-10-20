@@ -105,6 +105,7 @@ fn producer_batch_with(
     }
     WriteBatch {
         rows,
+        columns: None,
         batch_id: (rng.below(3) == 0).then(|| format!("p{p}-{k}")),
         clock: h(rng.below(40) as i64).into(),
     }

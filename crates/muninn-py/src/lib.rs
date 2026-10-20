@@ -1108,20 +1108,27 @@ fn write_batch(
             }
         },
     };
-    let rows = match (rows, arrow) {
+    let (rows, columns) = match (rows, arrow) {
         (Some(r), _) => {
             let list = r
                 .cast::<PyList>()
                 .map_err(|_| py_err(py, &invalid("rows must be a list of dicts")))?;
             let h = Helpers::new(py, assume_utc)?;
-            input::rows_from_dicts(list, &h).map_err(|e| conv_err(py, e))?
+            (
+                input::rows_from_dicts(list, &h).map_err(|e| conv_err(py, e))?,
+                None,
+            )
         }
         (None, Some(a)) => {
             let batches = arrow_batches(py, a)?;
-            py.detach(|| input::rows_from_arrow(&batches, assume_utc))
-                .or_py(py)?
+            // Columnar (no map per row); batches with differing schemas row by row.
+            py.detach(|| match input::columns_from_arrow(&batches, assume_utc)? {
+                Some(c) => Ok((Vec::new(), Some(Arc::new(c)))),
+                None => Ok((input::rows_from_arrow(&batches, assume_utc)?, None)),
+            })
+            .or_py(py)?
         }
-        (None, None) => Vec::new(),
+        (None, None) => (Vec::new(), None),
     };
     let clock = match clock.filter(|o| !o.is_none()) {
         None => TimeInput::Micros(muninn_engine::system_wall_clock()),
@@ -1129,6 +1136,7 @@ fn write_batch(
     };
     Ok(WriteBatch {
         rows,
+        columns,
         batch_id,
         clock,
     })

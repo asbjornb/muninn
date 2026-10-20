@@ -6,7 +6,7 @@
 //! pandas / numpy scalars and timedeltas into ints (µs), strings, or an "invalid" marker;
 //! anything that is neither an int nor a string here is therefore an invalid time.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use arrow_array::cast::AsArray;
 use arrow_array::types::{
@@ -16,7 +16,7 @@ use arrow_array::types::{
 };
 use arrow_array::{Array, RecordBatch};
 use arrow_schema::{DataType, TimeUnit};
-use muninn_core::api::{TimeInput, WriteRow};
+use muninn_core::api::{TimeColumn, TimeInput, ValueColumn, WriteColumns, WriteRow};
 use muninn_core::{Clock, Duration, Error, ErrorKind, InputValue, Result, Value};
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple};
@@ -625,6 +625,246 @@ pub(crate) fn rows_from_arrow(batches: &[RecordBatch], assume_utc: bool) -> Resu
         }
     }
     Ok(out)
+}
+
+// ---------------------------------------------------------------------------------------
+// Arrow, columnar
+// ---------------------------------------------------------------------------------------
+
+/// The time column `name` across `batches` (`None` if absent). Plain timestamp and
+/// integer arrays become microseconds directly; anything else (strings, naive timestamps
+/// without `assume_utc`, sub-microsecond values, dictionaries) goes cell by cell through
+/// [`arrow_time`], exactly as in [`rows_from_arrow`].
+fn time_column(batches: &[RecordBatch], name: &str, assume_utc: bool) -> Option<TimeColumn> {
+    let arrays: Vec<&dyn Array> = batches
+        .iter()
+        .map(|b| b.column_by_name(name).map(|c| c.as_ref()))
+        .collect::<Option<_>>()?;
+    let n: usize = arrays.iter().map(|a| a.len()).sum();
+    let mut micros: Vec<Option<i64>> = Vec::with_capacity(n);
+    let fast = arrays.iter().all(|arr| {
+        macro_rules! prim {
+            ($t:ty, $f:expr) => {{
+                let p = arr.as_primitive::<$t>();
+                if p.null_count() == 0 {
+                    micros.extend(p.values().iter().map(|&v| Some($f(v))));
+                } else {
+                    micros.extend(p.iter().map(|v| v.map($f)));
+                }
+                true
+            }};
+        }
+        match arr.data_type() {
+            DataType::Timestamp(_, None) if !assume_utc => false,
+            DataType::Timestamp(TimeUnit::Microsecond, _) => {
+                prim!(TimestampMicrosecondType, |v: i64| v)
+            }
+            DataType::Timestamp(TimeUnit::Millisecond, _) => {
+                let p = arr.as_primitive::<TimestampMillisecondType>();
+                let ok = p.iter().flatten().all(|v| v.checked_mul(1_000).is_some());
+                ok && prim!(TimestampMillisecondType, |v: i64| v * 1_000)
+            }
+            DataType::Timestamp(TimeUnit::Second, _) => {
+                let p = arr.as_primitive::<TimestampSecondType>();
+                let ok = p
+                    .iter()
+                    .flatten()
+                    .all(|v| v.checked_mul(1_000_000).is_some());
+                ok && prim!(TimestampSecondType, |v: i64| v * 1_000_000)
+            }
+            DataType::Timestamp(TimeUnit::Nanosecond, _) => {
+                let p = arr.as_primitive::<TimestampNanosecondType>();
+                let ok = p.iter().flatten().all(|v| v % 1_000 == 0);
+                ok && prim!(TimestampNanosecondType, |v: i64| v / 1_000)
+            }
+            DataType::Int64 => prim!(Int64Type, |v: i64| v),
+            DataType::Int32 => prim!(Int32Type, i64::from),
+            _ => false,
+        }
+    });
+    if fast {
+        return Some(TimeColumn::Micros(micros));
+    }
+    let mut inputs = Vec::with_capacity(n);
+    for arr in arrays {
+        let c = Col::new(arr);
+        inputs.extend((0..arr.len()).map(|i| c.time(i, assume_utc)));
+    }
+    Some(TimeColumn::Inputs(inputs))
+}
+
+/// A value column across `batches` (the arrays of one column). Plain numeric, boolean
+/// and timestamp arrays are copied by type; anything else goes cell by cell through
+/// [`arrow_value`], exactly as in [`rows_from_arrow`].
+fn value_column(arrays: &[&dyn Array], assume_utc: bool) -> ValueColumn {
+    let n: usize = arrays.iter().map(|a| a.len()).sum();
+    macro_rules! typed {
+        ($variant:ident, $elem:ty, $conv:expr) => {{
+            let mut out: Vec<Option<$elem>> = Vec::with_capacity(n);
+            let ok = arrays.iter().all(|arr| $conv(*arr, &mut out));
+            ok.then_some(ValueColumn::$variant(out))
+        }};
+    }
+    macro_rules! prim {
+        ($t:ty, $f:expr) => {
+            |arr: &dyn Array, out: &mut Vec<Option<_>>| {
+                let p = arr.as_primitive::<$t>();
+                if p.null_count() == 0 {
+                    out.extend(p.values().iter().map(|&v| Some($f(v))));
+                } else {
+                    out.extend(p.iter().map(|v| v.map($f)));
+                }
+                true
+            }
+        };
+    }
+    let ty = arrays.first().map(|a| a.data_type().clone());
+    let same = arrays.iter().all(|a| Some(a.data_type()) == ty.as_ref());
+    let fast = if !same {
+        None
+    } else {
+        match ty {
+            Some(DataType::Float64) => typed!(F64, f64, prim!(Float64Type, |v: f64| v)),
+            Some(DataType::Float32) => typed!(F64, f64, prim!(Float32Type, f64::from)),
+            Some(DataType::Int64) => typed!(I64, i64, prim!(Int64Type, |v: i64| v)),
+            Some(DataType::Int32) => typed!(I64, i64, prim!(Int32Type, i64::from)),
+            Some(DataType::Int16) => typed!(I64, i64, prim!(Int16Type, i64::from)),
+            Some(DataType::Int8) => typed!(I64, i64, prim!(Int8Type, i64::from)),
+            Some(DataType::UInt32) => typed!(I64, i64, prim!(UInt32Type, i64::from)),
+            Some(DataType::UInt16) => typed!(I64, i64, prim!(UInt16Type, i64::from)),
+            Some(DataType::UInt8) => typed!(I64, i64, prim!(UInt8Type, i64::from)),
+            Some(DataType::Boolean) => typed!(
+                Bool,
+                bool,
+                |arr: &dyn Array, out: &mut Vec<Option<bool>>| {
+                    out.extend(arr.as_boolean().iter());
+                    true
+                }
+            ),
+            Some(DataType::Timestamp(_, _)) => {
+                typed!(Timestamp, muninn_core::Timestamp, |arr: &dyn Array,
+                                                           out: &mut Vec<
+                    Option<muninn_core::Timestamp>,
+                >| {
+                    for i in 0..arr.len() {
+                        match arrow_value(arr, i, assume_utc) {
+                            InputValue::Null => out.push(None),
+                            InputValue::Value(Value::Timestamp(t)) => out.push(Some(t)),
+                            _ => return false,
+                        }
+                    }
+                    true
+                })
+            }
+            _ => None,
+        }
+    };
+    fast.unwrap_or_else(|| {
+        let mut out = Vec::with_capacity(n);
+        for arr in arrays {
+            let c = Col::new(*arr);
+            out.extend((0..arr.len()).map(|i| c.value(i, assume_utc)));
+        }
+        ValueColumn::Inputs(out)
+    })
+}
+
+/// Write rows from Arrow record batches in columnar form: the same rows as
+/// [`rows_from_arrow`] ([`WriteColumns::row`]), the same structural errors in the same
+/// order, without building a map per row. `None` if the batches do not share one
+/// schema (then [`rows_from_arrow`] handles them).
+pub(crate) fn columns_from_arrow(
+    batches: &[RecordBatch],
+    assume_utc: bool,
+) -> Result<Option<WriteColumns>> {
+    let Some(first) = batches.first() else {
+        return Ok(Some(WriteColumns::default()));
+    };
+    let schema = first.schema();
+    if batches
+        .iter()
+        .any(|b| b.schema().fields() != schema.fields())
+    {
+        return Ok(None);
+    }
+    let mut cols = WriteColumns::default();
+    let mut codes: HashMap<String, u32> = HashMap::new();
+    let mut deleted: Option<Vec<bool>> = None;
+    for b in batches {
+        // Structure, in the order of `rows_from_arrow`: the series column, then the
+        // deleted column's type, then its nulls.
+        let what = "write data";
+        let col = b
+            .column_by_name("series")
+            .ok_or_else(|| invalid(format!("{what} needs a `series` column")))?;
+        let c = Col::new(col.as_ref());
+        cols.series_codes.reserve(b.num_rows());
+        for i in 0..b.num_rows() {
+            let name = c.at(i).and_then(|(a, j)| arrow_str(a, j));
+            let Some(name) = name else {
+                return Err(if col.is_null(i) {
+                    invalid(format!("{what} row {i}: series is null"))
+                } else {
+                    invalid(format!(
+                        "{what}: series must be a string column, not {}",
+                        col.data_type()
+                    ))
+                });
+            };
+            let code = match codes.get(name) {
+                Some(&k) => k,
+                None => {
+                    let k = u32::try_from(cols.series_names.len())
+                        .map_err(|_| invalid("too many series names in one batch"))?;
+                    codes.insert(name.to_owned(), k);
+                    cols.series_names.push(name.to_owned());
+                    k
+                }
+            };
+            cols.series_codes.push(code);
+        }
+        if let Some(d) = b.column_by_name("deleted") {
+            if d.data_type() != &DataType::Boolean {
+                return Err(invalid(format!(
+                    "the deleted column must be bool, not {}",
+                    d.data_type()
+                )));
+            }
+            if let Some(i) = (0..d.len()).find(|&i| d.is_null(i)) {
+                return Err(invalid(format!(
+                    "row {i}: deleted is null (it must be true or false)"
+                )));
+            }
+            let out = deleted.get_or_insert_with(Vec::new);
+            out.extend(d.as_boolean().values().iter());
+        }
+        cols.len += b.num_rows();
+    }
+    cols.deleted = deleted;
+    cols.value_time = time_column(batches, "value_time", assume_utc);
+    cols.received_time = time_column(batches, "received_time", assume_utc);
+    cols.published_time = time_column(batches, "published_time", assume_utc);
+    for (k, f) in schema.fields().iter().enumerate() {
+        if FIXED_ROW_KEYS.contains(&f.name().as_str()) {
+            continue;
+        }
+        let arrays: Vec<&dyn Array> = batches.iter().map(|b| b.column(k).as_ref()).collect();
+        cols.values
+            .push((f.name().clone(), value_column(&arrays, assume_utc)));
+    }
+    Ok(Some(cols))
+}
+
+fn arrow_str(arr: &dyn Array, i: usize) -> Option<&str> {
+    if arr.is_null(i) {
+        return None;
+    }
+    match arr.data_type() {
+        DataType::Utf8 => Some(arr.as_string::<i32>().value(i)),
+        DataType::LargeUtf8 => Some(arr.as_string::<i64>().value(i)),
+        DataType::Utf8View => Some(arr.as_string_view().value(i)),
+        _ => None,
+    }
 }
 
 /// An `asof_join` left row before its times are resolved.

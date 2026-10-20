@@ -213,6 +213,11 @@ impl WriteRow {
 pub struct WriteBatch {
     /// Rows, in input order (validation order and seq order follow it).
     pub rows: Vec<WriteRow>,
+    /// The same rows in columnar form instead (what the Python binding builds from Arrow
+    /// input): if present, the batch's rows are `rows` followed by these. Validation and
+    /// results are exactly those of the equivalent [`WriteRow`]s
+    /// ([`WriteColumns::row`]); only the cost differs.
+    pub columns: Option<Arc<WriteColumns>>,
     /// Optional whole-batch idempotency key (SPEC §4.4); an empty string is
     /// `invalid_argument`.
     pub batch_id: Option<String>,
@@ -226,8 +231,147 @@ impl WriteBatch {
     pub fn new(clock: impl Into<TimeInput>, rows: Vec<WriteRow>) -> WriteBatch {
         WriteBatch {
             rows,
+            columns: None,
             batch_id: None,
             clock: clock.into(),
+        }
+    }
+
+    /// A batch of columnar rows without batch id.
+    pub fn from_columns(clock: impl Into<TimeInput>, columns: WriteColumns) -> WriteBatch {
+        WriteBatch {
+            rows: Vec::new(),
+            columns: Some(Arc::new(columns)),
+            batch_id: None,
+            clock: clock.into(),
+        }
+    }
+
+    /// Number of rows.
+    pub fn len(&self) -> usize {
+        self.rows.len() + self.columns.as_ref().map_or(0, |c| c.len)
+    }
+
+    /// No rows?
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Every row as a [`WriteRow`] (materialises the columnar ones).
+    pub fn all_rows(&self) -> Vec<WriteRow> {
+        let mut out = self.rows.clone();
+        if let Some(c) = &self.columns {
+            out.extend((0..c.len).map(|i| c.row(i)));
+        }
+        out
+    }
+}
+
+/// A time column of [`WriteColumns`].
+#[derive(Clone, Debug, PartialEq)]
+pub enum TimeColumn {
+    /// Microseconds since the epoch (possibly out of range); `None` = null.
+    Micros(Vec<Option<i64>>),
+    /// Loose per-row inputs (text, invalid); `None` = null.
+    Inputs(Vec<Option<TimeInput>>),
+}
+
+impl TimeColumn {
+    /// Row `i` as a loose input (`None` = null).
+    pub fn input(&self, i: usize) -> Option<TimeInput> {
+        match self {
+            TimeColumn::Micros(v) => v[i].map(TimeInput::Micros),
+            TimeColumn::Inputs(v) => v[i].clone(),
+        }
+    }
+}
+
+/// A value column of [`WriteColumns`]. A null cell is the same as an absent value (the
+/// row has no entry for the column).
+#[derive(Clone, Debug, PartialEq)]
+pub enum ValueColumn {
+    /// `f64` values (`InputValue::Value(Value::F64)`).
+    F64(Vec<Option<f64>>),
+    /// `i64` values (`InputValue::Value(Value::I64)`).
+    I64(Vec<Option<i64>>),
+    /// `bool` values (`InputValue::Value(Value::Bool)`).
+    Bool(Vec<Option<bool>>),
+    /// Valid timestamps (`InputValue::Value(Value::Timestamp)`).
+    Timestamp(Vec<Option<Timestamp>>),
+    /// Anything else, as loose inputs; [`InputValue::Null`] = null.
+    Inputs(Vec<InputValue>),
+}
+
+impl ValueColumn {
+    /// Row `i` as a loose input ([`InputValue::Null`] = null).
+    pub fn input(&self, i: usize) -> InputValue {
+        match self {
+            ValueColumn::F64(v) => v[i].map(Value::F64).into(),
+            ValueColumn::I64(v) => v[i].map(Value::I64).into(),
+            ValueColumn::Bool(v) => v[i].map(Value::Bool).into(),
+            ValueColumn::Timestamp(v) => v[i].map(Value::Timestamp).into(),
+            ValueColumn::Inputs(v) => v[i].clone(),
+        }
+    }
+
+    /// Is row `i` null?
+    pub fn is_null(&self, i: usize) -> bool {
+        match self {
+            ValueColumn::F64(v) => v[i].is_none(),
+            ValueColumn::I64(v) => v[i].is_none(),
+            ValueColumn::Bool(v) => v[i].is_none(),
+            ValueColumn::Timestamp(v) => v[i].is_none(),
+            ValueColumn::Inputs(v) => v[i] == InputValue::Null,
+        }
+    }
+}
+
+/// Write rows in columnar form (see [`WriteBatch::columns`]): row `i` is the
+/// [`WriteRow`] [`WriteColumns::row`]`(i)`. Every column has `len` entries.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct WriteColumns {
+    /// Number of rows.
+    pub len: usize,
+    /// Series names, dictionary-encoded: row `i` names `series_names[series_codes[i]]`.
+    pub series_names: Vec<String>,
+    /// See `series_names`.
+    pub series_codes: Vec<u32>,
+    /// `value_time`; `None` = absent (every row missing it).
+    pub value_time: Option<TimeColumn>,
+    /// `received_time`; `None` = absent.
+    pub received_time: Option<TimeColumn>,
+    /// `published_time`; `None` = absent (unknown in every row).
+    pub published_time: Option<TimeColumn>,
+    /// `deleted`; `None` = absent (no tombstones).
+    pub deleted: Option<Vec<bool>>,
+    /// Value columns by name (names distinct); a null cell is an absent value.
+    pub values: Vec<(String, ValueColumn)>,
+}
+
+impl WriteColumns {
+    /// Row `i` as a [`WriteRow`].
+    pub fn row(&self, i: usize) -> WriteRow {
+        let missing = || TimeInput::Invalid("missing".into());
+        WriteRow {
+            series: self.series_names[self.series_codes[i] as usize].clone(),
+            value_time: self
+                .value_time
+                .as_ref()
+                .and_then(|c| c.input(i))
+                .unwrap_or_else(missing),
+            published_time: self.published_time.as_ref().and_then(|c| c.input(i)),
+            received_time: self
+                .received_time
+                .as_ref()
+                .and_then(|c| c.input(i))
+                .unwrap_or_else(missing),
+            deleted: self.deleted.as_ref().is_some_and(|d| d[i]),
+            values: self
+                .values
+                .iter()
+                .filter(|(_, c)| !c.is_null(i))
+                .map(|(n, c)| (n.clone(), c.input(i)))
+                .collect(),
         }
     }
 }
