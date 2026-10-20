@@ -1203,7 +1203,7 @@ impl<S: Store> Core<S> {
                 r => st = r?,
             }
         }
-        report.log_deleted = self.gc_log(&st, now, grace)?;
+        report.log_deleted = self.gc_log(&mut w, st, now, grace)?;
         Ok(report)
     }
 
@@ -1213,7 +1213,16 @@ impl<S: Store> Core<S> {
     /// truncation marker, the others deleted) and checkpoints below `T` — once this
     /// engine has seen them truncatable for the grace period. The newest checkpoint must
     /// verify first; the second-newest one stays as a fallback.
-    fn gc_log(&self, st: &State, now: i64, grace: i64) -> Result<Vec<Key>> {
+    ///
+    /// If the entries after the second-newest checkpoint (all of them, if there is only
+    /// one) hold more bytes than the newest checkpoint, GC *re-anchors*: it commits an
+    /// empty `gc` entry and checkpoints it too, so that the two newest checkpoints are
+    /// the old head and the new one and everything before the old head can go. Without
+    /// that, a load through the memtable (rows inline in the entries) followed by a flush
+    /// kept every entry it wrote until two later checkpoints existed (bench: 125 MB of
+    /// log for 8 MB of segments). The cost is one checkpoint, paid only when it removes
+    /// more than it writes; a second GC finds the tail small and does nothing.
+    fn gc_log(&self, w: &mut Writer, st: Arc<State>, now: i64, grace: i64) -> Result<Vec<Key>> {
         let store = &self.shared.store;
         let listed = store
             .list("log/")
@@ -1229,8 +1238,41 @@ impl<S: Store> Core<S> {
             .filter_map(|k| log::parse_entry_key(k.as_str()))
             .collect();
         entries.sort_unstable();
-        if st.version > 0 && cks.last() != Some(&st.version) && self.write_checkpoint(st).is_ok() {
+        if st.version > 0 && cks.last() != Some(&st.version) && self.write_checkpoint(&st).is_ok() {
             cks.push(st.version);
+        }
+        let Some(&verified) = cks.last() else {
+            lock(&self.log_truncatable_since).clear();
+            return Ok(Vec::new());
+        };
+        let Some((_, newest_bytes)) = checkpoint_state(&self.shared, verified)? else {
+            lock(&self.log_truncatable_since).clear();
+            return Ok(Vec::new());
+        };
+        if verified == st.version {
+            let anchor = cks.len().checked_sub(2).map_or(0, |i| cks[i]);
+            let mut tail = 0u64;
+            for &v in entries.iter().filter(|&&v| v > anchor && v <= st.version) {
+                match store.head(&log::entry_key(v)) {
+                    Ok(m) => tail += m.size,
+                    Err(e) if e.kind() == StoreErrorKind::NotFound => {}
+                    Err(e) => return Err(store_err("reading the log", e)),
+                }
+            }
+            if tail > newest_bytes {
+                let entry = self.new_entry(&st, "gc");
+                match self.commit(w, &st, entry) {
+                    // Losing the race only delays the truncation.
+                    Err(e) if e.kind() == ErrorKind::Conflict => {}
+                    Err(e) => return Err(e),
+                    Ok(next) => {
+                        entries.push(next.version);
+                        if self.write_checkpoint(&next).is_ok() {
+                            cks.push(next.version);
+                        }
+                    }
+                }
+            }
         }
         let mut since = lock(&self.log_truncatable_since);
         let (Some(&newest), Some(&keep_from)) =
@@ -1239,7 +1281,7 @@ impl<S: Store> Core<S> {
             since.clear();
             return Ok(Vec::new());
         };
-        if checkpoint_state(&self.shared, newest)?.is_none() {
+        if newest != verified && checkpoint_state(&self.shared, newest)?.is_none() {
             since.clear();
             return Ok(Vec::new());
         }

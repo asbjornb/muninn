@@ -55,3 +55,17 @@ longer exist.
 - `create_series` one at a time is still one commit each and copies the catalog per call
   (snapshots share it); bulk loads should use the batch API (Python
   `create_series_batch`, CLI `series import`, and `restore` batches runs of series).
+
+## Amendment (2026-10-20): GC re-anchors when the tail is large
+With log format 3 (0009) the entries carry rows. A load through the memtable followed by
+flush + GC wrote one checkpoint (GC's, of the head) and so truncated nothing: "below the
+second-newest checkpoint" needs two. The bench measured 125 MB of log for 8 MB of segments
+(small forecasts via `write_many`). GC now *re-anchors*: after checkpointing the head, if
+the entries after the second-newest checkpoint (all of them when there is only one) hold
+more bytes than the head checkpoint, it commits an empty `gc` entry and checkpoints that
+too. The two newest checkpoints are then the old head and the new one, and everything
+below the old head is truncatable (after the grace period, as before). The extra
+checkpoint is written only when it lets GC remove more than it costs, so a second GC
+finds a short tail and does nothing; the format is unchanged (an empty `gc` entry was
+always valid). Regression test: `log_is_small_after_a_write_many_load_flush_and_gc`
+(`crates/muninn-engine/tests/log_gc.rs`).

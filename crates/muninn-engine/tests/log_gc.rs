@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 
 use common::*;
 use muninn_core::api::*;
-use muninn_core::{ColumnDef, ColumnType, Database, ErrorKind, ModelDb, Value};
+use muninn_core::{ColumnDef, ColumnType, Database, ErrorKind, ModelDb, Timestamp, Value};
 use muninn_engine::log::{self, LogEntry};
 use muninn_engine::{Engine, EngineOptions};
 use muninn_store::{MemoryStore, Store};
@@ -449,4 +449,104 @@ proptest! {
         prop_assert_eq!(e.catalog_log().unwrap(), m.catalog_log());
         prop_assert_eq!(fingerprint(&e), fingerprint(&m));
     }
+}
+
+// ---------------------------------------------------------------------------------------
+// Log size after a memtable load
+// ---------------------------------------------------------------------------------------
+
+fn bytes_under(store: &MemoryStore, prefix: &str) -> u64 {
+    store
+        .list(prefix)
+        .unwrap()
+        .iter()
+        .map(|k| store.head(k).unwrap().size)
+        .sum()
+}
+
+/// The bench regression (bench/results README, Ingest finding 5): a load through the
+/// memtable (`write_many` groups, rows inline in the entries) followed by flush, compact
+/// and GC left every entry in the log — 125 MB of log for 8 MB of segments — because GC
+/// truncates only below the second-newest checkpoint and the load wrote at most one.
+/// After flush + GC the log must be a small fraction of the data, reopen must give the
+/// same state, and the older checkpoint must still be a usable fallback.
+#[test]
+fn log_is_small_after_a_write_many_load_flush_and_gc() {
+    let store: Mem = Arc::new(MemoryStore::new());
+    let o = EngineOptions {
+        gc_grace: std::time::Duration::ZERO,
+        background_flush: false,
+        ..EngineOptions::default()
+    };
+    let e = Engine::open(Arc::clone(&store), o.clone()).unwrap();
+    setup(&e);
+    // 30 groups of 16 forecast-like batches, one every 15 minutes (5 days): each 2 series
+    // x the next day's 96 quarter-hours, received at its issue time. ~92k rows, all
+    // inline, in fewer entries than `checkpoint_interval`.
+    const QUARTER: i64 = HOUR / 4;
+    let at = |us: i64| Timestamp::from_micros(BASE + us).unwrap();
+    let mut k = 0i64;
+    for _ in 0..30 {
+        let batches: Vec<WriteBatch> = (0..16)
+            .map(|_| {
+                k += 1;
+                let issued = k * QUARTER;
+                let day = (issued / (24 * HOUR) + 1) * 24 * HOUR;
+                let rows = ["a", "b"]
+                    .iter()
+                    .flat_map(|s| {
+                        (0..96).map(move |j| {
+                            // Incompressible-ish values, as real forecasts are.
+                            let x = ((k * 1_000 + j) as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+                            let v = (x >> 11) as f64 / (1u64 << 53) as f64 * 100.0;
+                            WriteRow::new(*s, at(day + j * QUARTER), at(issued))
+                                .value("value", Value::F64(v))
+                        })
+                    })
+                    .collect();
+                WriteBatch::new(at(issued), rows)
+            })
+            .collect();
+        for r in e.write_many(&batches) {
+            r.unwrap();
+        }
+    }
+    assert!(e.memtable().rows > 0);
+    e.flush().unwrap();
+    e.compact_all().unwrap();
+    e.gc().unwrap();
+    let log_bytes = bytes_under(&store, "log/");
+    let seg_bytes = bytes_under(&store, "segments/");
+    assert!(seg_bytes > 0);
+    let listing: Vec<(String, u64)> = store
+        .list("log/")
+        .unwrap()
+        .iter()
+        .map(|k| (k.as_str().to_owned(), store.head(k).unwrap().size))
+        .collect();
+    assert!(
+        log_bytes * 20 < seg_bytes,
+        "log {log_bytes} bytes for {seg_bytes} bytes of segments: {listing:?}"
+    );
+    // A second GC changes nothing (no new entries or checkpoints every time).
+    let version = e.version();
+    e.gc().unwrap();
+    assert_eq!(e.version(), version);
+    assert_eq!(bytes_under(&store, "log/"), log_bytes);
+    // Reopen, also from the older checkpoint alone.
+    let fp = fingerprint(&e);
+    assert_eq!(
+        fingerprint(&Engine::open(Arc::clone(&store), o.clone()).unwrap()),
+        fp
+    );
+    let cks = checkpoints(&store);
+    assert_eq!(cks.len(), 2, "{cks:?}");
+    store
+        .put(&log::checkpoint_key(cks[1]), b"{\"format\": 3, \"vers")
+        .unwrap();
+    store.delete(&log::hint_key()).unwrap();
+    assert_eq!(
+        fingerprint(&Engine::open(Arc::clone(&store), o).unwrap()),
+        fp
+    );
 }
