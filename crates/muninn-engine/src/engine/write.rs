@@ -24,7 +24,7 @@ use std::time::Instant;
 
 use muninn_core::api::{WriteBatch, WriteResult};
 use muninn_core::catalog::{BatchPlan, batch_system_time, plan_dedup};
-use muninn_core::types::{SeriesId, TableDef, Version};
+use muninn_core::types::{ContentIndex, SeriesId, TableDef, Version};
 use muninn_core::{Error, ErrorKind, Partitioning, Result, TimeRange, Timestamp};
 use muninn_format::{Partition, WriteOptions, write_segment};
 use muninn_store::Store;
@@ -34,6 +34,30 @@ use crate::fxhash::{FxHashMap, FxHashSet};
 use crate::log::inline_key;
 use crate::segio::is_missing_segment;
 use crate::state::{InlineData, SegmentRef, State};
+
+/// Stored versions a group's rows could duplicate (SPEC §4.3), indexed by content so that
+/// a lookup costs O(1) however many versions a point has.
+#[derive(Default)]
+pub(crate) struct StoredVersions {
+    items: Vec<Version>,
+    index: ContentIndex,
+}
+
+impl StoredVersions {
+    pub(crate) fn push(&mut self, v: Version) {
+        self.index.push(v.content_hash());
+        self.items.push(v);
+    }
+
+    fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
+    /// Is a stored version content-identical to `v` (whose content hash is `hash`)?
+    fn contains(&self, v: &Version, hash: u64) -> bool {
+        !self.is_empty() && self.index.find(&self.items, v, hash).is_some()
+    }
+}
 
 /// A validated batch waiting for a commit.
 pub(crate) struct Request {
@@ -301,12 +325,16 @@ impl<S: Store> Core<S> {
         let mut kept: Vec<Version> = Vec::new();
         // Ranges of `kept` holding the rows of batches too large to keep inline.
         let mut bulk: Vec<(u32, u32)> = Vec::new();
-        // Ranges of `kept` holding rows of each series. Only a series that an earlier
-        // batch of the group kept rows of can make a row an in-group duplicate; batches
-        // of different series (the usual case) never build a per-point index.
-        let mut series_runs: FxHashMap<SeriesId, Vec<(u32, u32)>> = FxHashMap::default();
+        // The rows kept by earlier batches of the group, by content (only built when a
+        // later batch could consult it), and the series they belong to: a batch none of
+        // whose series an earlier batch kept rows of (the usual case) cannot hold an
+        // in-group duplicate and skips the lookups.
+        let mut group_index = ContentIndex::default();
+        let mut group_series: FxHashSet<SeriesId> = FxHashSet::default();
+        let mut remaining = group.len();
         let mut outcomes: Vec<(u64, Outcome)> = Vec::with_capacity(group.len());
         for req in group {
+            remaining -= 1;
             if let Some(id) = &req.batch_id
                 && (st.batch_ids.contains(id) || taken.contains(id))
             {
@@ -335,41 +363,27 @@ impl<S: Store> Core<S> {
                     continue;
                 }
             };
-            let mut earlier: FxHashMap<(SeriesId, Timestamp), Vec<u32>> = FxHashMap::default();
-            if !series_runs.is_empty() {
-                let mut done: FxHashSet<SeriesId> = FxHashSet::default();
+            let check_group = !group_series.is_empty() && {
                 let mut prev = None;
-                for v in &req.rows {
-                    if prev == Some(v.series) || !done.insert(v.series) {
-                        continue;
-                    }
+                req.rows.iter().any(|v| {
+                    let new = prev != Some(v.series);
                     prev = Some(v.series);
-                    for &(a, b) in series_runs.get(&v.series).into_iter().flatten() {
-                        for i in a..b {
-                            let k = &kept[i as usize];
-                            earlier.entry((k.series, k.value_time)).or_default().push(i);
-                        }
-                    }
-                }
-            }
+                    new && group_series.contains(&v.series)
+                })
+            };
             let mut uses_group = false;
             let plan = plan_dedup(req.rows, system_time, next_seq, |v| {
-                let point = (v.series, v.value_time);
-                if !stored.is_empty()
-                    && stored
-                        .get(&point)
-                        .is_some_and(|old| old.iter().any(|o| o.content_identical(v)))
-                {
+                if stored.is_empty() && !check_group {
+                    return Ok(false);
+                }
+                let hash = v.content_hash();
+                if stored.contains(v, hash) {
                     return Ok(true);
                 }
-                let in_group = !earlier.is_empty()
-                    && earlier.get(&point).is_some_and(|ix| {
-                        ix.iter().any(|&i| kept[i as usize].content_identical(v))
-                    });
+                let in_group = check_group && group_index.find(&kept, v, hash).is_some();
                 uses_group |= in_group;
                 Ok(in_group)
             });
-            drop(earlier);
             let plan = match plan {
                 Ok(p) => p,
                 Err(e) => {
@@ -401,18 +415,31 @@ impl<S: Store> Core<S> {
                 let a = kept.len() as u32;
                 bulk.push((a, a + plan.kept.len() as u32));
             }
-            for v in plan.kept {
-                let i = kept.len() as u32;
-                let runs = series_runs.entry(v.series).or_default();
-                match runs.last_mut() {
-                    Some(r) if r.1 == i => r.1 = i + 1,
-                    _ => runs.push((i, i + 1)),
+            if remaining > 0 {
+                // Later batches of the group may duplicate these rows.
+                let mut prev = None;
+                for v in &plan.kept {
+                    if prev != Some(v.series) {
+                        prev = Some(v.series);
+                        group_series.insert(v.series);
+                    }
                 }
-                kept.push(v);
+                // Index every kept row so far (`kept` and the index stay aligned).
+                for v in &kept[group_index.len()..] {
+                    group_index.push(v.content_hash());
+                }
+                for v in &plan.kept {
+                    group_index.push(v.content_hash());
+                }
+            }
+            if kept.is_empty() {
+                kept = plan.kept; // no copy (a bulk write is one big batch)
+            } else {
+                kept.extend(plan.kept);
             }
             outcomes.push((req.id, Outcome::IfCommitted(result)));
         }
-        drop(series_runs);
+        drop(group_index);
 
         let committed = if kept.is_empty() && batch_ids.is_empty() {
             Ok(())
@@ -435,13 +462,9 @@ impl<S: Store> Core<S> {
     }
 
     /// The stored versions content-identical candidates of `group` could duplicate,
-    /// keyed by point: only rows whose received time the dedup index cannot rule out are
+    /// indexed by content: only rows whose received time the dedup index cannot rule out are
     /// looked up (re-sends, out-of-order backfills).
-    fn stored_duplicates(
-        &self,
-        st: &State,
-        group: &[Request],
-    ) -> Result<FxHashMap<(SeriesId, Timestamp), Vec<Version>>> {
+    fn stored_duplicates(&self, st: &State, group: &[Request]) -> Result<StoredVersions> {
         // A stored version content-identical to a row has the row's received time and
         // lies in the row's partition. So a row whose received time is outside the
         // received-time bounds of its partition's live segments (log statistics, no I/O)
@@ -481,7 +504,7 @@ impl<S: Store> Core<S> {
             }
         }
         if maybe.is_empty() {
-            return Ok(FxHashMap::default());
+            return Ok(StoredVersions::default());
         }
         let mut dedup = lock(&self.dedup);
         dedup.prepare(&self.shared, st, &touched)?;
@@ -501,7 +524,7 @@ impl<S: Store> Core<S> {
         }
         drop(dedup);
         if points.is_empty() {
-            return Ok(FxHashMap::default());
+            return Ok(StoredVersions::default());
         }
         self.load_points(st, &points, &rts)
     }
@@ -525,21 +548,17 @@ impl<S: Store> Core<S> {
         let mut files: Groups<'_> = BTreeMap::new();
         let mut inline_rows = 0;
         let mut placer = Placer::new(st);
-        let mut last_key: Option<(bool, &str, Partition)> = None;
-        let mut run: Vec<Version> = Vec::new();
         let mut bulk_at = bulk.iter().peekable();
-        fn flush_run<'a>(
-            key: Option<(bool, &'a str, Partition)>,
-            run: &mut Vec<Version>,
-            inline: &mut Groups<'a>,
-            files: &mut Groups<'a>,
-        ) {
-            if let Some((is_bulk, t, p)) = key {
-                let to = if is_bulk { files } else { inline };
-                to.entry((t, p)).or_default().append(run);
-            }
-        }
-        for (i, v) in kept.into_iter().enumerate() {
+        // Two passes, so that every group's vector is allocated once at its final size
+        // (a bulk write moves a million versions; growing the vectors copied them over
+        // and over): the group of each row, then the moves.
+        type Key<'a> = (bool, &'a str, Partition);
+        let mut keys: Vec<Key<'_>> = Vec::new();
+        let mut index: FxHashMap<Key<'_>, u32> = FxHashMap::default();
+        let mut counts: Vec<usize> = Vec::new();
+        let mut of_row: Vec<u32> = Vec::with_capacity(kept.len());
+        let mut prev: Option<(Key<'_>, u32)> = None;
+        for (i, v) in kept.iter().enumerate() {
             let i = i as u32;
             while bulk_at.peek().is_some_and(|r| r.1 <= i) {
                 bulk_at.next();
@@ -548,15 +567,28 @@ impl<S: Store> Core<S> {
             if !is_bulk {
                 inline_rows += 1;
             }
-            let (t, p) = placer.place(&v)?;
+            let (t, p) = placer.place(v)?;
             let key = (is_bulk, t.name.as_str(), p);
-            if last_key != Some(key) {
-                flush_run(last_key, &mut run, &mut inline, &mut files);
-                last_key = Some(key);
-            }
-            run.push(v);
+            let k = match prev {
+                Some((lk, k)) if lk == key => k,
+                _ => *index.entry(key).or_insert_with(|| {
+                    keys.push(key);
+                    counts.push(0);
+                    (keys.len() - 1) as u32
+                }),
+            };
+            prev = Some((key, k));
+            counts[k as usize] += 1;
+            of_row.push(k);
         }
-        flush_run(last_key, &mut run, &mut inline, &mut files);
+        let mut groups: Vec<Vec<Version>> = counts.iter().map(|&n| Vec::with_capacity(n)).collect();
+        for (v, k) in kept.into_iter().zip(of_row) {
+            groups[k as usize].push(v);
+        }
+        for ((is_bulk, t, p), vs) in keys.into_iter().zip(groups) {
+            let to = if is_bulk { &mut files } else { &mut inline };
+            to.insert((t, p), vs);
+        }
         let mut entry = self.new_entry(st, "write");
         entry.batch_ids = batch_ids;
         entry.next_seq = next_seq;

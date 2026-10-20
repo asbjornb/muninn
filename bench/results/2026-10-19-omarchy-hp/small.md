@@ -21,39 +21,39 @@ Two modes, so that ingest compares like with like (details, per-write latency an
 * **per-batch**: one commit per original write batch in arrival order (Muninn `write`, DuckDB `BEGIN/INSERT/COMMIT` on a file, ClickHouse one `INSERT` per batch; `clickhouse` does not fsync inserts by default, `clickhouse-fsync` does);
 * **bulk**: as few writes as possible (DuckDB/ClickHouse one statement, Muninn 1M-row writes; `muninn-100k`: 100k-row writes).
 
-* **Muninn builds**: `(pre-0009)` = before the fast write path (one segment file per touched partition plus a log entry per write, ~4-25 fsyncs); `(post-0009)` = ADR 0009 (rows inline in the commit entry, group commit, memtable, background flush; ~2 fsyncs per commit). Per-batch variants of the post-0009 build: `muninn-wm64` submits 64 original batches per `write_many` call (one durable commit per 64 batches, each batch still its own transaction and system_time), `muninn-8p` has 8 producer threads calling `write` (the engine groups concurrent writes). Neither has a competitor counterpart here: DuckDB and ClickHouse were measured with one client committing one batch at a time.
+* **Muninn builds**: `(pre-0009)` = before the fast write path (one segment file per touched partition plus a log entry per write, ~4-25 fsyncs); `(post-0009)` = ADR 0009 (rows inline in the commit entry, group commit, memtable, background flush; ~2 fsyncs per commit); `(post-0009 rerun)` = the same build re-measured on 2026-10-20 in the session of the next one, for a same-time comparison; `(post-fixes)` = post-0009 plus the three write path fixes of 2026-10-20 (GC re-anchors log truncation after a memtable load, ADR 0007 amendment; linear in-batch dedup; columnar Arrow input and validation). Per-batch variants: `muninn-wm64` submits 64 original batches per `write_many` call (one durable commit per 64 batches, each batch still its own transaction and system_time), `muninn-8p` has 8 producer threads calling `write` (the engine groups concurrent writes). Neither has a competitor counterpart here: DuckDB and ClickHouse were measured with one client committing one batch at a time.
 
 Cells: wall seconds incl. finalisation (rows/s). *prefix*: only the first N batches, the same N for every system.
 
 Storage: **btrfs**
 
-| dataset | mode | muninn (pre-0009) | muninn (post-0009) | muninn-wm64 (post-0009) | muninn-8p (post-0009) | muninn-100k (pre-0009) | muninn-100k (post-0009) | duckdb-native | clickhouse | clickhouse-fsync |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| da_prices | per-batch | 69 (6,586) | 39 (12k) | 1.75 (258k) | 15 (30k) | - | - | 38 (12k) | 17 (27k) | 150 (3,014) |
-| da_prices | bulk | 0.87 (521k) | 0.50 (904k) | - | - | 0.87 (523k) | 0.63 (719k) | 0.18 (2.50M) | 0.15 (2.96M) | 0.19 (2.34M) |
-| forecasts | per-batch | 188 (15k) | 27 (102k) | 3.92 (699k) | 3.59 (763k) | - | - | 11 (240k) | 8.29 (331k) | 57 (48k) |
-| forecasts | bulk | 8.93 (307k) | 6.26 (438k) | - | - | 4.43 (619k) | 2.89 (948k) | 0.67 (4.07M) | 1.35 (2.03M) | 1.33 (2.07M) |
-| settlement | per-batch | 142 (6,737) | 70 (14k) | 3.02 (317k) | 5.54 (173k) | - | - | 55 (18k) | 23 (41k) | 209 (4,592) |
-| settlement | bulk | 1.88 (510k) | 0.89 (1.08M) | - | - | 1.37 (702k) | 1.00 (959k) | 0.36 (2.63M) | 0.30 (3.17M) | 0.34 (2.86M) |
-| sparse | per-batch (prefix 10,000 of 434,191) | 111 (90.0) | 59 (170) | 0.79 (13k) | 9.40 (1,063) | - | - | 30 (331) | 20 (492) | 203 (49.0) |
-| sparse | bulk | 0.98 (445k) | 0.78 (554k) | - | - | 1.05 (412k) | 1.15 (379k) | 0.21 (2.03M) | 0.40 (1.10M) | 0.42 (1.04M) |
-| backfill | per-batch | 3.08 (150k) | 3.43 (134k) | 1.26 (365k) | 0.83 (556k) | - | - | 4.02 (115k) | 1.52 (302k) | 6.98 (66k) |
-| backfill | bulk | 0.58 (791k) | 0.33 (1.39M) | - | - | 0.72 (643k) | 0.53 (865k) | 0.16 (2.91M) | 0.21 (2.19M) | 0.22 (2.10M) |
+| dataset | mode | muninn (pre-0009) | muninn (post-0009) | muninn (post-0009 rerun) | muninn (post-fixes) | muninn-wm64 (post-0009) | muninn-wm64 (post-0009 rerun) | muninn-wm64 (post-fixes) | muninn-8p (post-0009) | muninn-100k (pre-0009) | muninn-100k (post-0009) | duckdb-native | clickhouse | clickhouse-fsync |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| da_prices | per-batch | 69 (6,586) | 39 (12k) | 37 (12k) | 32 (14k) | 1.75 (258k) | 1.76 (257k) | 1.61 (281k) | 15 (30k) | - | - | 38 (12k) | 17 (27k) | 150 (3,014) |
+| da_prices | bulk | 0.87 (521k) | 0.50 (904k) | - | - | - | - | - | - | 0.87 (523k) | 0.63 (719k) | 0.18 (2.50M) | 0.15 (2.96M) | 0.19 (2.34M) |
+| forecasts | per-batch | 188 (15k) | 27 (102k) | 9.42 (291k) | 8.43 (325k) | 3.92 (699k) | 3.65 (751k) | 1.48 (1.85M) | 3.59 (763k) | - | - | 11 (240k) | 8.29 (331k) | 57 (48k) |
+| forecasts | bulk | 8.93 (307k) | 6.26 (438k) | - | - | - | - | - | - | 4.43 (619k) | 2.89 (948k) | 0.67 (4.07M) | 1.35 (2.03M) | 1.33 (2.07M) |
+| settlement | per-batch | 142 (6,737) | 70 (14k) | - | - | 3.02 (317k) | - | - | 5.54 (173k) | - | - | 55 (18k) | 23 (41k) | 209 (4,592) |
+| settlement | bulk | 1.88 (510k) | 0.89 (1.08M) | - | - | - | - | - | - | 1.37 (702k) | 1.00 (959k) | 0.36 (2.63M) | 0.30 (3.17M) | 0.34 (2.86M) |
+| sparse | per-batch (prefix 10,000 of 434,191) | 111 (90.0) | 59 (170) | - | - | 0.79 (13k) | - | - | 9.40 (1,063) | - | - | 30 (331) | 20 (492) | 203 (49.0) |
+| sparse | bulk | 0.98 (445k) | 0.78 (554k) | - | - | - | - | - | - | 1.05 (412k) | 1.15 (379k) | 0.21 (2.03M) | 0.40 (1.10M) | 0.42 (1.04M) |
+| backfill | per-batch | 3.08 (150k) | 3.43 (134k) | - | - | 1.26 (365k) | - | - | 0.83 (556k) | - | - | 4.02 (115k) | 1.52 (302k) | 6.98 (66k) |
+| backfill | bulk | 0.58 (791k) | 0.33 (1.39M) | - | - | - | - | - | - | 0.72 (643k) | 0.53 (865k) | 0.16 (2.91M) | 0.21 (2.19M) | 0.22 (2.10M) |
 
 Storage: **tmpfs**
 
-| dataset | mode | muninn (pre-0009) | muninn (post-0009) | muninn-wm64 (post-0009) | muninn-8p (post-0009) | muninn-100k (pre-0009) | muninn-100k (post-0009) | duckdb-native |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| da_prices | per-batch | 2.33 (194k) | 1.65 (274k) | 0.53 (855k) | 0.66 (685k) | - | - | 12 (37k) |
-| da_prices | bulk | 0.67 (678k) | 0.44 (1.03M) | - | - | 0.50 (901k) | 0.36 (1.24M) | 0.15 (3.04M) |
-| forecasts | per-batch | 10 (274k) | 3.21 (853k) | 3.35 (817k) | 1.74 (1.57M) | - | - | 6.91 (397k) |
-| forecasts | bulk | 7.33 (374k) | 6.23 (440k) | - | - | 3.41 (803k) | 2.63 (1.04M) | 0.57 (4.83M) |
-| settlement | per-batch | 4.03 (238k) | 2.95 (326k) | 1.36 (707k) | 1.12 (859k) | - | - | 18 (54k) |
-| settlement | bulk | 1.59 (604k) | 0.90 (1.07M) | - | - | 1.27 (754k) | 0.95 (1.01M) | 0.36 (2.67M) |
-| sparse | per-batch (prefix 10,000 of 434,191) | 4.55 (2,195) | 3.66 (2,735) | 0.52 (19k) | 0.95 (10k) | - | - | 16 (611) |
-| sparse | bulk | 1.04 (419k) | 0.67 (650k) | - | - | 0.97 (446k) | 0.84 (519k) | 0.21 (2.04M) |
-| backfill | per-batch | 0.84 (545k) | 0.80 (574k) | 1.18 (389k) | 0.44 (1.04M) | - | - | 1.30 (354k) |
-| backfill | bulk | 0.81 (571k) | 0.33 (1.40M) | - | - | 0.70 (655k) | 0.49 (945k) | 0.14 (3.22M) |
+| dataset | mode | muninn (pre-0009) | muninn (post-0009) | muninn (post-0009 rerun) | muninn (post-fixes) | muninn-wm64 (post-0009) | muninn-wm64 (post-0009 rerun) | muninn-wm64 (post-fixes) | muninn-8p (post-0009) | muninn-100k (pre-0009) | muninn-100k (post-0009) | muninn-100k (post-0009 rerun) | muninn-100k (post-fixes) | duckdb-native |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| da_prices | per-batch | 2.33 (194k) | 1.65 (274k) | 1.64 (277k) | 1.50 (302k) | 0.53 (855k) | 0.51 (887k) | 0.36 (1.27M) | 0.66 (685k) | - | - | - | - | 12 (37k) |
+| da_prices | bulk | 0.67 (678k) | 0.44 (1.03M) | 0.44 (1.03M) | 0.12 (3.68M) | - | - | - | - | 0.50 (901k) | 0.36 (1.24M) | 0.37 (1.24M) | 0.18 (2.49M) | 0.15 (3.04M) |
+| forecasts | per-batch | 10 (274k) | 3.21 (853k) | 3.15 (870k) | 2.07 (1.32M) | 3.35 (817k) | 3.36 (816k) | 1.24 (2.20M) | 1.74 (1.57M) | - | - | - | - | 6.91 (397k) |
+| forecasts | bulk | 7.33 (374k) | 6.23 (440k) | 6.37 (430k) | 1.01 (2.71M) | - | - | - | - | 3.41 (803k) | 2.63 (1.04M) | 2.63 (1.04M) | 0.71 (3.87M) | 0.57 (4.83M) |
+| settlement | per-batch | 4.03 (238k) | 2.95 (326k) | 2.91 (330k) | 2.54 (379k) | 1.36 (707k) | 1.31 (732k) | 0.82 (1.18M) | 1.12 (859k) | - | - | - | - | 18 (54k) |
+| settlement | bulk | 1.59 (604k) | 0.90 (1.07M) | 0.88 (1.09M) | 0.40 (2.40M) | - | - | - | - | 1.27 (754k) | 0.95 (1.01M) | 0.95 (1.01M) | 0.42 (2.30M) | 0.36 (2.67M) |
+| sparse | per-batch (prefix 10,000 of 434,191) | 4.55 (2,195) | 3.66 (2,735) | - | - | 0.52 (19k) | - | - | 0.95 (10k) | - | - | - | - | 16 (611) |
+| sparse | bulk | 1.04 (419k) | 0.67 (650k) | - | - | - | - | - | - | 0.97 (446k) | 0.84 (519k) | - | - | 0.21 (2.04M) |
+| backfill | per-batch | 0.84 (545k) | 0.80 (574k) | 0.73 (631k) | 0.61 (749k) | 1.18 (389k) | 1.18 (392k) | 0.42 (1.09M) | 0.44 (1.04M) | - | - | - | - | 1.30 (354k) |
+| backfill | bulk | 0.81 (571k) | 0.33 (1.40M) | 0.33 (1.40M) | 0.12 (3.90M) | - | - | - | - | 0.70 (655k) | 0.49 (945k) | 0.48 (953k) | 0.29 (1.57M) | 0.14 (3.22M) |
 
 ## Load for the query runs, and size on disk
 

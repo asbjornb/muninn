@@ -61,10 +61,28 @@ PER_BATCH_ONLY = {"muninn-wm64", "muninn-8p"}
 BULK_ONLY = {"muninn-100k"}
 
 
+#: what the Muninn build tags in the reports mean
+BUILDS_NOTE = (
+    "* **Muninn builds**: `(pre-0009)` = before the fast write path (one segment file per "
+    "touched partition plus a log entry per write, ~4-25 fsyncs); `(post-0009)` = ADR 0009 "
+    "(rows inline in the commit entry, group commit, memtable, background flush; ~2 fsyncs per "
+    "commit); `(post-0009 rerun)` = the same build re-measured on 2026-10-20 in the session of "
+    "the next one, for a same-time comparison; `(post-fixes)` = post-0009 plus the three write "
+    "path fixes of 2026-10-20 (GC re-anchors log truncation after a memtable load, ADR 0007 "
+    "amendment; linear in-batch dedup; columnar Arrow input and validation). Per-batch "
+    "variants: `muninn-wm64` submits 64 original batches per `write_many` call (one durable "
+    "commit per 64 batches, each batch still its own transaction and system_time), "
+    "`muninn-8p` has 8 producer threads calling `write` (the engine groups concurrent "
+    "writes). Neither has a competitor counterpart here: DuckDB and ClickHouse were measured "
+    "with one client committing one batch at a time.")
+
+
 def sys_key(label: str):
     """Sort key of a report label ``system`` or ``system (tag)``: ORDER, then tag."""
     base, _, tag = label.partition(" ")
-    return (ORDER.index(base) if base in ORDER else 99, "pre" not in tag, tag)
+    builds = ["(pre-0009)", "(post-0009)", "(post-0009 rerun)", "(post-fixes)"]
+    return (ORDER.index(base) if base in ORDER else 99,
+            builds.index(tag) if tag in builds else len(builds), tag)
 DEFAULT_PREFIX = "sparse=10000"
 FSYNC_CATS = ["segment file", "segment dir", "log file", "log dir", "other file", "other dir"]
 SHIM_SRC = HERE / "fsyncstat.c"
@@ -195,7 +213,7 @@ def markdown(rep) -> str:
              "every system), rates are for that prefix. Size = on disk after finalisation.")
     L.append("* **fsyncs**: calls to fsync/fdatasync in the benchmark process and the time spent in "
              "them (`bench/fsyncstat.c`); ClickHouse runs as its own server process, so not counted." + " Summed over threads, so with background flushes the total can exceed the wall time.")
-    L.append("* **Muninn builds**: `(pre-0009)` = before the fast write path (one segment file per touched partition plus a log entry per write, ~4-25 fsyncs); `(post-0009)` = ADR 0009 (rows inline in the commit entry, group commit, memtable, background flush; ~2 fsyncs per commit). Per-batch variants of the post-0009 build: `muninn-wm64` submits 64 original batches per `write_many` call (one durable commit per 64 batches, each batch still its own transaction and system_time), `muninn-8p` has 8 producer threads calling `write` (the engine groups concurrent writes). Neither has a competitor counterpart here: DuckDB and ClickHouse were measured with one client committing one batch at a time.")
+    L.append(BUILDS_NOTE)
     L.append("")
     by_storage: dict = {}
     for r in rep["runs"]:
@@ -273,7 +291,7 @@ def summary_markdown(rep, link: str) -> list[str]:
          "batch; `clickhouse` does not fsync inserts by default, `clickhouse-fsync` does);",
          "* **bulk**: as few writes as possible (DuckDB/ClickHouse one statement, Muninn 1M-row "
          "writes; `muninn-100k`: 100k-row writes).", "",
-         "* **Muninn builds**: `(pre-0009)` = before the fast write path (one segment file per touched partition plus a log entry per write, ~4-25 fsyncs); `(post-0009)` = ADR 0009 (rows inline in the commit entry, group commit, memtable, background flush; ~2 fsyncs per commit). Per-batch variants of the post-0009 build: `muninn-wm64` submits 64 original batches per `write_many` call (one durable commit per 64 batches, each batch still its own transaction and system_time), `muninn-8p` has 8 producer threads calling `write` (the engine groups concurrent writes). Neither has a competitor counterpart here: DuckDB and ClickHouse were measured with one client committing one batch at a time.",
+         BUILDS_NOTE,
          "",
          "Cells: wall seconds incl. finalisation (rows/s). *prefix*: only the first N batches, "
          "the same N for every system.", ""]

@@ -764,6 +764,7 @@ pub fn execute<D: Database>(db: &D, op: &str, fields: &Fields) -> Result<Outcome
             };
             let batch = WriteBatch {
                 rows,
+                columns: None,
                 batch_id,
                 clock: time_input(field(fields, "system_time")),
             };

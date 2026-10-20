@@ -500,6 +500,7 @@ fn commit(
 ) -> Res<()> {
     let batch = WriteBatch {
         rows,
+        columns: None,
         batch_id,
         clock: ctx.now().into(),
     };

@@ -287,6 +287,16 @@ with every commit forever. The rules (decision 0007), with `G` the grace period 
    `G / 2`). `G = 0` disables the timing (single process tests only); writers then check
    the head before every commit.
 
+Which checkpoints exist, and hence how far GC can truncate, is the writer's choice. The
+reference GC checkpoints the head and, if the entries after the second-newest checkpoint
+(all entries, if there is only one) hold more bytes than that head checkpoint,
+*re-anchors*: it commits an empty `gc` entry (§3.1: nothing added or removed) and
+checkpoints it too, so that the old head becomes the second-newest checkpoint and
+everything below it is truncatable. Otherwise a load through the memtable (rows inline in
+the entries) followed by a flush would keep every entry it wrote until two later
+checkpoints happened to exist. Nothing about the format changes; readers see an ordinary
+`gc` entry.
+
 A reader that only knows format 1 does not know rules 3–5; a log that was ever truncated
 contains format-2 entries and checkpoints, which such a reader rejects (§7).
 

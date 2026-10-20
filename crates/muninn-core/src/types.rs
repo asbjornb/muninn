@@ -561,6 +561,161 @@ impl Version {
             && self.deleted == other.deleted
             && value_lists_identical(&self.values, &other.values)
     }
+
+    /// A 64-bit hash of exactly the fields [`Version::content_identical`] compares:
+    /// content-identical versions have equal hashes (`f64` by bit pattern, trailing nulls
+    /// and missing trailing values hash alike), so duplicate detection can look a version
+    /// up by hash and compare only on a hash match. Not stable across releases; never
+    /// persisted.
+    pub fn content_hash(&self) -> u64 {
+        let mut h = ContentHasher::default();
+        h.add(u64::from(self.series.0));
+        h.add(self.value_time.as_micros() as u64);
+        match self.published_time {
+            Some(t) => {
+                h.add(1);
+                h.add(t.as_micros() as u64);
+            }
+            None => h.add(0),
+        }
+        h.add(self.received_time.as_micros() as u64);
+        h.add(u64::from(self.deleted));
+        let n = self
+            .values
+            .iter()
+            .rposition(Option::is_some)
+            .map_or(0, |i| i + 1);
+        for v in &self.values[..n] {
+            match v {
+                None => h.add(0),
+                Some(Value::F64(x)) => {
+                    h.add(1);
+                    h.add(x.to_bits());
+                }
+                Some(Value::I64(x)) => {
+                    h.add(2);
+                    h.add(*x as u64);
+                }
+                Some(Value::Bool(x)) => h.add(3 + u64::from(*x)),
+                Some(Value::String(s)) => {
+                    h.add(5);
+                    h.add(s.len() as u64);
+                    let mut chunks = s.as_bytes().chunks_exact(8);
+                    for c in &mut chunks {
+                        h.add(u64::from_le_bytes(c.try_into().expect("8 bytes")));
+                    }
+                    let mut rest = [0u8; 8];
+                    let r = chunks.remainder();
+                    rest[..r.len()].copy_from_slice(r);
+                    h.add(u64::from_le_bytes(rest));
+                }
+                Some(Value::Timestamp(t)) => {
+                    h.add(6);
+                    h.add(t.as_micros() as u64);
+                }
+            }
+        }
+        h.finish()
+    }
+}
+
+/// The word-at-a-time multiply-rotate hash behind [`Version::content_hash`], with a final
+/// avalanche so that the result can index a hash table directly.
+#[derive(Default)]
+struct ContentHasher(u64);
+
+impl ContentHasher {
+    #[inline]
+    fn add(&mut self, x: u64) {
+        self.0 = (self.0.rotate_left(26) ^ x).wrapping_mul(0xf135_7aea_2e62_a9c5);
+    }
+
+    #[inline]
+    fn finish(&self) -> u64 {
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^ (z >> 31)
+    }
+}
+
+/// A [`std::hash::Hasher`] for keys that already are well-mixed `u64` hashes (such as
+/// [`Version::content_hash`]): it passes them through.
+#[derive(Clone, Copy, Default)]
+pub struct PrehashedHasher(u64);
+
+impl std::hash::Hasher for PrehashedHasher {
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.0 = (self.0.rotate_left(8) ^ u64::from(b)).wrapping_mul(0xf135_7aea_2e62_a9c5);
+        }
+    }
+
+    #[inline]
+    fn write_u64(&mut self, i: u64) {
+        self.0 = i;
+    }
+}
+
+/// A hash map keyed by prehashed `u64`s (see [`PrehashedHasher`]).
+pub type PrehashedMap<V> =
+    std::collections::HashMap<u64, V, std::hash::BuildHasherDefault<PrehashedHasher>>;
+
+/// An index of versions by content (SPEC §4.3): `find` returns a stored item
+/// content-identical to a version in expected O(1), whatever the number of versions per
+/// point. Items are indices into a caller-owned slice; equal hashes are chained.
+#[derive(Default)]
+pub struct ContentIndex {
+    first: PrehashedMap<u32>,
+    /// `next[i]`: the next item with the same hash as item `i`, or `u32::MAX`.
+    next: Vec<u32>,
+}
+
+impl ContentIndex {
+    /// An empty index with room for `n` items.
+    pub fn with_capacity(n: usize) -> ContentIndex {
+        ContentIndex {
+            first: PrehashedMap::with_capacity_and_hasher(n, Default::default()),
+            next: Vec::with_capacity(n),
+        }
+    }
+
+    /// Number of items.
+    pub fn len(&self) -> usize {
+        self.next.len()
+    }
+
+    /// No items?
+    pub fn is_empty(&self) -> bool {
+        self.next.is_empty()
+    }
+
+    /// Adds the next item (index `self.len()` of the caller's slice) with content hash
+    /// `hash`.
+    pub fn push(&mut self, hash: u64) {
+        let i = u32::try_from(self.next.len()).expect("fewer than 2^32 items");
+        let prev = self.first.insert(hash, i).unwrap_or(u32::MAX);
+        self.next.push(prev);
+    }
+
+    /// The index of an item of `items` (the caller's slice this index was built over)
+    /// content-identical to `v`, whose content hash is `hash`.
+    pub fn find(&self, items: &[Version], v: &Version, hash: u64) -> Option<usize> {
+        let mut at = self.first.get(&hash).copied().unwrap_or(u32::MAX);
+        while at != u32::MAX {
+            let i = at as usize;
+            if items[i].content_identical(v) {
+                return Some(i);
+            }
+            at = self.next[i];
+        }
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1001,6 +1156,110 @@ mod tests {
             let x = candidates[probe as usize];
             if let Some(ts) = i64::try_from(x).ok().and_then(Timestamp::from_micros) {
                 prop_assert_eq!(w.contains(ts), lo <= x && x < hi);
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------------------------
+    // Content hash (dedup index)
+    // ---------------------------------------------------------------------------------
+
+    /// Small domains so that equal contents (and near misses) are common.
+    fn arb_value() -> impl Strategy<Value = Option<Value>> {
+        prop_oneof![
+            3 => Just(None),
+            3 => prop::sample::select(vec![
+                0.0f64, -0.0, 1.0, f64::NAN, -f64::NAN, f64::from_bits(0x7FF8_0000_0000_0001),
+                f64::INFINITY,
+            ]).prop_map(|x| Some(Value::F64(x))),
+            1 => (-2i64..2).prop_map(|x| Some(Value::I64(x))),
+            1 => any::<bool>().prop_map(|x| Some(Value::Bool(x))),
+            1 => prop::sample::select(vec!["", "a", "abcdefgh", "abcdefghi"])
+                .prop_map(|s| Some(Value::String(s.to_owned()))),
+            1 => (0i64..2).prop_map(|x| Some(Value::Timestamp(Timestamp::from_micros(x).unwrap()))),
+        ]
+    }
+
+    fn arb_version() -> impl Strategy<Value = Version> {
+        (
+            1u32..3,
+            0i64..2,
+            prop::option::of(0i64..2),
+            0i64..2,
+            any::<bool>(),
+            prop::collection::vec(arb_value(), 0..4),
+            0i64..3,
+            0u64..3,
+        )
+            .prop_map(|(s, vt, p, rt, deleted, values, st, seq)| Version {
+                series: SeriesId(s),
+                value_time: Timestamp::from_micros(vt).unwrap(),
+                published_time: p.map(|p| Timestamp::from_micros(p).unwrap()),
+                received_time: Timestamp::from_micros(rt).unwrap(),
+                deleted,
+                values,
+                system_time: Timestamp::from_micros(st).unwrap(),
+                seq,
+            })
+    }
+
+    #[test]
+    fn content_hash_follows_content_identity_edge_cases() {
+        let v = version(None, "2025-01-02T00:00:00Z", "2025-01-03T00:00:00Z", 1);
+        let with = |values: Vec<Option<Value>>| Version {
+            values,
+            ..v.clone()
+        };
+        // Missing trailing values and trailing nulls are the same content.
+        let a = with(vec![Some(Value::F64(1.0))]);
+        let b = with(vec![Some(Value::F64(1.0)), None, None]);
+        assert!(a.content_identical(&b));
+        assert_eq!(a.content_hash(), b.content_hash());
+        // system_time and seq are not content.
+        let c = Version {
+            seq: 99,
+            system_time: ts("2030-01-01T00:00:00Z"),
+            ..a.clone()
+        };
+        assert_eq!(a.content_hash(), c.content_hash());
+        // f64 bitwise: -0.0 differs from 0.0, NaN equals the same NaN.
+        let z = with(vec![Some(Value::F64(0.0))]);
+        let nz = with(vec![Some(Value::F64(-0.0))]);
+        assert!(!z.content_identical(&nz));
+        assert_ne!(z.content_hash(), nz.content_hash());
+        let n1 = with(vec![Some(Value::F64(f64::NAN))]);
+        let n2 = with(vec![Some(Value::F64(f64::NAN))]);
+        assert_eq!(n1.content_hash(), n2.content_hash());
+        // A null in the middle is not a shift of the values.
+        let m1 = with(vec![None, Some(Value::I64(1))]);
+        let m2 = with(vec![Some(Value::I64(1))]);
+        assert_ne!(m1.content_hash(), m2.content_hash());
+    }
+
+    proptest! {
+        /// Content-identical versions hash alike, and a [`ContentIndex`] finds exactly
+        /// the items a linear scan with `content_identical` finds.
+        #[test]
+        fn content_index_matches_linear_scan(
+            items in prop::collection::vec(arb_version(), 0..40),
+            probes in prop::collection::vec(arb_version(), 1..20),
+        ) {
+            let mut ix = ContentIndex::default();
+            for v in &items {
+                ix.push(v.content_hash());
+            }
+            for p in probes.iter().chain(&items) {
+                let linear = items.iter().any(|v| v.content_identical(p));
+                let found = ix.find(&items, p, p.content_hash());
+                prop_assert_eq!(found.is_some(), linear);
+                if let Some(i) = found {
+                    prop_assert!(items[i].content_identical(p));
+                }
+                for v in &items {
+                    if v.content_identical(p) {
+                        prop_assert_eq!(v.content_hash(), p.content_hash());
+                    }
+                }
             }
         }
     }

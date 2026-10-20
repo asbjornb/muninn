@@ -14,13 +14,14 @@ use std::sync::Arc;
 
 use crate::api::{
     AddColumn, AsofJoinRequest, CreateSeries, CreateTable, GridRequest, GridWindow, LatestRequest,
-    ReplayRequest, VersionRow, WriteBatch, WriteResult, WriteRow,
+    ReplayRequest, TimeColumn, ValueColumn, VersionRow, WriteBatch, WriteColumns, WriteResult,
+    WriteRow,
 };
 use crate::error::{Error, ErrorKind, Result};
 use crate::time::Timestamp;
 use crate::types::{
-    Clock, ColumnDef, SeriesDef, SeriesId, TableDef, TimeRange, Version, Visibility,
-    validate_column_name, validate_series_name, validate_table_name,
+    Clock, ColumnDef, ColumnType, SeriesDef, SeriesId, TableDef, TimeRange, Value, Version,
+    Visibility, validate_column_name, validate_series_name, validate_table_name,
 };
 
 /// One entry of the catalog change log (SPEC §2.3).
@@ -329,14 +330,148 @@ impl Catalog {
             .clock
             .resolve()
             .map_err(|e| Error::new(e.kind(), format!("writer clock: {}", e.message())))?;
-        let mut rows = Vec::with_capacity(batch.rows.len());
+        let mut rows = Vec::with_capacity(batch.len());
         for (i, row) in batch.rows.iter().enumerate() {
-            let v = self
-                .validate_row(row)
-                .map_err(|e| Error::new(e.kind(), format!("row {i}: {}", e.message())))?;
+            let v = self.validate_row(row).map_err(|e| row_error(i, &e))?;
             rows.push(v);
         }
+        if let Some(c) = &batch.columns {
+            self.validate_columns(c, batch.rows.len(), &mut rows)?;
+        }
         Ok(BatchPlan::Candidates { clock, rows })
+    }
+
+    /// SPEC §4.1 for columnar rows (rows `offset..` of the batch), appending the versions
+    /// to `out`. The result is by definition that of [`Catalog::validate_row`] on each
+    /// [`WriteColumns::row`] in order: the fast path below handles the common, valid
+    /// cases straight from the columns (series and column names resolved once per batch,
+    /// values copied by type) and hands any row it does not accept to `validate_row`,
+    /// which then decides — so error codes, check order and messages are the row path's.
+    fn validate_columns(
+        &self,
+        c: &WriteColumns,
+        offset: usize,
+        out: &mut Vec<Version>,
+    ) -> Result<()> {
+        let slow = |i: usize, out: &mut Vec<Version>| -> Result<()> {
+            let v = self
+                .validate_row(&c.row(i))
+                .map_err(|e| row_error(offset + i, &e))?;
+            out.push(v);
+            Ok(())
+        };
+        let distinct_names = {
+            let mut names: Vec<&str> = c.values.iter().map(|(n, _)| n.as_str()).collect();
+            names.sort_unstable();
+            names.windows(2).all(|w| w[0] != w[1])
+        };
+        if !distinct_names {
+            for i in 0..c.len {
+                slow(i, out)?;
+            }
+            return Ok(());
+        }
+        // Per distinct series name: (series id, index into `tables`), resolved once.
+        struct TableMap<'a> {
+            def: &'a TableDef,
+            /// For each input value column: its column index in the table.
+            cols: Vec<Option<usize>>,
+        }
+        let mut tables: Vec<TableMap<'_>> = Vec::new();
+        let series: Vec<Option<(SeriesId, usize)>> = c
+            .series_names
+            .iter()
+            .map(|name| {
+                let s = self.series_by_name(name).ok()?;
+                let t = self.table(&s.table).ok()?;
+                let ti = match tables.iter().position(|m| std::ptr::eq(m.def, t)) {
+                    Some(ti) => ti,
+                    None => {
+                        tables.push(TableMap {
+                            def: t,
+                            cols: c.values.iter().map(|(n, _)| t.column_index(n)).collect(),
+                        });
+                        tables.len() - 1
+                    }
+                };
+                Some((s.id, ti))
+            })
+            .collect();
+        let time = |col: &Option<TimeColumn>, i: usize| -> Option<Timestamp> {
+            match col.as_ref()? {
+                TimeColumn::Micros(v) => Timestamp::from_micros(v[i]?),
+                TimeColumn::Inputs(v) => v[i].as_ref()?.resolve().ok(),
+            }
+        };
+        out.reserve(c.len);
+        'rows: for i in 0..c.len {
+            let Some((id, ti)) = series[c.series_codes[i] as usize] else {
+                slow(i, out)?;
+                continue;
+            };
+            let t = &tables[ti];
+            let deleted = c.deleted.as_ref().is_some_and(|d| d[i]);
+            let mut values: Vec<Option<Value>> = vec![None; t.def.columns.len()];
+            for ((_, col), &idx) in c.values.iter().zip(&t.cols) {
+                if col.is_null(i) {
+                    continue;
+                }
+                let (Some(idx), false) = (idx, deleted) else {
+                    slow(i, out)?;
+                    continue 'rows;
+                };
+                let ty = t.def.columns[idx].ty;
+                let v = match (col, ty) {
+                    (ValueColumn::F64(v), ColumnType::F64) => v[i].map(Value::F64),
+                    (ValueColumn::I64(v), ColumnType::I64) => v[i].map(Value::I64),
+                    (ValueColumn::I64(v), ColumnType::F64) => v[i].map(|n| Value::F64(n as f64)),
+                    (ValueColumn::Bool(v), ColumnType::Bool) => v[i].map(Value::Bool),
+                    (ValueColumn::Timestamp(v), ColumnType::Timestamp) => {
+                        v[i].map(Value::Timestamp)
+                    }
+                    (ValueColumn::Inputs(v), ty) => v[i].coerce_to(ty).ok().flatten(),
+                    _ => None,
+                };
+                if v.is_none() {
+                    slow(i, out)?;
+                    continue 'rows;
+                }
+                values[idx] = v;
+            }
+            let (Some(value_time), Some(received_time)) =
+                (time(&c.value_time, i), time(&c.received_time, i))
+            else {
+                slow(i, out)?;
+                continue;
+            };
+            let published_null = match c.published_time.as_ref() {
+                None => true,
+                Some(TimeColumn::Micros(v)) => v[i].is_none(),
+                Some(TimeColumn::Inputs(v)) => v[i].is_none(),
+            };
+            let published_time = if published_null {
+                None
+            } else {
+                match time(&c.published_time, i) {
+                    Some(t) => Some(t),
+                    None => {
+                        slow(i, out)?;
+                        continue;
+                    }
+                }
+            };
+            out.push(Version {
+                series: id,
+                value_time,
+                published_time,
+                received_time,
+                deleted,
+                values,
+                system_time: Timestamp::MIN, // placeholder, set by `plan_dedup`
+                seq: 0,                      // placeholder, set by `plan_dedup`
+            });
+        }
+        Ok(())
     }
 
     // -----------------------------------------------------------------------------------
@@ -580,6 +715,11 @@ impl DedupPlan {
     }
 }
 
+/// A row's validation error, prefixed with its index in the batch.
+fn row_error(i: usize, e: &Error) -> Error {
+    Error::new(e.kind(), format!("row {i}: {}", e.message()))
+}
+
 /// SPEC §4.3 + §4.2: drops candidates content-identical to a stored version
 /// (`is_stored`) or to an earlier *kept* row of the batch; kept rows take
 /// `system_time` and consecutive seqs from `next_seq` in input order.
@@ -592,42 +732,152 @@ pub fn plan_dedup(
     next_seq: u64,
     mut is_stored: impl FnMut(&Version) -> Result<bool>,
 ) -> Result<DedupPlan> {
-    let mut kept: Vec<Version> = Vec::with_capacity(candidates.len());
     // Only versions of the same point can be content-identical. Batches usually list
-    // each point once, in order: then no row can duplicate an earlier one and the
-    // per-point index is not needed.
+    // each point once, in order: then no row can duplicate an earlier one.
     let distinct_points = candidates
         .windows(2)
         .all(|w| (w[0].series, w[0].value_time) < (w[1].series, w[1].value_time));
-    // Kept rows by point: the first kept index, then a chain through `next_same`.
-    let mut first: HashMap<(SeriesId, Timestamp), usize> = HashMap::new();
-    let mut next_same: Vec<usize> = Vec::new();
+    let dup_in_batch = if distinct_points {
+        Vec::new()
+    } else {
+        in_batch_duplicates(&candidates)
+    };
+    let mut kept: Vec<Version> = Vec::with_capacity(candidates.len());
     let mut duplicates = 0u64;
-    for mut v in candidates {
-        let point = (v.series, v.value_time);
-        let dup_in_batch = !distinct_points && {
-            let mut at = first.get(&point).copied();
-            let mut found = false;
-            while let Some(i) = at {
-                if kept[i].content_identical(&v) {
-                    found = true;
-                    break;
-                }
-                at = (next_same[i] != usize::MAX).then_some(next_same[i]);
-            }
-            found
-        };
-        if dup_in_batch || is_stored(&v)? {
+    for (i, mut v) in candidates.into_iter().enumerate() {
+        if dup_in_batch.get(i).copied().unwrap_or(false) || is_stored(&v)? {
             duplicates += 1;
             continue;
         }
         v.system_time = system_time;
         v.seq = next_seq + kept.len() as u64;
-        if !distinct_points {
-            let i = kept.len();
-            next_same.push(first.insert(point, i).unwrap_or(usize::MAX));
-        }
         kept.push(v);
     }
     Ok(DedupPlan { kept, duplicates })
+}
+
+/// For each candidate: is it content-identical to an *earlier* candidate of the batch?
+///
+/// That is the same as "to an earlier kept row" (SPEC §4.3): content identity is an
+/// equivalence, so a row identical to a dropped row is identical to what that row was
+/// dropped for — an earlier kept row, or a stored version (and then it is dropped as
+/// a stored duplicate anyway). O(n log n) whatever the number of versions per point:
+/// the rows are sorted by content hash (ties by position), and only rows with equal
+/// hashes are compared.
+fn in_batch_duplicates(candidates: &[Version]) -> Vec<bool> {
+    let mut keys: Vec<(u64, usize)> = candidates
+        .iter()
+        .enumerate()
+        .map(|(i, v)| (v.content_hash(), i))
+        .collect();
+    keys.sort_unstable();
+    let mut dup = vec![false; candidates.len()];
+    // First rows of the distinct contents seen within one hash group (more than one
+    // only on a hash collision).
+    let mut reps: Vec<usize> = Vec::new();
+    for group in keys.chunk_by(|a, b| a.0 == b.0) {
+        if group.len() == 1 {
+            continue;
+        }
+        reps.clear();
+        for &(_, j) in group {
+            if reps
+                .iter()
+                .any(|&r| candidates[r].content_identical(&candidates[j]))
+            {
+                dup[j] = true;
+            } else {
+                reps.push(j);
+            }
+        }
+    }
+    dup
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::Value;
+    use proptest::prelude::*;
+
+    fn v(series: u32, vt: i64, rt: i64, x: f64) -> Version {
+        Version {
+            series: SeriesId(series),
+            value_time: Timestamp::from_micros(vt).unwrap(),
+            published_time: None,
+            received_time: Timestamp::from_micros(rt).unwrap(),
+            deleted: false,
+            values: vec![Some(Value::F64(x))],
+            system_time: Timestamp::MIN,
+            seq: 0,
+        }
+    }
+
+    /// SPEC §4.3 literally: a row is dropped if it is content-identical to a stored
+    /// version or to an earlier kept row.
+    fn naive(candidates: &[Version], stored: &[Version]) -> (Vec<Version>, u64) {
+        let mut kept: Vec<Version> = Vec::new();
+        let mut dups = 0;
+        for c in candidates {
+            if stored.iter().chain(&kept).any(|k| k.content_identical(c)) {
+                dups += 1;
+            } else {
+                kept.push(c.clone());
+            }
+        }
+        (kept, dups)
+    }
+
+    proptest! {
+        #[test]
+        fn plan_dedup_matches_the_spec(
+            rows in prop::collection::vec(
+                (1u32..3, 0i64..3, 0i64..3,
+                 prop::sample::select(vec![0.0f64, -0.0, 1.0, f64::NAN])),
+                0..60),
+            stored in prop::collection::vec((1u32..3, 0i64..3, 0i64..3), 0..6),
+            sorted in any::<bool>(),
+        ) {
+            let mut cands: Vec<Version> =
+                rows.iter().map(|&(s, vt, rt, x)| v(s, vt, rt, x)).collect();
+            if sorted {
+                // The distinct-points fast path.
+                cands.sort_by_key(|c| (c.series, c.value_time));
+                cands.dedup_by_key(|c| (c.series, c.value_time));
+            }
+            let stored: Vec<Version> =
+                stored.iter().map(|&(s, vt, rt)| v(s, vt, rt, 1.0)).collect();
+            let st = Timestamp::from_micros(77).unwrap();
+            let plan = plan_dedup(cands.clone(), st, 10, |c| {
+                Ok(stored.iter().any(|s| s.content_identical(c)))
+            })
+            .unwrap();
+            let (kept, dups) = naive(&cands, &stored);
+            prop_assert_eq!(plan.duplicates, dups);
+            prop_assert_eq!(plan.kept.len(), kept.len());
+            for (i, (a, b)) in plan.kept.iter().zip(&kept).enumerate() {
+                prop_assert!(a.content_identical(b));
+                prop_assert_eq!(a.seq, 10 + i as u64);
+                prop_assert_eq!(a.system_time, st);
+            }
+        }
+    }
+
+    /// A bulk batch holding many versions of one point (a forecast series loaded in one
+    /// write) is deduplicated in linear time: 200k versions of one point, every other one
+    /// a duplicate. The per-point chain this replaced needed ~10^10 comparisons here.
+    #[test]
+    fn many_versions_of_one_point_are_linear() {
+        let n = 200_000i64;
+        let cands: Vec<Version> = (0..n).map(|i| v(1, 0, i / 2, (i / 2) as f64)).collect();
+        let t0 = std::time::Instant::now();
+        let plan = plan_dedup(cands, Timestamp::from_micros(1).unwrap(), 1, |_| Ok(false)).unwrap();
+        assert_eq!(plan.kept.len() as i64, n / 2);
+        assert_eq!(plan.duplicates as i64, n / 2);
+        assert!(
+            t0.elapsed() < std::time::Duration::from_secs(20),
+            "{:?}",
+            t0.elapsed()
+        );
+    }
 }
