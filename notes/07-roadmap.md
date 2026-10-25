@@ -3,6 +3,10 @@
 Status 2026-10-19: steps 0–4 and 6 done in v0.1 form (see below); 5 partly (grid done,
 as-of join exact-match only); 7 partly (compaction + GC, no retention/purge). Order is "each step is usable on its own and de-risks the next".
 
+Priority (owner, 2026-10-25): **local first.** Make Muninn a good local product (local disk,
+single machine, Python + CLI, ingest process) before any S3/Azure/GCS or other cloud work.
+The design stays object-storage compatible (decisions 0004/0009), but cloud backends wait.
+
 ## 0. Prove the semantics before the engine
 
 - Write the time model as an executable spec: a tiny reference implementation (Python or
