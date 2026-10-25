@@ -69,7 +69,10 @@ BUILDS_NOTE = (
     "commit); `(post-0009 rerun)` = the same build re-measured on 2026-10-20 in the session of "
     "the next one, for a same-time comparison; `(post-fixes)` = post-0009 plus the three write "
     "path fixes of 2026-10-20 (GC re-anchors log truncation after a memtable load, ADR 0007 "
-    "amendment; linear in-batch dedup; columnar Arrow input and validation). Per-batch "
+    "amendment; linear in-batch dedup; columnar Arrow input and validation); `(pre-chunking)` "
+    "= the same engine (main of 2026-10-25) re-measured in the session of the next one; "
+    "`(chunked)` = ADR 0010 (batches of more than 100k rows validated, deduplicated and "
+    "encoded in chunks, still one commit; Arrow input converted chunk by chunk). Per-batch "
     "variants: `muninn-wm64` submits 64 original batches per `write_many` call (one durable "
     "commit per 64 batches, each batch still its own transaction and system_time), "
     "`muninn-8p` has 8 producer threads calling `write` (the engine groups concurrent "
@@ -80,7 +83,8 @@ BUILDS_NOTE = (
 def sys_key(label: str):
     """Sort key of a report label ``system`` or ``system (tag)``: ORDER, then tag."""
     base, _, tag = label.partition(" ")
-    builds = ["(pre-0009)", "(post-0009)", "(post-0009 rerun)", "(post-fixes)"]
+    builds = ["(pre-0009)", "(post-0009)", "(post-0009 rerun)", "(post-fixes)", "(pre-chunking)",
+              "(chunked)"]
     return (ORDER.index(base) if base in ORDER else 99,
             builds.index(tag) if tag in builds else len(builds), tag)
 DEFAULT_PREFIX = "sparse=10000"

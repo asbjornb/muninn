@@ -6,6 +6,89 @@ everything measured (per-instance result hashes included). Regenerate with
 `ingest-<scale>.{md,json}` (`bench/ingest.py`), summarised in the `## Ingest` section of
 `<scale>.md`.
 
+## Ingest, 2026-10-25, omarchy-hp: large writes in chunks (`chunked` build)
+
+Problem left by the write-path fixes: 1M-row writes were ~1.6x slower than 100k-row
+writes (memory-bound work growing with the batch). The `(chunked)` build processes every
+batch of more than 100k rows in chunks of 100k inside one commit (ADR 0010): chunks are
+prepared on worker threads (validated, hashed, in-chunk duplicates, split by partition),
+the leader makes the order-dependent dedup decisions and assigns seqs, encoder threads
+write the files; a partition's rows of several chunks share a file while at most one
+chunk of kept rows waits; Arrow input is converted chunk by chunk instead of up front.
+Results, seqs, system_time, dedup decisions and errors are those of processing the batch
+whole (property tests at chunk sizes 1-64, see `crates/muninn-engine/tests/chunked_write.rs`).
+
+`(pre-chunking)` is main before the change (the `post-fixes` engine), built separately
+and run interleaved with `(chunked)` in the same session: every dataset in its own
+process, two rounds, both cells averaged (they agreed within ~10%, except one disk run
+of `muninn-100k` forecasts at 10.9 s vs 8.2 s). The machine was shared with other
+agents (load 1.7-4.8, median 3.2). `bench/ingest.py` now also records the process's peak
+RSS (`VmHWM`, reset once the input table is in memory); the cells show how far it rose
+above that. Rows: `2026-10-19-omarchy-hp/ingest-medium.{md,json}` (the last round).
+
+Medium bulk, wall s incl. finalisation (flush + compact + gc), 1M-row writes (`muninn`)
+and 100k-row writes (`muninn-100k`):
+
+| dataset | storage | 1M pre-chunking | 1M chunked | 100k pre-chunking | 100k chunked |
+| --- | --- | ---: | ---: | ---: | ---: |
+| forecasts (25M rows) | tmpfs | 11.7 | **6.0** | 6.5 | 6.6 |
+| forecasts | btrfs | 12.2 | **5.9** | 8.0 | 9.6 |
+| da_prices (1.8M) | tmpfs | 0.6 | 0.7 | 1.0 | 1.0 |
+| da_prices | btrfs | 0.6 | 0.8 | 1.2 | 1.2 |
+| settlement (3.8M) | tmpfs | 1.7 | 2.1 | 3.2 | 3.3 |
+| settlement | btrfs | 1.8 | 2.3 | 3.5 | 3.6 |
+| backfill (2.8M) | tmpfs | 2.1 | 2.0 | 2.0 | 2.0 |
+| backfill | btrfs | 2.1 | 2.0 | 2.1 | 2.2 |
+| sparse (3.2M) | tmpfs | 7.5 | 7.7 | 10.0 | 10.0 |
+| sparse | btrfs | 7.6 | 7.9 | 10.6 | 10.7 |
+
+- **1M-row writes are now faster than 100k-row writes on every dataset**, and medium
+  forecasts loads in half the time (4.1M rows/s on tmpfs, 4.2M on disk; DuckDB 4.9 s,
+  ClickHouse 9.2 s in the earlier sessions). The write itself got faster everywhere
+  (forecasts 470 → 230 ms per 1M-row write; settlement 1.6 → 1.1 s of writing).
+- The small datasets lose 0.1-0.5 s in **finalisation**: a 1M-row write now makes a few
+  files per touched partition (forecasts 3 541 file+dir syncs instead of 1 726), which
+  the end-of-load compaction merges (settlement compaction 0.1 → 1.0 s, da_prices
+  0.0 → 0.4 s, sparse 2.4 → 3.6 s), as it does for 100k-row writes. Writing one file
+  per chunk and partition (no rows waiting) made this worse (settlement 2.4 s, sparse
+  8.1 s); letting two chunks of rows wait made forecasts 15-20% slower.
+- 100k-row writes are unchanged (they are not chunked; Arrow input is converted the
+  same way, only later).
+- Before the Bloom filter in front of the cross-chunk duplicate index, backfill
+  (1-row `(series, received_time)` runs) spent 20-90 ms per chunk recording runs; now
+  2.0 s, as before.
+
+**Peak RSS** rose above the loaded input by (MB, default glibc malloc):
+
+| dataset | 1M pre-chunking | 1M chunked | 100k pre-chunking | 100k chunked |
+| --- | ---: | ---: | ---: | ---: |
+| forecasts | 358 | 352 | 52 | 48 |
+| da_prices | 240 | 304 | 162 | 154 |
+| settlement | 421 | 443 | 161 | 143 |
+| backfill | 420 | 605 | 287 | 293 |
+| sparse | 913 | 1 040 | 811 | 820 |
+
+Not solved: **peak RSS did not go down with the default allocator** (and went up for
+backfill, sparse and da_prices), although a chunked write holds far fewer rows at a time
+(about 6 chunks, ~100 MB of rows, instead of the whole batch). glibc gives each worker
+thread its own arena and keeps freed chunk memory there. With fewer arenas the
+reduction shows (1M-row writes, tmpfs, one run each):
+
+| dataset | `MALLOC_ARENA_MAX=4`: pre → chunked (MB; wall s) | `MALLOC_ARENA_MAX=1`: pre → chunked |
+| --- | ---: | ---: |
+| forecasts | 353 → 233 (11.5 → 5.6 s) | 398 → 155 (10.8 → 11.4 s) |
+| da_prices | 240 → 171 | 240 → 117 |
+| settlement | 402 → 279 | 388 → 156 (1.7 → 4.6 s) |
+| backfill | 396 → 448 | 399 → 333 |
+| sparse | 841 → 853 | 804 → 720 |
+
+With 4 arenas the chunked build is as fast as with the default and its peak is a third
+lower on forecasts; with one arena the threads contend for it (slower). The engine cannot
+choose the allocator itself (`unsafe` is forbidden; it is a process-wide decision), so an
+ingest process that cares should set `MALLOC_ARENA_MAX` or use another allocator.
+Sparse peaks outside the write pipeline (as high with 100k-row writes); why backfill's
+peak rose (also with 4 arenas, not with one) was not found.
+
 ## Ingest, 2026-10-20, omarchy-hp: write-path fixes (`post-fixes` build)
 
 The ingest benchmark below (2026-10-19/20) found three problems in the write path. A new
@@ -71,7 +154,7 @@ What changed, per problem:
    the new one (native stacks are sampled approximately; the earlier 46% figure used
    another attribution). Bulk writes also no longer regrow their per-partition vectors.
 
-Not solved: 1M-row writes are still ~1.6x slower than 100k-row writes (10.1 vs 6.1 s on
+Not solved (solved in the `chunked` build, above): 1M-row writes are still ~1.6x slower than 100k-row writes (10.1 vs 6.1 s on
 tmpfs). It is no longer quadratic; a profile shows memory-bound work that grows with the
 batch — sorting a million dedup keys, a heap-allocated value vector per `Version` (built
 and freed per row), dropping the batch — rather than one hot spot. Per-batch writes on
