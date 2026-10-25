@@ -107,6 +107,13 @@ pub struct EngineOptions {
     pub inline_max_rows: usize,
     /// Most candidate rows one group commit takes off the queue (at least one batch).
     pub group_max_rows: usize,
+    /// A batch of more than this many rows is processed in chunks of this many rows:
+    /// validated, deduplicated and encoded into segment files chunk by chunk (in
+    /// parallel, over [`EngineOptions::io_threads`] threads), so that only the encoded
+    /// files, not the rows, are held until its commit. Still one commit with one
+    /// `system_time` and one contiguous seq range, and exactly the results of
+    /// processing it whole (SPEC §4). 0 = never chunk.
+    pub write_chunk_rows: usize,
     /// Flush the memtable once it holds this many rows ...
     pub flush_rows: u64,
     /// ... or this many inline segments ...
@@ -140,6 +147,7 @@ impl Default for EngineOptions {
             dedup_index_points: 2_000_000,
             inline_max_rows: 20_000,
             group_max_rows: 1_000_000,
+            write_chunk_rows: 100_000,
             flush_rows: 200_000,
             flush_segments: 2048,
             flush_age: std::time::Duration::from_secs(60),
@@ -163,6 +171,7 @@ impl std::fmt::Debug for EngineOptions {
             .field("dedup_index_points", &self.dedup_index_points)
             .field("inline_max_rows", &self.inline_max_rows)
             .field("group_max_rows", &self.group_max_rows)
+            .field("write_chunk_rows", &self.write_chunk_rows)
             .field("flush_rows", &self.flush_rows)
             .field("flush_segments", &self.flush_segments)
             .field("flush_age", &self.flush_age)

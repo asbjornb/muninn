@@ -706,10 +706,17 @@ impl ContentIndex {
     /// The index of an item of `items` (the caller's slice this index was built over)
     /// content-identical to `v`, whose content hash is `hash`.
     pub fn find(&self, items: &[Version], v: &Version, hash: u64) -> Option<usize> {
+        self.find_with(hash, |i| items[i].content_identical(v))
+    }
+
+    /// The first item (most recently pushed first) with content hash `hash` for which
+    /// `same(item)` holds: [`ContentIndex::find`] for items the caller does not keep as
+    /// a slice of versions (`same` compares item `i` with the version looked up).
+    pub fn find_with(&self, hash: u64, mut same: impl FnMut(usize) -> bool) -> Option<usize> {
         let mut at = self.first.get(&hash).copied().unwrap_or(u32::MAX);
         while at != u32::MAX {
             let i = at as usize;
-            if items[i].content_identical(v) {
+            if same(i) {
                 return Some(i);
             }
             at = self.next[i];

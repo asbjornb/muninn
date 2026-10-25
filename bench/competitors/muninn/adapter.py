@@ -199,6 +199,8 @@ class MuninnAdapter(Adapter):
         order (cut regardless of batch boundaries, so system_time values differ from the
         dataset's), one compact+gc at the end."""
         data, st, seq, starts, ends = self._prepare(dataset_dir, catalog)
+        if self.reset_peak is not None:
+            self.reset_peak()
         n_batches = len(starts)
         if mode == "per-batch":
             if max_batches is not None:

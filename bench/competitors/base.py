@@ -68,6 +68,9 @@ class Adapter(ABC):
     #: set by bench/ingest.py when the fsync counter shim is loaded: returns a numpy array
     #: of cumulative (count, ns) per fsync category; adapters may sample it around writes
     probe = None
+    #: set by bench/ingest.py: resets the process's peak-RSS mark; ``ingest`` calls it once
+    #: its input is prepared (outside any timing), so the peak excludes data preparation
+    reset_peak = None
 
     def __init__(self, workdir: Path, threads: int = 6, memory_limit_mb: int = 4096):
         self.workdir = Path(workdir)

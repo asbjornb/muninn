@@ -1,7 +1,7 @@
 //! The JSON scenario corpus (`spec/scenarios`) against the engine: on `MemoryStore`, on
 //! `LocalFsStore`, reopening the engine before every read step, flushing and compacting
-//! everything before every read step, writing segment files instead of the memtable, and
-//! flushing the memtable after every write.
+//! everything before every read step, writing segment files instead of the memtable,
+//! flushing the memtable after every write, and processing writes in tiny chunks.
 
 use std::sync::{Arc, Mutex};
 
@@ -42,6 +42,24 @@ fn corpus_with_files_and_with_a_flush_per_write() {
             ..small()
         },
     ] {
+        let report = run_corpus(&spec_scenarios_dir(), || {
+            Engine::open(MemoryStore::new(), o.clone()).unwrap()
+        });
+        report.assert_ok();
+    }
+}
+
+/// Every batch of more than a few rows processed in chunks (tiny chunks, one or several
+/// threads; inline and file layout): the same results as processing it whole.
+#[test]
+fn corpus_with_chunked_writes() {
+    for (chunk, threads, inline_max_rows) in [(1, 1, 20_000), (2, 3, 0), (3, 4, 2)] {
+        let o = EngineOptions {
+            write_chunk_rows: chunk,
+            io_threads: threads,
+            inline_max_rows,
+            ..small()
+        };
         let report = run_corpus(&spec_scenarios_dir(), || {
             Engine::open(MemoryStore::new(), o.clone()).unwrap()
         });

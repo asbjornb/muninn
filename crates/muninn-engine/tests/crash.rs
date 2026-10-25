@@ -262,9 +262,15 @@ proptest! {
         block_rows in 1usize..4,
         checkpoint in 1u64..4,
         picks in prop::collection::vec((any::<prop::sample::Index>(), any::<bool>()), 12),
+        chunk in prop_oneof![2 => Just(0usize), 1 => 1usize..4],
     ) {
         let ops = workload_with_setup(ops);
-        let opts = test_options(block_rows, checkpoint, false);
+        // Sometimes every batch of more than `chunk` rows is written in chunks (one I/O
+        // thread: the store operations stay in a fixed order).
+        let opts = EngineOptions {
+            write_chunk_rows: chunk,
+            ..test_options(block_rows, checkpoint, false)
+        };
         let total = dry_run(&ops, &opts);
         for (ix, effect) in picks {
             crash_run(&ops, &opts, ix.index(total as usize + 1) as u64, effect)?;
@@ -279,9 +285,15 @@ proptest! {
         seed in any::<u64>(),
         p_before in 0.0f64..0.15,
         p_after in 0.0f64..0.15,
+        chunk in prop_oneof![2 => Just(0usize), 1 => 1usize..4],
+        threads in prop_oneof![2 => Just(1usize), 1 => Just(3usize)],
     ) {
         let ops = workload_with_setup(ops);
-        let opts = test_options(2, 2, false);
+        let opts = EngineOptions {
+            write_chunk_rows: chunk,
+            io_threads: threads,
+            ..test_options(2, 2, false)
+        };
         let inner = Arc::new(MemoryStore::new());
         let store: Faulty = Arc::new(FaultyStore::new(Arc::clone(&inner), seed));
         let engine = Engine::open(Arc::clone(&store), opts.clone()).unwrap();

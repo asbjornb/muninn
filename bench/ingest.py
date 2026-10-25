@@ -141,16 +141,56 @@ def cpu_seconds() -> float:
     return r.ru_utime + r.ru_stime
 
 
+def _status_kb(field: str) -> int | None:
+    try:
+        for line in Path("/proc/self/status").read_text().splitlines():
+            if line.startswith(field + ":"):
+                return int(line.split()[1])
+    except OSError:
+        pass
+    return None
+
+
+class PeakRss:
+    """The process's peak RSS (``VmHWM``) over a run, Linux only. ``reset`` (called by the
+    adapter once its input is prepared) clears the mark (``/proc/self/clear_refs`` = 5) and
+    records the RSS then as the base, so ``peak - base`` is what loading added on top of the
+    input already in memory. Without a reset the base is the RSS at the start of the run."""
+
+    def __init__(self):
+        self.base = _status_kb("VmRSS")
+        self.reset()
+
+    def reset(self):
+        try:
+            Path("/proc/self/clear_refs").write_text("5")
+            self.base = _status_kb("VmRSS")
+        except OSError:
+            pass
+
+    def result(self) -> dict:
+        peak = _status_kb("VmHWM")
+        if peak is None or self.base is None:
+            return {}
+        return {"peak_rss_bytes": peak * 1024, "rss_base_bytes": self.base * 1024,
+                "peak_rss_over_base_bytes": max(0, peak - self.base) * 1024}
+
+
 def run_one(system, mode, ds, data_dir, args, max_batches, probe) -> dict:
     cat = json.loads((data_dir / ds / "catalog.json").read_text())
     workdir = Path(args.workdir) / args.scale / "ingest" / system / ds
     a = registry.make(system, workdir, threads=args.threads, memory_limit_mb=args.memory_mb)
     a.probe = probe
+    peak = PeakRss()
+    a.reset_peak = peak.reset
     try:
         p0 = probe() if probe else None
         c0 = cpu_seconds()
         r = a.ingest(data_dir / ds, cat, mode, max_batches=max_batches if mode == "per-batch" else None)
         r["process_cpu_seconds"] = round(cpu_seconds() - c0, 3)
+        # in-process systems only (the ClickHouse server's memory is not ours)
+        if not getattr(a, "out_of_process", False):
+            r.update(peak.result())
         if probe:  # a server process (ClickHouse) is not covered by the shim
             r["fsync"] = None if getattr(a, "out_of_process", False) else fsync_dict(probe() - p0)
         if r.get("write_fsync") is not None:
@@ -195,6 +235,12 @@ def fsync_cell(r) -> str:
     return f"{n:,} ({fmt_s(s)} s{per})"
 
 
+def rss_cell(r) -> str:
+    if r.get("peak_rss_bytes") is None:
+        return "-"
+    return f"{r['peak_rss_bytes'] / 2**20:,.0f} (+{r['peak_rss_over_base_bytes'] / 2**20:,.0f})"
+
+
 def markdown(rep) -> str:
     L = [f"# Muninn ingest benchmark — {rep['scale']} scale", ""]
     m = rep["machine"]
@@ -213,6 +259,10 @@ def markdown(rep) -> str:
              "every system), rates are for that prefix. Size = on disk after finalisation.")
     L.append("* **fsyncs**: calls to fsync/fdatasync in the benchmark process and the time spent in "
              "them (`bench/fsyncstat.c`); ClickHouse runs as its own server process, so not counted." + " Summed over threads, so with background flushes the total can exceed the wall time.")
+    L.append("* **peak RSS**: the benchmark process's peak resident set (`VmHWM`), reset with "
+             "`/proc/self/clear_refs` once the input table is in memory (Muninn adapter; other "
+             "in-process systems from the start of the run), and in brackets how far it rose "
+             "above the RSS at that point. Measured from 2026-10-25 on; '-' = not measured.")
     L.append(BUILDS_NOTE)
     L.append("")
     by_storage: dict = {}
@@ -223,8 +273,9 @@ def markdown(rep) -> str:
         L.append(f"## Storage: {storage} (`{where}`)")
         L.append("")
         L.append("| dataset | mode | system | writes | rows | wall s | write s | finalize s | "
-                 "writes/s | rows/s | per write p50 / p99 ms | size (B/version) | fsyncs (time) |")
-        L.append("| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
+                 "writes/s | rows/s | per write p50 / p99 ms | size (B/version) | fsyncs (time) | "
+                 "peak RSS MB (+ over input) |")
+        L.append("| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
         runs = sorted(runs, key=lambda r: (list(DATASETS).index(r["dataset"]),
                                            INGEST_MODES.index(r["mode"]), sys_key(r["system"])))
         for r in runs:
@@ -237,7 +288,8 @@ def markdown(rep) -> str:
                      f"{fmt_s(x['finalize_seconds'])} | "
                      f"{fmt_rate(x['writes_per_second']) if x['writes'] > 1 else '-'} | "
                      f"{fmt_rate(x['rows_per_second'])} | {lat} | "
-                     f"{fmt_bytes(x['bytes_on_disk'])} ({x['bytes_per_version']}) | {fsync_cell(x)} |")
+                     f"{fmt_bytes(x['bytes_on_disk'])} ({x['bytes_per_version']}) | {fsync_cell(x)} | "
+                     f"{rss_cell(x)} |")
         L.append("")
         mrows = [r for r in runs if r["system"].partition(" ")[0] == "muninn"
                  and r["result"].get("write_fsync") is not None
@@ -383,7 +435,8 @@ def main(argv=None):
                       f"wall {r['wall_seconds']:.1f} s (write {r['write_seconds']:.1f}, finalize "
                       f"{r['finalize_seconds']:.1f}), {r['writes_per_second']} writes/s, "
                       f"{r['rows_per_second']:,} rows/s, p50 {lat.get('p50')} ms, "
-                      f"{fmt_bytes(r['bytes_on_disk'])}, fsync {fsync_dict_total(r.get('fsync'))}",
+                      f"{fmt_bytes(r['bytes_on_disk'])}, fsync {fsync_dict_total(r.get('fsync'))}, "
+                      f"peak RSS {rss_cell(r)} MB",
                       flush=True)
                 key = (storage, label, ds, mode)
                 rep["runs"] = [x for x in rep["runs"]

@@ -186,6 +186,30 @@ impl DedupIndex {
         part.covered.insert(key.clone());
     }
 
+    /// Is `table`/`p` indexed now? (Only then does [`DedupIndex::record`] fold rows.)
+    pub fn is_indexed(&self, table: &str, p: Partition) -> bool {
+        self.limit > 0 && self.part(table, p).is_some()
+    }
+
+    /// [`DedupIndex::record`] for rows given as per-point received-time ranges
+    /// `(series, value_time µs, min, max received_time µs)`.
+    pub fn record_ranges(
+        &mut self,
+        table: &str,
+        p: Partition,
+        key: &Key,
+        ranges: impl Iterator<Item = (SeriesId, i64, i64, i64)>,
+    ) {
+        let Some(part) = self.part_mut(table, p) else {
+            return;
+        };
+        for (s, vt, lo, hi) in ranges {
+            part.fold(s, vt, lo);
+            part.fold(s, vt, hi);
+        }
+        part.covered.insert(key.clone());
+    }
+
     /// Records a committed compaction of `table`/`p`: `new` holds exactly the rows of
     /// `removed`, so it is covered if they all were.
     pub fn record_compaction(&mut self, table: &str, p: Partition, removed: &[Key], new: &Key) {
