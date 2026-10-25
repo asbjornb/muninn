@@ -23,4 +23,5 @@ Lightweight decision records. One file per decision: `NNNN-short-title.md`.
 | [0006](0006-durability-and-gc-safety.md) | Durability contract and GC safety |
 | [0007](0007-log-truncation-and-batch-catalog.md) | Log truncation, size-triggered checkpoints, batch series creation |
 | [0008](0008-read-path-layout.md) | Read path: knowledge-time compaction, series-aligned blocks, nibble encoding (segment format 2) |
-| [0009](0009-fast-write-path.md) | Fast write path: rows in the commit log, group commit, memtable, background flush (log format 3) |
+| [0009](0009-fast-write-path.md) | Fast write path: rows in the commit log, group commit, memtable, background flush (log format 3; amended by 0010) |
+| [0010](0010-chunked-large-writes.md) | Large writes processed in chunks, still one commit; input converted chunk by chunk |

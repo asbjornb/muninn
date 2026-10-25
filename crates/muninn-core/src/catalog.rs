@@ -308,13 +308,29 @@ impl Catalog {
 
     /// SPEC §10.4 order: an empty batch id (`invalid_argument`), the §4.4 no-op for a
     /// known batch id (no further validation), the writer clock (`invalid_timestamp`),
-    /// then §4.1 steps 1–5 per row in input order (any failure rejects the whole batch). `is_committed` answers whether a batch id was
-    /// committed before.
+    /// then §4.1 steps 1–5 per row in input order (any failure rejects the whole batch).
+    /// `is_committed` answers whether a batch id was committed before.
     pub fn validate_batch(
         &self,
         batch: &WriteBatch,
         is_committed: impl FnOnce(&str) -> bool,
     ) -> Result<BatchPlan> {
+        let Some(clock) = self.check_batch(batch, is_committed)? else {
+            return Ok(BatchPlan::AlreadyCommitted);
+        };
+        let rows = BatchRows::new(self, batch).validate(0..batch.len())?;
+        Ok(BatchPlan::Candidates { clock, rows })
+    }
+
+    /// The checks of [`Catalog::validate_batch`] before the rows: an empty batch id
+    /// (`invalid_argument`), the §4.4 no-op (`Ok(None)`), the writer clock
+    /// (`invalid_timestamp`). Returns the resolved writer clock. The rows are then
+    /// validated with [`BatchRows`], in input order.
+    pub fn check_batch(
+        &self,
+        batch: &WriteBatch,
+        is_committed: impl FnOnce(&str) -> bool,
+    ) -> Result<Option<Timestamp>> {
         if let Some(id) = &batch.batch_id {
             if id.is_empty() {
                 return Err(Error::new(
@@ -323,155 +339,14 @@ impl Catalog {
                 ));
             }
             if is_committed(id) {
-                return Ok(BatchPlan::AlreadyCommitted);
+                return Ok(None);
             }
         }
-        let clock = batch
+        batch
             .clock
             .resolve()
-            .map_err(|e| Error::new(e.kind(), format!("writer clock: {}", e.message())))?;
-        let mut rows = Vec::with_capacity(batch.len());
-        for (i, row) in batch.rows.iter().enumerate() {
-            let v = self.validate_row(row).map_err(|e| row_error(i, &e))?;
-            rows.push(v);
-        }
-        if let Some(c) = &batch.columns {
-            self.validate_columns(c, batch.rows.len(), &mut rows)?;
-        }
-        Ok(BatchPlan::Candidates { clock, rows })
-    }
-
-    /// SPEC §4.1 for columnar rows (rows `offset..` of the batch), appending the versions
-    /// to `out`. The result is by definition that of [`Catalog::validate_row`] on each
-    /// [`WriteColumns::row`] in order: the fast path below handles the common, valid
-    /// cases straight from the columns (series and column names resolved once per batch,
-    /// values copied by type) and hands any row it does not accept to `validate_row`,
-    /// which then decides — so error codes, check order and messages are the row path's.
-    fn validate_columns(
-        &self,
-        c: &WriteColumns,
-        offset: usize,
-        out: &mut Vec<Version>,
-    ) -> Result<()> {
-        let slow = |i: usize, out: &mut Vec<Version>| -> Result<()> {
-            let v = self
-                .validate_row(&c.row(i))
-                .map_err(|e| row_error(offset + i, &e))?;
-            out.push(v);
-            Ok(())
-        };
-        let distinct_names = {
-            let mut names: Vec<&str> = c.values.iter().map(|(n, _)| n.as_str()).collect();
-            names.sort_unstable();
-            names.windows(2).all(|w| w[0] != w[1])
-        };
-        if !distinct_names {
-            for i in 0..c.len {
-                slow(i, out)?;
-            }
-            return Ok(());
-        }
-        // Per distinct series name: (series id, index into `tables`), resolved once.
-        struct TableMap<'a> {
-            def: &'a TableDef,
-            /// For each input value column: its column index in the table.
-            cols: Vec<Option<usize>>,
-        }
-        let mut tables: Vec<TableMap<'_>> = Vec::new();
-        let series: Vec<Option<(SeriesId, usize)>> = c
-            .series_names
-            .iter()
-            .map(|name| {
-                let s = self.series_by_name(name).ok()?;
-                let t = self.table(&s.table).ok()?;
-                let ti = match tables.iter().position(|m| std::ptr::eq(m.def, t)) {
-                    Some(ti) => ti,
-                    None => {
-                        tables.push(TableMap {
-                            def: t,
-                            cols: c.values.iter().map(|(n, _)| t.column_index(n)).collect(),
-                        });
-                        tables.len() - 1
-                    }
-                };
-                Some((s.id, ti))
-            })
-            .collect();
-        let time = |col: &Option<TimeColumn>, i: usize| -> Option<Timestamp> {
-            match col.as_ref()? {
-                TimeColumn::Micros(v) => Timestamp::from_micros(v[i]?),
-                TimeColumn::Inputs(v) => v[i].as_ref()?.resolve().ok(),
-            }
-        };
-        out.reserve(c.len);
-        'rows: for i in 0..c.len {
-            let Some((id, ti)) = series[c.series_codes[i] as usize] else {
-                slow(i, out)?;
-                continue;
-            };
-            let t = &tables[ti];
-            let deleted = c.deleted.as_ref().is_some_and(|d| d[i]);
-            let mut values: Vec<Option<Value>> = vec![None; t.def.columns.len()];
-            for ((_, col), &idx) in c.values.iter().zip(&t.cols) {
-                if col.is_null(i) {
-                    continue;
-                }
-                let (Some(idx), false) = (idx, deleted) else {
-                    slow(i, out)?;
-                    continue 'rows;
-                };
-                let ty = t.def.columns[idx].ty;
-                let v = match (col, ty) {
-                    (ValueColumn::F64(v), ColumnType::F64) => v[i].map(Value::F64),
-                    (ValueColumn::I64(v), ColumnType::I64) => v[i].map(Value::I64),
-                    (ValueColumn::I64(v), ColumnType::F64) => v[i].map(|n| Value::F64(n as f64)),
-                    (ValueColumn::Bool(v), ColumnType::Bool) => v[i].map(Value::Bool),
-                    (ValueColumn::Timestamp(v), ColumnType::Timestamp) => {
-                        v[i].map(Value::Timestamp)
-                    }
-                    (ValueColumn::Inputs(v), ty) => v[i].coerce_to(ty).ok().flatten(),
-                    _ => None,
-                };
-                if v.is_none() {
-                    slow(i, out)?;
-                    continue 'rows;
-                }
-                values[idx] = v;
-            }
-            let (Some(value_time), Some(received_time)) =
-                (time(&c.value_time, i), time(&c.received_time, i))
-            else {
-                slow(i, out)?;
-                continue;
-            };
-            let published_null = match c.published_time.as_ref() {
-                None => true,
-                Some(TimeColumn::Micros(v)) => v[i].is_none(),
-                Some(TimeColumn::Inputs(v)) => v[i].is_none(),
-            };
-            let published_time = if published_null {
-                None
-            } else {
-                match time(&c.published_time, i) {
-                    Some(t) => Some(t),
-                    None => {
-                        slow(i, out)?;
-                        continue;
-                    }
-                }
-            };
-            out.push(Version {
-                series: id,
-                value_time,
-                published_time,
-                received_time,
-                deleted,
-                values,
-                system_time: Timestamp::MIN, // placeholder, set by `plan_dedup`
-                seq: 0,                      // placeholder, set by `plan_dedup`
-            });
-        }
-        Ok(())
+            .map(Some)
+            .map_err(|e| Error::new(e.kind(), format!("writer clock: {}", e.message())))
     }
 
     // -----------------------------------------------------------------------------------
@@ -660,6 +535,212 @@ impl PreparedGrid<'_> {
     }
 }
 
+/// The rows of a write batch (its [`WriteRow`]s, then its [`WriteColumns`], then its
+/// [`crate::api::ColumnSource`]), validated on demand (SPEC §4.1):
+/// [`BatchRows::validate`] turns any range of them into candidate versions, so a large
+/// batch can be validated piece by piece (and source rows are converted piece by piece).
+/// Validating `0..n` in pieces, in order, gives exactly the versions — and for invalid
+/// input exactly the error, message included — of validating it whole: the first failing
+/// row in input order decides, and its index in the error is its index in the batch.
+///
+/// Columnar rows take a fast path: series and column names are resolved once per
+/// [`WriteColumns`], values copied by type. Any row the fast path does not accept is
+/// validated by [`Catalog::validate_row`] on [`WriteColumns::row`], which then decides —
+/// so error codes, check order and messages are the row path's.
+pub struct BatchRows<'a> {
+    catalog: &'a Catalog,
+    batch: &'a WriteBatch,
+    /// The fast path for `batch.columns`.
+    fast: Option<ColumnsPlan<'a>>,
+}
+
+/// Names of a [`WriteColumns`] resolved against the catalog.
+struct ColumnsPlan<'a> {
+    c: &'a WriteColumns,
+    tables: Vec<TableMap<'a>>,
+    /// Per distinct series name: (series id, index into `tables`), `None` if unknown.
+    series: Vec<Option<(SeriesId, usize)>>,
+}
+
+struct TableMap<'a> {
+    def: &'a TableDef,
+    /// For each input value column: its column index in the table.
+    cols: Vec<Option<usize>>,
+}
+
+impl<'a> BatchRows<'a> {
+    /// Resolves the batch's names (once; cheap compared with validating its rows).
+    pub fn new(catalog: &'a Catalog, batch: &'a WriteBatch) -> BatchRows<'a> {
+        BatchRows {
+            catalog,
+            batch,
+            fast: batch
+                .columns
+                .as_deref()
+                .and_then(|c| ColumnsPlan::new(catalog, c)),
+        }
+    }
+
+    /// Number of rows.
+    pub fn len(&self) -> usize {
+        self.batch.len()
+    }
+
+    /// No rows?
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// The candidate versions of rows `range` (`system_time` and `seq` are placeholders),
+    /// or the error of the first invalid one.
+    pub fn validate(&self, range: std::ops::Range<usize>) -> Result<Vec<Version>> {
+        let mut out = Vec::with_capacity(range.len());
+        let rows = self.batch.rows.len();
+        let cols = rows + self.batch.columns.as_ref().map_or(0, |c| c.len);
+        for i in range.start..range.end.min(cols) {
+            out.push(self.row(i)?);
+        }
+        if range.end > cols {
+            let src = self
+                .batch
+                .source
+                .as_ref()
+                .ok_or_else(|| Error::internal("row index out of range"))?;
+            let a = range.start.max(cols);
+            let c = src.0.columns(a - cols..range.end - cols)?;
+            if c.len != range.end - a {
+                return Err(Error::internal("the column source returned too few rows"));
+            }
+            let plan = ColumnsPlan::new(self.catalog, &c);
+            for j in 0..c.len {
+                match plan.as_ref().and_then(|p| p.row(j)) {
+                    Some(v) => out.push(v),
+                    None => out.push(
+                        self.catalog
+                            .validate_row(&c.row(j))
+                            .map_err(|e| row_error(a + j, &e))?,
+                    ),
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// The candidate version of row `i`, or its error.
+    pub fn row(&self, i: usize) -> Result<Version> {
+        let n = self.batch.rows.len();
+        if i < n {
+            return self
+                .catalog
+                .validate_row(&self.batch.rows[i])
+                .map_err(|e| row_error(i, &e));
+        }
+        let j = i - n;
+        match self.batch.columns.as_deref() {
+            Some(c) if j < c.len => {
+                if let Some(v) = self.fast.as_ref().and_then(|p| p.row(j)) {
+                    return Ok(v);
+                }
+                self.catalog
+                    .validate_row(&c.row(j))
+                    .map_err(|e| row_error(i, &e))
+            }
+            _ => self
+                .validate(i..i + 1)?
+                .pop()
+                .ok_or_else(|| Error::internal("row index out of range")),
+        }
+    }
+}
+
+impl<'a> ColumnsPlan<'a> {
+    /// `None` if the columns repeat a name (then every row takes the row path).
+    fn new(catalog: &'a Catalog, c: &'a WriteColumns) -> Option<ColumnsPlan<'a>> {
+        let mut names: Vec<&str> = c.values.iter().map(|(n, _)| n.as_str()).collect();
+        names.sort_unstable();
+        if names.windows(2).any(|w| w[0] == w[1]) {
+            return None;
+        }
+        let mut tables: Vec<TableMap<'_>> = Vec::new();
+        let series = c
+            .series_names
+            .iter()
+            .map(|name| {
+                let s = catalog.series_by_name(name).ok()?;
+                let t = catalog.table(&s.table).ok()?;
+                let ti = match tables.iter().position(|m| std::ptr::eq(m.def, t)) {
+                    Some(ti) => ti,
+                    None => {
+                        tables.push(TableMap {
+                            def: t,
+                            cols: c.values.iter().map(|(n, _)| t.column_index(n)).collect(),
+                        });
+                        tables.len() - 1
+                    }
+                };
+                Some((s.id, ti))
+            })
+            .collect();
+        Some(ColumnsPlan { c, tables, series })
+    }
+    /// Columnar row `i` if the fast path accepts it (then it is valid, and the version is
+    /// what [`Catalog::validate_row`] would return); `None` = let the row path decide.
+    fn row(&self, i: usize) -> Option<Version> {
+        let c = self.c;
+        let (id, ti) = self.series[c.series_codes[i] as usize]?;
+        let t = &self.tables[ti];
+        let deleted = c.deleted.as_ref().is_some_and(|d| d[i]);
+        let mut values: Vec<Option<Value>> = vec![None; t.def.columns.len()];
+        for ((_, col), &idx) in c.values.iter().zip(&t.cols) {
+            if col.is_null(i) {
+                continue;
+            }
+            let (Some(idx), false) = (idx, deleted) else {
+                return None;
+            };
+            let ty = t.def.columns[idx].ty;
+            let v = match (col, ty) {
+                (ValueColumn::F64(v), ColumnType::F64) => v[i].map(Value::F64),
+                (ValueColumn::I64(v), ColumnType::I64) => v[i].map(Value::I64),
+                (ValueColumn::I64(v), ColumnType::F64) => v[i].map(|n| Value::F64(n as f64)),
+                (ValueColumn::Bool(v), ColumnType::Bool) => v[i].map(Value::Bool),
+                (ValueColumn::Timestamp(v), ColumnType::Timestamp) => v[i].map(Value::Timestamp),
+                (ValueColumn::Inputs(v), ty) => v[i].coerce_to(ty).ok().flatten(),
+                _ => None,
+            };
+            values[idx] = Some(v?);
+        }
+        let time = |col: &Option<TimeColumn>| -> Option<Timestamp> {
+            match col.as_ref()? {
+                TimeColumn::Micros(v) => Timestamp::from_micros(v[i]?),
+                TimeColumn::Inputs(v) => v[i].as_ref()?.resolve().ok(),
+            }
+        };
+        let value_time = time(&c.value_time)?;
+        let received_time = time(&c.received_time)?;
+        let published_null = match c.published_time.as_ref() {
+            None => true,
+            Some(TimeColumn::Micros(v)) => v[i].is_none(),
+            Some(TimeColumn::Inputs(v)) => v[i].is_none(),
+        };
+        let published_time = if published_null {
+            None
+        } else {
+            Some(time(&c.published_time)?)
+        };
+        Some(Version {
+            series: id,
+            value_time,
+            published_time,
+            received_time,
+            deleted,
+            values,
+            system_time: Timestamp::MIN, // placeholder, set by `plan_dedup`
+            seq: 0,                      // placeholder, set by `plan_dedup`
+        })
+    }
+}
+
 /// SPEC §4.2: `batch.system_time = max(c, last + 1us)` — strictly increasing across
 /// stored batches, so no later write can land at or below a system bound taken from an
 /// existing snapshot (§7.3). Fails with `invalid_timestamp` once `last` is the maximum
@@ -734,13 +815,11 @@ pub fn plan_dedup(
 ) -> Result<DedupPlan> {
     // Only versions of the same point can be content-identical. Batches usually list
     // each point once, in order: then no row can duplicate an earlier one.
-    let distinct_points = candidates
-        .windows(2)
-        .all(|w| (w[0].series, w[0].value_time) < (w[1].series, w[1].value_time));
-    let dup_in_batch = if distinct_points {
+    let dup_in_batch = if distinct_points(&candidates) {
         Vec::new()
     } else {
-        in_batch_duplicates(&candidates)
+        let hashes: Vec<u64> = candidates.iter().map(Version::content_hash).collect();
+        in_batch_duplicates(&candidates, &hashes)
     };
     let mut kept: Vec<Version> = Vec::with_capacity(candidates.len());
     let mut duplicates = 0u64;
@@ -756,7 +835,16 @@ pub fn plan_dedup(
     Ok(DedupPlan { kept, duplicates })
 }
 
+/// Does every candidate belong to a different point, in increasing point order? (Then
+/// no candidate can duplicate another; batches usually look like this.)
+pub fn distinct_points(candidates: &[Version]) -> bool {
+    candidates
+        .windows(2)
+        .all(|w| (w[0].series, w[0].value_time) < (w[1].series, w[1].value_time))
+}
+
 /// For each candidate: is it content-identical to an *earlier* candidate of the batch?
+/// `hashes[i]` is `candidates[i].content_hash()`.
 ///
 /// That is the same as "to an earlier kept row" (SPEC §4.3): content identity is an
 /// equivalence, so a row identical to a dropped row is identical to what that row was
@@ -764,14 +852,19 @@ pub fn plan_dedup(
 /// a stored duplicate anyway). O(n log n) whatever the number of versions per point:
 /// the rows are sorted by content hash (ties by position), and only rows with equal
 /// hashes are compared.
-fn in_batch_duplicates(candidates: &[Version]) -> Vec<bool> {
-    let mut keys: Vec<(u64, usize)> = candidates
-        .iter()
-        .enumerate()
-        .map(|(i, v)| (v.content_hash(), i))
-        .collect();
+pub fn in_batch_duplicates(candidates: &[Version], hashes: &[u64]) -> Vec<bool> {
+    in_batch_duplicates_by(hashes, |i| &candidates[i])
+}
+
+/// [`in_batch_duplicates`] for candidates the caller does not keep as one slice:
+/// `candidate(i)` is candidate `i`, `hashes[i]` its content hash.
+pub fn in_batch_duplicates_by<'v>(
+    hashes: &[u64],
+    candidate: impl Fn(usize) -> &'v Version,
+) -> Vec<bool> {
+    let mut keys: Vec<(u64, u32)> = hashes.iter().copied().zip(0u32..).collect();
     keys.sort_unstable();
-    let mut dup = vec![false; candidates.len()];
+    let mut dup = vec![false; hashes.len()];
     // First rows of the distinct contents seen within one hash group (more than one
     // only on a hash collision).
     let mut reps: Vec<usize> = Vec::new();
@@ -781,9 +874,10 @@ fn in_batch_duplicates(candidates: &[Version]) -> Vec<bool> {
         }
         reps.clear();
         for &(_, j) in group {
+            let j = j as usize;
             if reps
                 .iter()
-                .any(|&r| candidates[r].content_identical(&candidates[j]))
+                .any(|&r| candidate(r).content_identical(candidate(j)))
             {
                 dup[j] = true;
             } else {

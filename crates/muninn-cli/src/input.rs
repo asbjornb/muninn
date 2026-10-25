@@ -501,6 +501,7 @@ fn commit(
     let batch = WriteBatch {
         rows,
         columns: None,
+        source: None,
         batch_id,
         clock: ctx.now().into(),
     };

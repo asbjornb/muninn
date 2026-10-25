@@ -1,6 +1,7 @@
 # 0009: Fast write path — rows in the commit log, group commit, memtable, background flush
 
-- Status: accepted (amends 0004: the log now carries rows; segments are written by flushes)
+- Status: accepted (amends 0004: the log now carries rows; segments are written by flushes;
+  amended by 0010: batches of more than `write_chunk_rows` rows are processed in chunks)
 - Date: 2026-10-19
 
 ## Context

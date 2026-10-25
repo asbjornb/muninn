@@ -22,8 +22,8 @@ use std::sync::Arc;
 use arrow_array::RecordBatch;
 use arrow_pyarrow::{FromPyArrow, IntoPyArrow, Table};
 use muninn_core::api::{
-    AddColumn, AsofJoinRequest, AsofLeftRow, CreateSeries, CreateTable, GridRequest, GridWindow,
-    LatestRequest, ReadContext, ReplayRequest, TimeInput, WriteBatch,
+    AddColumn, AsofJoinRequest, AsofLeftRow, ColumnSource, CreateSeries, CreateTable, GridRequest,
+    GridWindow, LatestRequest, ReadContext, ReplayRequest, SourceRef, TimeInput, WriteBatch,
 };
 use muninn_core::types::{SeriesDef, TableDef};
 use muninn_core::{
@@ -1108,7 +1108,7 @@ fn write_batch(
             }
         },
     };
-    let (rows, columns) = match (rows, arrow) {
+    let (rows, source) = match (rows, arrow) {
         (Some(r), _) => {
             let list = r
                 .cast::<PyList>()
@@ -1121,10 +1121,16 @@ fn write_batch(
         }
         (None, Some(a)) => {
             let batches = arrow_batches(py, a)?;
-            // Columnar (no map per row); batches with differing schemas row by row.
-            py.detach(|| match input::columns_from_arrow(&batches, assume_utc)? {
-                Some(c) => Ok((Vec::new(), Some(Arc::new(c)))),
-                None => Ok((input::rows_from_arrow(&batches, assume_utc)?, None)),
+            // Columnar (no map per row), converted while the engine writes (a large
+            // batch chunk by chunk); batches with differing schemas row by row.
+            py.detach(|| {
+                if input::same_schema(&batches) {
+                    let src: Arc<dyn ColumnSource> =
+                        Arc::new(input::ArrowSource::new(batches, assume_utc)?);
+                    Ok((Vec::new(), Some(SourceRef(src))))
+                } else {
+                    Ok((input::rows_from_arrow(&batches, assume_utc)?, None))
+                }
             })
             .or_py(py)?
         }
@@ -1136,7 +1142,8 @@ fn write_batch(
     };
     Ok(WriteBatch {
         rows,
-        columns,
+        columns: None,
+        source,
         batch_id,
         clock,
     })

@@ -34,6 +34,7 @@ use crate::read::{EngineSnapshot, ScanSpec, Scanner};
 use crate::segio::{Shared, check_columns, is_missing_segment, store_err};
 use crate::state::{SegmentRef, State};
 
+mod chunked;
 mod flush;
 mod restore;
 mod write;
@@ -305,7 +306,9 @@ impl<S: Store> Engine<S> {
     /// and assigned its own `system_time` and seqs exactly as if written by
     /// [`Database::write`] one after the other, and is atomic; the results are in order.
     /// One durable commit (one store write) holds them all, together with whatever other
-    /// threads queued meanwhile.
+    /// threads queued meanwhile (unless a batch has more than
+    /// [`EngineOptions::write_chunk_rows`] rows: then the call commits alone, processing
+    /// that batch in chunks, decision 0010).
     pub fn write_many(&self, batches: &[WriteBatch]) -> Vec<Result<WriteResult>> {
         self.core.write_many(batches)
     }
