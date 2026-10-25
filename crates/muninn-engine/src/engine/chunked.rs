@@ -24,16 +24,19 @@
 //!   by sorting content hashes (as for a whole batch), against stored versions through
 //!   the dedup index (as for a whole batch, against the same state), and against earlier
 //!   chunks through a [`ContentIndex`] over their candidates ([`EarlierRows`]). That index
-//!   is built lazily: earlier candidates are recorded as runs of rows sharing `(series,
-//!   received_time)` — a content-identical row has the same pair — and the rows of a pair
-//!   are hashed (validated again from the input) only when a later row has that pair,
-//!   which fresh data (later received times) never has. Later batches of the group
-//!   consult the same structure.
+//!   is built lazily: earlier candidates are recorded only as runs of rows sharing
+//!   `(series, received_time)` — a content-identical row has the same pair — behind a
+//!   Bloom filter of the pairs, and the rows of a pair are validated again from the input
+//!   and indexed only when a later row has that pair, which fresh data (later received
+//!   times) never has. Later batches of the group consult the same structure.
 //! * **Seqs**: kept rows take consecutive seqs in input order, chunk after chunk.
 //! * **Layout**: rows go inline (the memtable) if the batch keeps at most
 //!   [`crate::EngineOptions::inline_max_rows`] rows, else to segment files: kept rows are
-//!   buffered until they exceed that, then every chunk writes one file per touched
-//!   partition. Query results do not depend on the layout (SPEC §7.2).
+//!   buffered until they exceed that; from then on a partition's kept rows wait until they
+//!   fill a file of `write_chunk_rows` rows, or, when more than `write_chunk_rows` rows
+//!   wait in all, the partitions holding the most are written ([`Pending`]): a large
+//!   write makes few files per partition (fewer for compaction to merge) while the rows
+//!   it holds stay bounded. Query results do not depend on the layout (SPEC §7.2).
 //!
 //! Parallelism (threads, no async), in three stages. *Preparing* a chunk (up to
 //! `max(2, io_threads / 2)` chunks ahead, each on its own thread) validates it, hashes
@@ -43,10 +46,11 @@
 //! chunks in order and makes the decisions that depend on earlier ones: stored versions
 //! (through the dedup index), earlier chunks, earlier batches of the group; then the seq
 //! of every kept row follows from a prefix count. *Encoders* (`max(1, io_threads / 2)`
-//! threads) drop the duplicates of a partition's rows, assign seqs and `system_time`,
-//! and encode and write the file. The bytes of every file depend only on its chunk's
-//! rows, never on the thread count or timing: the same input gives byte-identical
-//! segments, listed in the entry in input order.
+//! threads, joined by the preparing threads for the last files) drop the duplicates of a
+//! partition's rows, assign seqs and `system_time`, and encode and write the file. Which
+//! rows go into which file depends only on the input (row counts, never timing), and a
+//! file's bytes only on its rows: the same input gives byte-identical segments whatever
+//! the thread count, listed in the entry in a fixed order.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::ops::Range;
@@ -55,7 +59,7 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::Instant;
 
 use muninn_core::api::WriteBatch;
-use muninn_core::catalog::{BatchRows, distinct_points, in_batch_duplicates};
+use muninn_core::catalog::{BatchRows, in_batch_duplicates_by};
 use muninn_core::types::{ContentIndex, SeriesId, TableDef, Version};
 use muninn_core::{Error, Result, Timestamp};
 use muninn_format::Partition;
@@ -88,87 +92,101 @@ struct Prepared<'s> {
     maybe: Vec<u32>,
     /// Runs `[start, end)` of positions sharing `(series, received_time µs)`.
     runs: Vec<(SeriesId, i64, u32, u32)>,
+    /// The runs for [`EarlierRows`].
+    keys: Vec<(u64, u32, u32)>,
 }
 
+/// Kept rows of a chunked batch that may wait to be written, in chunks (see
+/// [`Pending`]).
+const MAX_PENDING_CHUNKS: usize = 1;
+
+/// Rows validated (and converted) at a time while preparing a chunk: rows go straight
+/// into their partition's vector, so no allocation is chunk-sized (large allocations make
+/// the system allocator keep correspondingly large free areas per thread).
+const PIECE_ROWS: usize = 8192;
+
 fn prepare<'s>(st: &'s State, input: &BatchRows<'_>, range: Range<usize>) -> Result<Prepared<'s>> {
-    let vs = input.validate(range)?;
-    let n = vs.len();
-    let hashes: Vec<u64> = vs.iter().map(Version::content_hash).collect();
-    let dup = if distinct_points(&vs) {
-        vec![false; n]
-    } else {
-        in_batch_duplicates(&vs, &hashes)
-    };
-    let mut runs = Vec::new();
-    let mut i = 0;
-    while i < n {
-        let key = (vs[i].series, vs[i].received_time.as_micros());
-        let mut j = i + 1;
-        while j < n && (vs[j].series, vs[j].received_time.as_micros()) == key {
-            j += 1;
-        }
-        runs.push((key.0, key.1, i as u32, j as u32));
-        i = j;
-    }
-    // The part of each row (rows come in runs of one partition), parts in key order.
+    let n = range.len();
+    let mut hashes: Vec<u64> = Vec::with_capacity(n);
+    let mut runs: Vec<(SeriesId, i64, u32, u32)> = Vec::new();
+    let mut distinct = true;
+    let mut prev_point: Option<(SeriesId, Timestamp)> = None;
+    // The part of each row (rows come in runs of one partition), in order of appearance.
     let mut placer = Placer::new(st);
     let mut index: FxHashMap<(&'s str, Partition), u32> = FxHashMap::default();
-    let mut found: Vec<(&'s TableDef, Partition, usize)> = Vec::new();
-    let mut of_row: Vec<u32> = Vec::with_capacity(n);
+    let mut parts: Vec<Part<'s>> = Vec::new();
+    let mut hulls: Vec<Option<(i64, i64)>> = Vec::new();
     let mut prev: Option<((&'s str, Partition), u32)> = None;
-    for v in &vs {
-        let (t, p) = placer.place(v)?;
-        let key = (t.name.as_str(), p);
-        let g = match prev {
-            Some((k, g)) if k == key => g,
-            _ => *index.entry(key).or_insert_with(|| {
-                found.push((t, p, 0));
-                (found.len() - 1) as u32
-            }),
-        };
-        prev = Some((key, g));
-        found[g as usize].2 += 1;
-        of_row.push(g);
+    let mut at: Vec<(u32, u32)> = Vec::with_capacity(n);
+    let mut maybe = Vec::new();
+    let mut i = 0u32;
+    let mut a = range.start;
+    while a < range.end {
+        let b = (a + PIECE_ROWS).min(range.end);
+        for v in input.validate(a..b)? {
+            hashes.push(v.content_hash());
+            let point = (v.series, v.value_time);
+            distinct &= prev_point.is_none_or(|p| p < point);
+            prev_point = Some(point);
+            let rt = v.received_time.as_micros();
+            match runs.last_mut() {
+                Some(r) if (r.0, r.1) == (v.series, rt) => r.3 = i + 1,
+                _ => runs.push((v.series, rt, i, i + 1)),
+            }
+            let (t, p) = placer.place(&v)?;
+            let key = (t.name.as_str(), p);
+            let g = match prev {
+                Some((k, g)) if k == key => g,
+                _ => *index.entry(key).or_insert_with(|| {
+                    parts.push(Part {
+                        table: t,
+                        partition: p,
+                        rows: Vec::new(),
+                        pos: Vec::new(),
+                    });
+                    hulls.push(rt_hull(st, &t.name, p));
+                    (parts.len() - 1) as u32
+                }),
+            };
+            prev = Some((key, g));
+            if hulls[g as usize].is_some_and(|(lo, hi)| lo <= rt && rt <= hi) {
+                maybe.push(i);
+            }
+            let part = &mut parts[g as usize];
+            at.push((g, part.rows.len() as u32));
+            part.rows.push(v);
+            part.pos.push(i);
+            i += 1;
+        }
+        a = b;
     }
-    let mut order: Vec<u32> = (0..found.len() as u32).collect();
-    order.sort_by(|&a, &b| {
-        let (ta, pa, _) = found[a as usize];
-        let (tb, pb, _) = found[b as usize];
-        (ta.name.as_str(), pa).cmp(&(tb.name.as_str(), pb))
+    // Parts in key order (so files are listed in a fixed order).
+    let mut order: Vec<u32> = (0..parts.len() as u32).collect();
+    order.sort_by(|&x, &y| {
+        let (px, py) = (&parts[x as usize], &parts[y as usize]);
+        (px.table.name.as_str(), px.partition).cmp(&(py.table.name.as_str(), py.partition))
     });
-    let mut rank = vec![0u32; found.len()];
+    let mut rank = vec![0u32; parts.len()];
     for (r, &g) in order.iter().enumerate() {
         rank[g as usize] = r as u32;
     }
-    let mut parts: Vec<Part<'s>> = order
-        .iter()
-        .map(|&g| {
-            let (table, partition, count) = found[g as usize];
-            Part {
-                table,
-                partition,
-                rows: Vec::with_capacity(count),
-                pos: Vec::with_capacity(count),
-            }
-        })
-        .collect();
-    let hulls: Vec<Option<(i64, i64)>> = parts
-        .iter()
-        .map(|p| rt_hull(st, &p.table.name, p.partition))
-        .collect();
-    let mut at = Vec::with_capacity(n);
-    let mut maybe = Vec::new();
-    for (i, (v, g)) in vs.into_iter().zip(of_row).enumerate() {
-        let g = rank[g as usize] as usize;
-        let rt = v.received_time.as_micros();
-        if hulls[g].is_some_and(|(lo, hi)| lo <= rt && rt <= hi) {
-            maybe.push(i as u32);
-        }
-        let part = &mut parts[g];
-        at.push((g as u32, part.rows.len() as u32));
-        part.rows.push(v);
-        part.pos.push(i as u32);
+    for x in &mut at {
+        x.0 = rank[x.0 as usize];
     }
+    let mut slots: Vec<Option<Part<'s>>> = parts.into_iter().map(Some).collect();
+    let parts: Vec<Part<'s>> = order
+        .iter()
+        .map(|&g| slots[g as usize].take().expect("each part once"))
+        .collect();
+    let dup = if distinct {
+        vec![false; n]
+    } else {
+        in_batch_duplicates_by(&hashes, |i| {
+            let (g, k) = at[i];
+            &parts[g as usize].rows[k as usize]
+        })
+    };
+    let keys = run_keys(&runs);
     Ok(Prepared {
         parts,
         at,
@@ -176,83 +194,124 @@ fn prepare<'s>(st: &'s State, input: &BatchRows<'_>, range: Range<usize>) -> Res
         dup,
         maybe,
         runs,
+        keys,
     })
 }
 
 /// Candidates of a chunked batch recorded so far (its earlier chunks; once it is done,
 /// all of it, for the later batches of its group), for duplicate checks without keeping
 /// its rows (see the module docs).
+///
+/// Per chunk only its `(series, received_time)` runs are kept, as `(pair hash, start,
+/// end)` sorted by hash (sorted while the chunk is prepared), plus a Bloom filter of the
+/// pairs over all chunks: a row whose pair the filter rules out (fresh data: every pair
+/// is new) costs two bit tests. A pair the filter lets through is looked up in each
+/// chunk's runs, and its rows are validated again from the input and indexed by content
+/// ([`ContentIndex`]), once.
 pub(crate) struct EarlierRows<'a> {
     input: BatchRows<'a>,
+    /// Per recorded chunk: its first batch row and its runs.
+    chunks: Vec<(u32, Vec<RunKey>)>,
+    bloom: Vec<u64>,
+    /// `bloom` has `mask + 1` bits.
+    mask: u64,
+    /// Pairs looked up so far.
     pairs: FxHashMap<(SeriesId, i64), Pair>,
 }
 
-/// The recorded candidates with one `(series, received_time)`.
+/// The recorded candidates with one `(series, received_time)` (of `chunks[..upto]`).
 #[derive(Default)]
 struct Pair {
-    /// Runs `[start, end)` of batch row indices.
-    runs: Vec<(u32, u32)>,
-    /// `runs[..indexed]` are in `index`/`ids`.
-    indexed: usize,
+    upto: usize,
     index: ContentIndex,
-    /// Item `k` of `index` is batch row `ids[k]`.
-    ids: Vec<u32>,
+    rows: Vec<Version>,
+}
+
+/// A run of rows sharing a `(series, received_time)`: `(pair hash, start, end)`.
+type RunKey = (u64, u32, u32);
+
+/// The hash of a `(series, received_time µs)` pair (splitmix64 finaliser).
+fn pair_hash(series: SeriesId, rt: i64) -> u64 {
+    let mut x = (rt as u64) ^ u64::from(series.0).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    x ^ (x >> 31)
+}
+
+/// A chunk's runs as `(pair hash, start, end)`, sorted (see [`EarlierRows`]).
+fn run_keys(runs: &[(SeriesId, i64, u32, u32)]) -> Vec<(u64, u32, u32)> {
+    let mut keys: Vec<(u64, u32, u32)> = runs
+        .iter()
+        .map(|&(s, rt, a, b)| (pair_hash(s, rt), a, b))
+        .collect();
+    keys.sort_unstable();
+    keys
 }
 
 impl<'a> EarlierRows<'a> {
-    fn new(input: BatchRows<'a>) -> EarlierRows<'a> {
+    /// For a batch of `rows` rows (sizes the filter: ~16 bits per row, at most 2^28).
+    fn new(input: BatchRows<'a>, rows: usize) -> EarlierRows<'a> {
+        let bits = (rows.saturating_mul(16))
+            .next_power_of_two()
+            .clamp(1 << 10, 1 << 28);
         EarlierRows {
             input,
+            chunks: Vec::new(),
+            bloom: vec![0; bits / 64],
+            mask: bits as u64 - 1,
             pairs: FxHashMap::default(),
         }
     }
 
+    fn bits(&self, h: u64) -> [u64; 2] {
+        [h & self.mask, h.rotate_left(32) & self.mask]
+    }
+
+    /// Nothing recorded yet?
+    fn is_empty(&self) -> bool {
+        self.chunks.is_empty()
+    }
+
     /// Records the runs of a chunk starting at batch row `base` as candidates.
-    fn add(&mut self, base: usize, runs: &[(SeriesId, i64, u32, u32)]) {
-        let base = base as u32;
-        for &(s, rt, a, b) in runs {
-            self.pairs
-                .entry((s, rt))
-                .or_default()
-                .runs
-                .push((base + a, base + b));
+    fn add(&mut self, base: usize, keys: Vec<(u64, u32, u32)>) {
+        for &(h, _, _) in &keys {
+            for b in self.bits(h) {
+                self.bloom[(b / 64) as usize] |= 1 << (b % 64);
+            }
         }
+        self.chunks.push((base as u32, keys));
     }
 
     /// May a recorded candidate have this `(series, received_time µs)`?
-    fn has_pair(&self, series: SeriesId, rt: i64) -> bool {
-        self.pairs.contains_key(&(series, rt))
+    fn may_have(&self, series: SeriesId, rt: i64) -> bool {
+        self.bits(pair_hash(series, rt))
+            .iter()
+            .all(|&b| self.bloom[(b / 64) as usize] & (1 << (b % 64)) != 0)
     }
 
     /// Is a recorded candidate content-identical to `v` (hash `hash`)?
     pub(crate) fn contains(&mut self, v: &Version, hash: u64) -> Result<bool> {
-        let Some(p) = self.pairs.get_mut(&(v.series, v.received_time.as_micros())) else {
+        let rt = v.received_time.as_micros();
+        if self.chunks.is_empty() || !self.may_have(v.series, rt) {
             return Ok(false);
-        };
-        let input = &self.input;
-        while p.indexed < p.runs.len() {
-            let (a, b) = p.runs[p.indexed];
-            for (j, w) in (a..b).zip(input.validate(a as usize..b as usize)?) {
-                p.index.push(w.content_hash());
-                p.ids.push(j);
-            }
-            p.indexed += 1;
         }
-        let mut err = None;
-        let found = p
-            .index
-            .find_with(hash, |k| match input.row(p.ids[k] as usize) {
-                Ok(w) => w.content_identical(v),
-                Err(e) => {
-                    err = Some(e);
-                    false
+        let h = pair_hash(v.series, rt);
+        let p = self.pairs.entry((v.series, rt)).or_default();
+        for (base, keys) in &self.chunks[p.upto..] {
+            let from = keys.partition_point(|k| k.0 < h);
+            for &(_, a, b) in keys[from..].iter().take_while(|k| k.0 == h) {
+                let range = (base + a) as usize..(base + b) as usize;
+                for w in self.input.validate(range)? {
+                    // Another pair with the same hash: not a candidate for `v`.
+                    if (w.series, w.received_time.as_micros()) == (v.series, rt) {
+                        p.index.push(w.content_hash());
+                        p.rows.push(w);
+                    }
                 }
-            })
-            .is_some();
-        match err {
-            Some(e) => Err(e),
-            None => Ok(found),
+            }
         }
+        p.upto = self.chunks.len();
+        Ok(p.index.find(&p.rows, v, hash).is_some())
     }
 }
 
@@ -283,18 +342,95 @@ impl Finish {
     }
 }
 
+/// Rows of one partition, as candidates with what turns them into stored rows (`None`:
+/// final already).
+type Segs = Vec<(Vec<Version>, Option<Finish>)>;
+
 /// Rows of one partition to be written as a segment file.
 struct Job<'a> {
     /// Position among the batch's files.
     no: usize,
     table: &'a TableDef,
     partition: Partition,
-    rows: Vec<Version>,
-    /// `None`: the rows are final.
-    finish: Option<Finish>,
+    segs: Segs,
     /// The partition is in the dedup index: also return the rows' per-point received
     /// time ranges, to fold in once the entry is committed.
     ranges: bool,
+}
+
+/// A partition's kept rows of the chunks so far, not yet written: rows of several
+/// chunks go into one file (fewer, larger files; see [`Pending::flush`]).
+struct Pend<'a> {
+    table: &'a TableDef,
+    segs: Segs,
+    /// Kept rows in `segs`.
+    rows: usize,
+}
+
+/// The pending rows of all partitions.
+struct Pending<'a> {
+    parts: BTreeMap<(&'a str, Partition), Pend<'a>>,
+    /// Kept rows over all partitions.
+    rows: usize,
+}
+
+impl<'a> Pending<'a> {
+    fn add(
+        &mut self,
+        table: &'a TableDef,
+        partition: Partition,
+        rows: Vec<Version>,
+        finish: Option<Finish>,
+        kept: usize,
+    ) {
+        let p = self
+            .parts
+            .entry((table.name.as_str(), partition))
+            .or_insert_with(|| Pend {
+                table,
+                segs: Vec::new(),
+                rows: 0,
+            });
+        p.segs.push((rows, finish));
+        p.rows += kept;
+        self.rows += kept;
+    }
+
+    /// The partitions to write now: every one holding at least `file_rows` kept rows,
+    /// then the largest ones while more than `max_rows` are pending (`all`: every one).
+    /// Deterministic: it depends on the row counts only.
+    fn flush(
+        &mut self,
+        file_rows: usize,
+        max_rows: usize,
+        all: bool,
+    ) -> Vec<((&'a str, Partition), Pend<'a>)> {
+        let mut keys: Vec<(&'a str, Partition)> = self
+            .parts
+            .iter()
+            .filter(|(_, p)| all || p.rows >= file_rows)
+            .map(|(k, _)| *k)
+            .collect();
+        let mut out: Vec<_> = keys
+            .drain(..)
+            .map(|k| (k, self.parts.remove(&k).expect("listed")))
+            .collect();
+        self.rows -= out.iter().map(|(_, p)| p.rows).sum::<usize>();
+        // Largest first, so that the encoders finish together.
+        out.sort_by(|a, b| b.1.rows.cmp(&a.1.rows).then(a.0.cmp(&b.0)));
+        while self.rows > max_rows {
+            let k = *self
+                .parts
+                .iter()
+                .max_by(|a, b| a.1.rows.cmp(&b.1.rows).then(b.0.cmp(a.0)))
+                .expect("rows pending")
+                .0;
+            let p = self.parts.remove(&k).expect("listed");
+            self.rows -= p.rows;
+            out.push((k, p));
+        }
+        out
+    }
 }
 
 /// Per-point `(series, value_time, min rt, max rt)` (µs) of a written file's rows.
@@ -375,10 +511,17 @@ impl<S: Store> Core<S> {
         };
         let mut next_seq = first_seq;
         let mut duplicates = 0u64;
-        let mut earlier = EarlierRows::new(BatchRows::new(&st.catalog, batch));
+        let mut earlier = EarlierRows::new(BatchRows::new(&st.catalog, batch), n);
         let mut jobs_sent = 0usize;
         let mut started: Option<Instant> = None;
         let cancel = AtomicBool::new(false);
+        // Kept rows waiting to be written; a partition's file takes `chunk` rows, and at
+        // most `max_pending` rows wait over all partitions.
+        let mut waiting = Pending {
+            parts: BTreeMap::new(),
+            rows: 0,
+        };
+        let max_pending = MAX_PENDING_CHUNKS * chunk;
 
         let (done_tx, done_rx) = mpsc::channel::<Result<Option<Written>>>();
         let mut written: Vec<Result<Option<Written>>> = Vec::new();
@@ -388,8 +531,8 @@ impl<S: Store> Core<S> {
             // Encoders (none with one thread: the leader encodes). The sender is owned
             // here, so it is dropped on every way out and the encoders then stop.
             let job_tx = job_tx;
-            if threads > 1 {
-                for _ in 0..encoders {
+            let spawn_encoders = |k: usize| {
+                for _ in 0..k {
                     let (job_rx, done_tx, cancel) = (&job_rx, done_tx.clone(), &cancel);
                     s.spawn(move || {
                         loop {
@@ -406,6 +549,9 @@ impl<S: Store> Core<S> {
                         }
                     });
                 }
+            };
+            if threads > 1 {
+                spawn_encoders(encoders);
             }
             // Preparation ahead of the leader: up to `lookahead` chunks in flight.
             let mut pending: VecDeque<std::thread::ScopedJoinHandle<'_, Result<Prepared<'a>>>> =
@@ -463,7 +609,6 @@ impl<S: Store> Core<S> {
                     seq_base,
                     system_time,
                 };
-                let mut jobs: Vec<Job<'a>> = Vec::new();
                 match &mut phase {
                     Phase::Buffer(buf) if buf.len() + kept as usize <= opts.inline_max_rows => {
                         for part in p.parts {
@@ -476,8 +621,8 @@ impl<S: Store> Core<S> {
                         // the buffered rows.
                         let buffered = std::mem::take(buf);
                         phase = Phase::Files;
-                        match self.final_jobs(st, buffered, &mut jobs_sent) {
-                            Ok(j) => jobs.extend(j),
+                        match self.pend_final(st, buffered, &mut waiting) {
+                            Ok(()) => {}
                             Err(e) => {
                                 cancel.store(true, Ordering::Relaxed);
                                 phase = Phase::Failed(e, false);
@@ -488,41 +633,40 @@ impl<S: Store> Core<S> {
                     Phase::Files => {}
                     Phase::Failed(..) => unreachable!("skipped above"),
                 }
-                let dedup = lock(&self.dedup);
                 for part in p.parts {
-                    if part.pos.iter().all(|&i| dup[i as usize]) {
-                        continue;
+                    let kept = part.pos.iter().filter(|&&i| !dup[i as usize]).count();
+                    if kept > 0 {
+                        let f = finish(part.pos);
+                        waiting.add(part.table, part.partition, part.rows, Some(f), kept);
                     }
-                    jobs.push(Job {
-                        no: jobs_sent,
-                        table: part.table,
-                        partition: part.partition,
-                        ranges: dedup.is_indexed(&part.table.name, part.partition),
-                        finish: Some(finish(part.pos)),
-                        rows: part.rows,
-                    });
-                    jobs_sent += 1;
                 }
-                drop(dedup);
-                if jobs.is_empty() {
-                    continue;
+                let ready = waiting.flush(chunk, max_pending, false);
+                if let Err(e) = self.send_jobs(
+                    ready,
+                    &mut jobs_sent,
+                    &mut started,
+                    &job_tx,
+                    threads,
+                    &mut written,
+                ) {
+                    phase = Phase::Failed(e, false);
                 }
-                started.get_or_insert_with(Instant::now);
-                for job in jobs {
-                    if threads > 1 {
-                        if job_tx.send(job).is_err() {
-                            phase = Phase::Failed(Error::internal("encoder threads exited"), false);
-                            break;
-                        }
-                    } else {
-                        match self.encode_job(job) {
-                            Ok(f) => written.push(Ok(f)),
-                            Err(e) => {
-                                phase = Phase::Failed(e, false);
-                                break;
-                            }
-                        }
-                    }
+            }
+            if matches!(phase, Phase::Files) {
+                // The rows still waiting: preparation is over, so its threads encode too.
+                if threads > 1 {
+                    spawn_encoders(lookahead);
+                }
+                let rest = waiting.flush(chunk, max_pending, true);
+                if let Err(e) = self.send_jobs(
+                    rest,
+                    &mut jobs_sent,
+                    &mut started,
+                    &job_tx,
+                    threads,
+                    &mut written,
+                ) {
+                    phase = Phase::Failed(e, false);
                 }
             }
             None
@@ -574,6 +718,7 @@ impl<S: Store> Core<S> {
             dup,
             maybe,
             runs,
+            keys,
         } = p;
         let row = |i: usize| {
             let (g, k) = at[i];
@@ -597,9 +742,9 @@ impl<S: Store> Core<S> {
                 }
             }
         }
-        if !earlier.pairs.is_empty() {
+        if !earlier.is_empty() {
             for &(s, rt, a, b) in runs.iter() {
-                if !earlier.has_pair(s, rt) {
+                if !earlier.may_have(s, rt) {
                     continue;
                 }
                 for i in a as usize..b as usize {
@@ -616,18 +761,17 @@ impl<S: Store> Core<S> {
                 }
             }
         }
-        earlier.add(base, runs);
+        earlier.add(base, std::mem::take(keys));
         Ok(())
     }
 
-    /// Jobs for rows whose seqs are assigned already: one per touched partition, in key
-    /// order.
-    fn final_jobs<'s>(
+    /// Adds rows whose seqs are assigned already to `pending`, by partition.
+    fn pend_final<'s>(
         &self,
         st: &'s State,
         rows: Vec<Version>,
-        jobs_sent: &mut usize,
-    ) -> Result<Vec<Job<'s>>> {
+        pending: &mut Pending<'s>,
+    ) -> Result<()> {
         let mut placer = Placer::new(st);
         let mut parts: BTreeMap<(&'s str, Partition), (&'s TableDef, Vec<Version>)> =
             BTreeMap::new();
@@ -639,31 +783,73 @@ impl<S: Store> Core<S> {
                 .1
                 .push(v);
         }
-        let dedup = lock(&self.dedup);
-        Ok(parts
-            .into_iter()
-            .map(|((table, partition), (def, rows))| {
-                let no = *jobs_sent;
-                *jobs_sent += 1;
-                Job {
-                    no,
-                    table: def,
-                    partition,
-                    rows,
-                    finish: None,
-                    ranges: dedup.is_indexed(table, partition),
-                }
-            })
-            .collect())
+        for ((_, p), (t, rows)) in parts {
+            let n = rows.len();
+            pending.add(t, p, rows, None, n);
+        }
+        Ok(())
+    }
+
+    /// Hands partitions ready to be written to the encoders (or encodes them here with
+    /// one thread), numbering the files in order.
+    #[allow(clippy::too_many_arguments)]
+    fn send_jobs<'s>(
+        &self,
+        ready: Vec<((&'s str, Partition), Pend<'s>)>,
+        jobs_sent: &mut usize,
+        started: &mut Option<Instant>,
+        job_tx: &mpsc::SyncSender<Job<'s>>,
+        threads: usize,
+        written: &mut Vec<Result<Option<Written>>>,
+    ) -> Result<()> {
+        if ready.is_empty() {
+            return Ok(());
+        }
+        started.get_or_insert_with(Instant::now);
+        let jobs: Vec<Job<'s>> = {
+            let dedup = lock(&self.dedup);
+            ready
+                .into_iter()
+                .map(|((table, partition), p)| {
+                    let no = *jobs_sent;
+                    *jobs_sent += 1;
+                    Job {
+                        no,
+                        table: p.table,
+                        partition,
+                        segs: p.segs,
+                        ranges: dedup.is_indexed(table, partition),
+                    }
+                })
+                .collect()
+        };
+        for job in jobs {
+            if threads > 1 {
+                job_tx
+                    .send(job)
+                    .map_err(|_| Error::internal("encoder threads exited"))?;
+            } else {
+                written.push(Ok(self.encode_job(job)?));
+            }
+        }
+        Ok(())
     }
 
     /// Finishes, encodes and writes one job's file (`None` if no row is kept); its rows
     /// are freed here.
     fn encode_job(&self, job: Job<'_>) -> Result<Option<Written>> {
-        let rows = match job.finish {
-            Some(f) => f.apply(job.rows),
-            None => job.rows,
-        };
+        let mut rows: Vec<Version> = Vec::new();
+        for (seg, finish) in job.segs {
+            let seg = match finish {
+                Some(f) => f.apply(seg),
+                None => seg,
+            };
+            if rows.is_empty() {
+                rows = seg;
+            } else {
+                rows.extend(seg);
+            }
+        }
         if rows.is_empty() {
             return Ok(None);
         }

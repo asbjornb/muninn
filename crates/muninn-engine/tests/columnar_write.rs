@@ -1,5 +1,6 @@
-//! Columnar write batches ([`WriteBatch::columns`], what the Python binding builds from
-//! Arrow input) are validated straight from the columns. They must behave exactly like
+//! Columnar write batches ([`WriteBatch::columns`], and [`WriteBatch::source`]: columns
+//! converted range by range, what the Python binding gives for Arrow input) are validated
+//! straight from the columns. They must behave exactly like
 //! the same rows given as [`WriteRow`]s: the same stored versions, the same results, and
 //! for invalid input the same error code *and message* (SPEC §4.1 / §10.4 check order:
 //! rows in input order, steps 1–5 within a row).
@@ -130,6 +131,67 @@ fn arb_columns() -> impl Strategy<Value = WriteColumns> {
     })
 }
 
+/// Columns converted range by range ([`WriteBatch::source`], the Python binding's Arrow
+/// input): rows `range` of `self.0`, with their own series dictionary.
+struct Slices(WriteColumns);
+
+impl ColumnSource for Slices {
+    fn len(&self) -> usize {
+        self.0.len
+    }
+
+    fn columns(&self, r: std::ops::Range<usize>) -> muninn_core::Result<WriteColumns> {
+        fn cut<T: Clone>(v: &[T], r: &std::ops::Range<usize>) -> Vec<T> {
+            v[r.clone()].to_vec()
+        }
+        let time = |c: &Option<TimeColumn>| {
+            c.as_ref().map(|c| match c {
+                TimeColumn::Micros(v) => TimeColumn::Micros(cut(v, &r)),
+                TimeColumn::Inputs(v) => TimeColumn::Inputs(cut(v, &r)),
+            })
+        };
+        let c = &self.0;
+        // Re-encode the series dictionary, first use first (as a converter would).
+        let mut names: Vec<String> = Vec::new();
+        let codes = c.series_codes[r.clone()]
+            .iter()
+            .map(|&k| {
+                let name = &c.series_names[k as usize];
+                match names.iter().position(|n| n == name) {
+                    Some(i) => i as u32,
+                    None => {
+                        names.push(name.clone());
+                        (names.len() - 1) as u32
+                    }
+                }
+            })
+            .collect();
+        Ok(WriteColumns {
+            len: r.len(),
+            series_names: names,
+            series_codes: codes,
+            value_time: time(&c.value_time),
+            received_time: time(&c.received_time),
+            published_time: time(&c.published_time),
+            deleted: c.deleted.as_ref().map(|d| cut(d, &r)),
+            values: c
+                .values
+                .iter()
+                .map(|(n, col)| {
+                    let col = match col {
+                        ValueColumn::F64(v) => ValueColumn::F64(cut(v, &r)),
+                        ValueColumn::I64(v) => ValueColumn::I64(cut(v, &r)),
+                        ValueColumn::Bool(v) => ValueColumn::Bool(cut(v, &r)),
+                        ValueColumn::Timestamp(v) => ValueColumn::Timestamp(cut(v, &r)),
+                        ValueColumn::Inputs(v) => ValueColumn::Inputs(cut(v, &r)),
+                    };
+                    (n.clone(), col)
+                })
+                .collect(),
+        })
+    }
+}
+
 fn outcome(
     r: muninn_core::Result<WriteResult>,
 ) -> Result<WriteResult, (muninn_core::ErrorKind, String)> {
@@ -144,8 +206,15 @@ proptest! {
         batches in prop::collection::vec((arb_columns(), prop::collection::vec(any::<u8>(), 0..2)), 1..6),
     ) {
         let e = Engine::open(Arc::new(MemoryStore::new()), test_options(4, 0, false)).unwrap();
+        // The same columns as a source, converted in chunks of 2 rows.
+        let es = Engine::open(
+            Arc::new(MemoryStore::new()),
+            muninn_engine::EngineOptions { write_chunk_rows: 2, ..test_options(4, 0, false) },
+        )
+        .unwrap();
         let m = ModelDb::new();
         setup(&e);
+        setup(&es);
         setup(&m);
         for (k, (cols, prefix)) in batches.into_iter().enumerate() {
             let clock = h(10 + k as i64);
@@ -156,6 +225,10 @@ proptest! {
                     WriteRow::new(["s1", "s3"][usize::from(b % 2)], h(i64::from(b % 4)), h(1))
                 })
                 .collect();
+            let source = WriteBatch {
+                rows: lead.clone(),
+                ..WriteBatch::from_source(clock, Arc::new(Slices(cols.clone())))
+            };
             let columnar = WriteBatch {
                 rows: lead.clone(),
                 ..WriteBatch::from_columns(clock, cols)
@@ -164,9 +237,12 @@ proptest! {
             prop_assert_eq!(rows.len(), columnar.len());
             let got = outcome(e.write(&columnar));
             let want = outcome(m.write(&rows));
-            prop_assert_eq!(got, want);
+            prop_assert_eq!(&got, &want);
+            prop_assert_eq!(source.all_rows(), rows.rows.clone());
+            prop_assert_eq!(outcome(es.write(&source)), want);
         }
         prop_assert_eq!(fingerprint(&e), fingerprint(&m));
+        prop_assert_eq!(fingerprint(&es), fingerprint(&m));
     }
 }
 

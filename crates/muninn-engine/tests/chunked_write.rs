@@ -135,17 +135,25 @@ fn bad_row(bad: Bad) -> WriteRow {
     w
 }
 
-/// The rows as columns (the Python binding's form); `split` leading rows stay
-/// [`WriteRow`]s (a batch is its rows followed by its columns).
-fn batch_of_rows(rows: Vec<WriteRow>, columnar: bool, split: usize) -> WriteBatch {
-    if !columnar {
-        return WriteBatch::new(h(100), rows);
-    }
-    let split = split.min(rows.len());
-    let (lead, rest) = rows.split_at(split);
-    let n = rest.len();
+/// How a batch's rows are given.
+#[derive(Clone, Copy, Debug)]
+enum Form {
+    /// [`WriteRow`]s.
+    Rows,
+    /// [`WriteColumns`] (after `split` leading rows).
+    Columns,
+    /// A [`ColumnSource`] converting range by range (the Python binding's Arrow input),
+    /// after `split` leading rows.
+    Source,
+    /// Leading rows, then columns, then a source.
+    Mixed,
+}
+
+const FORMS: [Form; 4] = [Form::Rows, Form::Columns, Form::Source, Form::Mixed];
+
+fn to_columns(rows: &[WriteRow]) -> WriteColumns {
     let mut names: Vec<String> = Vec::new();
-    let codes = rest
+    let codes = rows
         .iter()
         .map(|r| match names.iter().position(|s| *s == r.series) {
             Some(k) => k as u32,
@@ -156,35 +164,63 @@ fn batch_of_rows(rows: Vec<WriteRow>, columnar: bool, split: usize) -> WriteBatc
         })
         .collect();
     let time = |f: &dyn Fn(&WriteRow) -> Option<TimeInput>| {
-        TimeColumn::Inputs(rest.iter().map(f).collect())
+        TimeColumn::Inputs(rows.iter().map(f).collect())
     };
-    let mut keys: Vec<String> = rest.iter().flat_map(|r| r.values.keys().cloned()).collect();
+    let mut keys: Vec<String> = rows.iter().flat_map(|r| r.values.keys().cloned()).collect();
     keys.sort();
     keys.dedup();
     let values = keys
         .into_iter()
         .map(|k| {
             let col = ValueColumn::Inputs(
-                rest.iter()
+                rows.iter()
                     .map(|r| r.values.get(&k).cloned().unwrap_or(InputValue::Null))
                     .collect(),
             );
             (k, col)
         })
         .collect();
-    let cols = WriteColumns {
-        len: n,
+    WriteColumns {
+        len: rows.len(),
         series_names: names,
         series_codes: codes,
         value_time: Some(time(&|r| Some(r.value_time.clone()))),
         received_time: Some(time(&|r| Some(r.received_time.clone()))),
         published_time: Some(time(&|r| r.published_time.clone())),
-        deleted: Some(rest.iter().map(|r| r.deleted).collect()),
+        deleted: Some(rows.iter().map(|r| r.deleted).collect()),
         values,
+    }
+}
+
+/// Rows converted to columns range by range.
+struct RowsSource(Vec<WriteRow>);
+
+impl ColumnSource for RowsSource {
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    fn columns(&self, range: std::ops::Range<usize>) -> muninn_core::Result<WriteColumns> {
+        Ok(to_columns(&self.0[range]))
+    }
+}
+
+/// The rows as a batch of the given form; `split` leading rows stay [`WriteRow`]s (a
+/// batch is its rows, then its columns, then its source rows).
+fn batch_of_rows(rows: Vec<WriteRow>, form: Form, split: usize) -> WriteBatch {
+    let split = split.min(rows.len());
+    let (lead, rest) = rows.split_at(split);
+    let (cols, src) = match form {
+        Form::Rows => return WriteBatch::new(h(100), rows),
+        Form::Columns => (rest, &[][..]),
+        Form::Source => (&[][..], rest),
+        Form::Mixed => rest.split_at(rest.len() / 2),
     };
     WriteBatch {
         rows: lead.to_vec(),
-        ..WriteBatch::from_columns(h(100), cols)
+        columns: (!cols.is_empty()).then(|| Arc::new(to_columns(cols))),
+        source: (!src.is_empty()).then(|| SourceRef(Arc::new(RowsSource(src.to_vec())))),
+        ..WriteBatch::new(h(100), Vec::new())
     }
 }
 
@@ -196,7 +232,7 @@ struct GenWrite {
     resend: Option<prop::sample::Index>,
     bad: Option<(prop::sample::Index, Bad)>,
     batch_id: Option<u8>,
-    columnar: bool,
+    form: Form,
     split: usize,
     clock: i64,
 }
@@ -219,17 +255,17 @@ fn arb_write() -> impl Strategy<Value = GenWrite> {
             ),
         ),
         prop::option::weighted(0.3, 0u8..3),
-        any::<bool>(),
+        prop::sample::select(FORMS.to_vec()),
         0usize..4,
         prop_oneof![4 => 90i64..110, 1 => Just(-1i64)],
     )
         .prop_map(
-            |(rows, resend, bad, batch_id, columnar, split, clock)| GenWrite {
+            |(rows, resend, bad, batch_id, form, split, clock)| GenWrite {
                 rows,
                 resend,
                 bad,
                 batch_id,
-                columnar,
+                form,
                 split,
                 clock,
             },
@@ -246,7 +282,7 @@ fn build(w: &GenWrite, earlier: &[Vec<WriteRow>]) -> WriteBatch {
     if let Some((ix, bad)) = w.bad {
         rows.insert(ix.index(rows.len() + 1), bad_row(bad));
     }
-    let mut b = batch_of_rows(rows, w.columnar, w.split);
+    let mut b = batch_of_rows(rows, w.form, w.split);
     b.batch_id = w.batch_id.map(|k| format!("b{k}"));
     b.clock = if w.clock < 0 {
         TimeInput::Text("not a time".into())
@@ -382,8 +418,8 @@ fn duplicates_straddling_chunk_boundaries() {
                 rows.push(first); // the very first row again, at the end
                 rows.insert(chunk / 2, stored[3].clone()); // a stored version
                 rows.push(stored[3].clone()); // ... twice
-                for columnar in [false, true] {
-                    let b = batch_of_rows(rows.clone(), columnar, 0);
+                for form in FORMS {
+                    let b = batch_of_rows(rows.clone(), form, 3);
                     let want = model.write(&b).unwrap();
                     assert_eq!(outcome(whole.write(&b)), Ok(want.clone()));
                     assert_eq!(outcome(chunked.write(&b)), Ok(want.clone()));
@@ -414,8 +450,8 @@ fn invalid_row_in_a_late_chunk_rejects_the_write() {
                     let mut rows = fresh(10 * chunk + 5, 2);
                     let at = rows.len() - 2;
                     rows.insert(at, bad_row(bad));
-                    for columnar in [false, true] {
-                        let mut b = batch_of_rows(rows.clone(), columnar, 0);
+                    for form in FORMS {
+                        let mut b = batch_of_rows(rows.clone(), form, 1);
                         b.batch_id = Some("retry-me".into());
                         let before = (chunked.version(), fingerprint(&chunked));
                         let want = outcome(whole.write(&b));
@@ -428,7 +464,7 @@ fn invalid_row_in_a_late_chunk_rejects_the_write() {
                     }
                     // The id was not recorded: the corrected batch goes through.
                     rows.remove(at);
-                    let mut b = batch_of_rows(rows, true, 0);
+                    let mut b = batch_of_rows(rows, Form::Source, 0);
                     b.batch_id = Some("retry-me".into());
                     let want = model.write(&b).unwrap();
                     assert!(!want.batch_already_committed && want.stored > 0);
@@ -488,9 +524,11 @@ fn a_chunked_write_is_one_commit() {
     seqs.sort_unstable();
     assert_eq!(seqs, (1..=500).collect::<Vec<_>>());
     assert!(hist.rows.iter().all(|v| v.system_time == h(5)));
-    // 500 rows in chunks of 7: files, one per chunk and partition (here one day).
+    // 500 rows (two day partitions) in chunks of 7: files of about 7 rows of a partition
+    // (a partition's rows of consecutive chunks are written together).
     assert_eq!(chunked.memtable().rows, 0);
-    assert!(chunked.live_segment_keys().len() >= 500 / 7);
+    let files = chunked.live_segment_keys().len();
+    assert!((500 / 14..=500 / 7 + 2).contains(&files), "{files} files");
 
     // A batch that keeps at most `inline_max_rows` rows (here: all but 3 are re-sends)
     // goes inline, as unchunked.
@@ -526,7 +564,7 @@ fn segments_do_not_depend_on_the_thread_count() {
             }
         }
         rows.extend(rows[..200].to_vec()); // duplicates
-        e.write(&batch_of_rows(rows, true, 0)).unwrap();
+        e.write(&batch_of_rows(rows, Form::Source, 0)).unwrap();
         let mut out: Vec<Vec<u8>> = e
             .live_segment_keys()
             .iter()

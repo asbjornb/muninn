@@ -535,22 +535,22 @@ impl PreparedGrid<'_> {
     }
 }
 
-/// The rows of a write batch (its [`WriteRow`]s, then its [`WriteColumns`]), validated
-/// on demand (SPEC §4.1): [`BatchRows::validate`] turns any range of them into candidate
-/// versions, so a large batch can be validated piece by piece. Validating `0..n` in
-/// pieces, in order, gives exactly the versions — and for invalid input exactly the
-/// error, message included — of validating it whole: the first failing row in input
-/// order decides, and its index in the error is its index in the batch.
+/// The rows of a write batch (its [`WriteRow`]s, then its [`WriteColumns`], then its
+/// [`crate::api::ColumnSource`]), validated on demand (SPEC §4.1):
+/// [`BatchRows::validate`] turns any range of them into candidate versions, so a large
+/// batch can be validated piece by piece (and source rows are converted piece by piece).
+/// Validating `0..n` in pieces, in order, gives exactly the versions — and for invalid
+/// input exactly the error, message included — of validating it whole: the first failing
+/// row in input order decides, and its index in the error is its index in the batch.
 ///
-/// Columnar rows take a fast path: series and column names are resolved once (here),
-/// values copied by type. Any row the fast path does not accept is validated by
-/// [`Catalog::validate_row`] on [`WriteColumns::row`], which then decides — so error
-/// codes, check order and messages are the row path's.
+/// Columnar rows take a fast path: series and column names are resolved once per
+/// [`WriteColumns`], values copied by type. Any row the fast path does not accept is
+/// validated by [`Catalog::validate_row`] on [`WriteColumns::row`], which then decides —
+/// so error codes, check order and messages are the row path's.
 pub struct BatchRows<'a> {
     catalog: &'a Catalog,
     batch: &'a WriteBatch,
-    /// The columnar rows' fast path, `None` if the batch has no columns or they repeat a
-    /// column name (then every row takes the row path).
+    /// The fast path for `batch.columns`.
     fast: Option<ColumnsPlan<'a>>,
 }
 
@@ -571,38 +571,13 @@ struct TableMap<'a> {
 impl<'a> BatchRows<'a> {
     /// Resolves the batch's names (once; cheap compared with validating its rows).
     pub fn new(catalog: &'a Catalog, batch: &'a WriteBatch) -> BatchRows<'a> {
-        let fast = batch.columns.as_deref().and_then(|c| {
-            let mut names: Vec<&str> = c.values.iter().map(|(n, _)| n.as_str()).collect();
-            names.sort_unstable();
-            if names.windows(2).any(|w| w[0] == w[1]) {
-                return None;
-            }
-            let mut tables: Vec<TableMap<'_>> = Vec::new();
-            let series = c
-                .series_names
-                .iter()
-                .map(|name| {
-                    let s = catalog.series_by_name(name).ok()?;
-                    let t = catalog.table(&s.table).ok()?;
-                    let ti = match tables.iter().position(|m| std::ptr::eq(m.def, t)) {
-                        Some(ti) => ti,
-                        None => {
-                            tables.push(TableMap {
-                                def: t,
-                                cols: c.values.iter().map(|(n, _)| t.column_index(n)).collect(),
-                            });
-                            tables.len() - 1
-                        }
-                    };
-                    Some((s.id, ti))
-                })
-                .collect();
-            Some(ColumnsPlan { c, tables, series })
-        });
         BatchRows {
             catalog,
             batch,
-            fast,
+            fast: batch
+                .columns
+                .as_deref()
+                .and_then(|c| ColumnsPlan::new(catalog, c)),
         }
     }
 
@@ -620,8 +595,33 @@ impl<'a> BatchRows<'a> {
     /// or the error of the first invalid one.
     pub fn validate(&self, range: std::ops::Range<usize>) -> Result<Vec<Version>> {
         let mut out = Vec::with_capacity(range.len());
-        for i in range {
+        let rows = self.batch.rows.len();
+        let cols = rows + self.batch.columns.as_ref().map_or(0, |c| c.len);
+        for i in range.start..range.end.min(cols) {
             out.push(self.row(i)?);
+        }
+        if range.end > cols {
+            let src = self
+                .batch
+                .source
+                .as_ref()
+                .ok_or_else(|| Error::internal("row index out of range"))?;
+            let a = range.start.max(cols);
+            let c = src.0.columns(a - cols..range.end - cols)?;
+            if c.len != range.end - a {
+                return Err(Error::internal("the column source returned too few rows"));
+            }
+            let plan = ColumnsPlan::new(self.catalog, &c);
+            for j in 0..c.len {
+                match plan.as_ref().and_then(|p| p.row(j)) {
+                    Some(v) => out.push(v),
+                    None => out.push(
+                        self.catalog
+                            .validate_row(&c.row(j))
+                            .map_err(|e| row_error(a + j, &e))?,
+                    ),
+                }
+            }
         }
         Ok(out)
     }
@@ -636,21 +636,53 @@ impl<'a> BatchRows<'a> {
                 .map_err(|e| row_error(i, &e));
         }
         let j = i - n;
-        if let Some(v) = self.fast.as_ref().and_then(|p| p.row(j)) {
-            return Ok(v);
+        match self.batch.columns.as_deref() {
+            Some(c) if j < c.len => {
+                if let Some(v) = self.fast.as_ref().and_then(|p| p.row(j)) {
+                    return Ok(v);
+                }
+                self.catalog
+                    .validate_row(&c.row(j))
+                    .map_err(|e| row_error(i, &e))
+            }
+            _ => self
+                .validate(i..i + 1)?
+                .pop()
+                .ok_or_else(|| Error::internal("row index out of range")),
         }
-        let c = self
-            .batch
-            .columns
-            .as_deref()
-            .ok_or_else(|| Error::internal("row index out of range"))?;
-        self.catalog
-            .validate_row(&c.row(j))
-            .map_err(|e| row_error(i, &e))
     }
 }
 
-impl ColumnsPlan<'_> {
+impl<'a> ColumnsPlan<'a> {
+    /// `None` if the columns repeat a name (then every row takes the row path).
+    fn new(catalog: &'a Catalog, c: &'a WriteColumns) -> Option<ColumnsPlan<'a>> {
+        let mut names: Vec<&str> = c.values.iter().map(|(n, _)| n.as_str()).collect();
+        names.sort_unstable();
+        if names.windows(2).any(|w| w[0] == w[1]) {
+            return None;
+        }
+        let mut tables: Vec<TableMap<'_>> = Vec::new();
+        let series = c
+            .series_names
+            .iter()
+            .map(|name| {
+                let s = catalog.series_by_name(name).ok()?;
+                let t = catalog.table(&s.table).ok()?;
+                let ti = match tables.iter().position(|m| std::ptr::eq(m.def, t)) {
+                    Some(ti) => ti,
+                    None => {
+                        tables.push(TableMap {
+                            def: t,
+                            cols: c.values.iter().map(|(n, _)| t.column_index(n)).collect(),
+                        });
+                        tables.len() - 1
+                    }
+                };
+                Some((s.id, ti))
+            })
+            .collect();
+        Some(ColumnsPlan { c, tables, series })
+    }
     /// Columnar row `i` if the fast path accepts it (then it is valid, and the version is
     /// what [`Catalog::validate_row`] would return); `None` = let the row path decide.
     fn row(&self, i: usize) -> Option<Version> {
@@ -821,9 +853,18 @@ pub fn distinct_points(candidates: &[Version]) -> bool {
 /// the rows are sorted by content hash (ties by position), and only rows with equal
 /// hashes are compared.
 pub fn in_batch_duplicates(candidates: &[Version], hashes: &[u64]) -> Vec<bool> {
-    let mut keys: Vec<(u64, usize)> = hashes.iter().copied().zip(0..candidates.len()).collect();
+    in_batch_duplicates_by(hashes, |i| &candidates[i])
+}
+
+/// [`in_batch_duplicates`] for candidates the caller does not keep as one slice:
+/// `candidate(i)` is candidate `i`, `hashes[i]` its content hash.
+pub fn in_batch_duplicates_by<'v>(
+    hashes: &[u64],
+    candidate: impl Fn(usize) -> &'v Version,
+) -> Vec<bool> {
+    let mut keys: Vec<(u64, u32)> = hashes.iter().copied().zip(0u32..).collect();
     keys.sort_unstable();
-    let mut dup = vec![false; candidates.len()];
+    let mut dup = vec![false; hashes.len()];
     // First rows of the distinct contents seen within one hash group (more than one
     // only on a hash collision).
     let mut reps: Vec<usize> = Vec::new();
@@ -833,9 +874,10 @@ pub fn in_batch_duplicates(candidates: &[Version], hashes: &[u64]) -> Vec<bool> 
         }
         reps.clear();
         for &(_, j) in group {
+            let j = j as usize;
             if reps
                 .iter()
-                .any(|&r| candidates[r].content_identical(&candidates[j]))
+                .any(|&r| candidate(r).content_identical(candidate(j)))
             {
                 dup[j] = true;
             } else {

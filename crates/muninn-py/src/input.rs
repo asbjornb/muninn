@@ -16,7 +16,7 @@ use arrow_array::types::{
 };
 use arrow_array::{Array, RecordBatch};
 use arrow_schema::{DataType, TimeUnit};
-use muninn_core::api::{TimeColumn, TimeInput, ValueColumn, WriteColumns, WriteRow};
+use muninn_core::api::{ColumnSource, TimeColumn, TimeInput, ValueColumn, WriteColumns, WriteRow};
 use muninn_core::{Clock, Duration, Error, ErrorKind, InputValue, Result, Value};
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple};
@@ -782,39 +782,32 @@ fn value_column(arrays: &[&dyn Array], assume_utc: bool) -> ValueColumn {
     })
 }
 
-/// Write rows from Arrow record batches in columnar form: the same rows as
-/// [`rows_from_arrow`] ([`WriteColumns::row`]), the same structural errors in the same
-/// order, without building a map per row. `None` if the batches do not share one
-/// schema (then [`rows_from_arrow`] handles them).
-pub(crate) fn columns_from_arrow(
-    batches: &[RecordBatch],
-    assume_utc: bool,
-) -> Result<Option<WriteColumns>> {
+/// Do the batches share one schema? Then they are written in columnar form
+/// ([`ArrowSource`]: the same rows as [`rows_from_arrow`], [`WriteColumns::row`], with the
+/// same structural errors in the same order, without building a map per row); else
+/// [`rows_from_arrow`] handles them.
+pub(crate) fn same_schema(batches: &[RecordBatch]) -> bool {
     let Some(first) = batches.first() else {
-        return Ok(Some(WriteColumns::default()));
+        return true;
     };
     let schema = first.schema();
-    if batches
+    batches
         .iter()
-        .any(|b| b.schema().fields() != schema.fields())
-    {
-        return Ok(None);
-    }
-    let mut cols = WriteColumns::default();
-    let mut codes: HashMap<String, u32> = HashMap::new();
-    let mut deleted: Option<Vec<bool>> = None;
+        .all(|b| b.schema().fields() == schema.fields())
+}
+
+/// The structural checks of the columnar path (SPEC §10.3), in the order of
+/// [`rows_from_arrow`]: per batch the series column, then the deleted column's type, then
+/// its nulls.
+pub(crate) fn check_structure(batches: &[RecordBatch]) -> Result<()> {
     for b in batches {
-        // Structure, in the order of `rows_from_arrow`: the series column, then the
-        // deleted column's type, then its nulls.
         let what = "write data";
         let col = b
             .column_by_name("series")
             .ok_or_else(|| invalid(format!("{what} needs a `series` column")))?;
         let c = Col::new(col.as_ref());
-        cols.series_codes.reserve(b.num_rows());
         for i in 0..b.num_rows() {
-            let name = c.at(i).and_then(|(a, j)| arrow_str(a, j));
-            let Some(name) = name else {
+            if c.at(i).and_then(|(a, j)| arrow_str(a, j)).is_none() {
                 return Err(if col.is_null(i) {
                     invalid(format!("{what} row {i}: series is null"))
                 } else {
@@ -823,22 +816,7 @@ pub(crate) fn columns_from_arrow(
                         col.data_type()
                     ))
                 });
-            };
-            let last = cols.series_codes.last().copied();
-            let code = match last.filter(|&k| cols.series_names[k as usize] == name) {
-                Some(k) => k, // the same series as the previous row (the common case)
-                None => match codes.get(name) {
-                    Some(&k) => k,
-                    None => {
-                        let k = u32::try_from(cols.series_names.len())
-                            .map_err(|_| invalid("too many series names in one batch"))?;
-                        codes.insert(name.to_owned(), k);
-                        cols.series_names.push(name.to_owned());
-                        k
-                    }
-                },
-            };
-            cols.series_codes.push(code);
+            }
         }
         if let Some(d) = b.column_by_name("deleted") {
             if d.data_type() != &DataType::Boolean {
@@ -852,6 +830,45 @@ pub(crate) fn columns_from_arrow(
                     "row {i}: deleted is null (it must be true or false)"
                 )));
             }
+        }
+    }
+    Ok(())
+}
+
+/// Arrow batches that share a schema and passed [`check_structure`] as columns: plain
+/// typed arrays copied by type, anything else cell by cell as loose inputs (exactly as
+/// [`rows_from_arrow`] reads them).
+fn build_columns(batches: &[RecordBatch], assume_utc: bool) -> WriteColumns {
+    let mut cols = WriteColumns::default();
+    let Some(first) = batches.first() else {
+        return cols;
+    };
+    let schema = first.schema();
+    let mut codes: HashMap<String, u32> = HashMap::new();
+    let mut deleted: Option<Vec<bool>> = None;
+    for b in batches {
+        if let Some(col) = b.column_by_name("series") {
+            let c = Col::new(col.as_ref());
+            cols.series_codes.reserve(b.num_rows());
+            for i in 0..b.num_rows() {
+                let name = c.at(i).and_then(|(a, j)| arrow_str(a, j)).unwrap_or("");
+                let last = cols.series_codes.last().copied();
+                let code = match last.filter(|&k| cols.series_names[k as usize] == name) {
+                    Some(k) => k, // the same series as the previous row (the common case)
+                    None => match codes.get(name) {
+                        Some(&k) => k,
+                        None => {
+                            let k = cols.series_names.len() as u32;
+                            codes.insert(name.to_owned(), k);
+                            cols.series_names.push(name.to_owned());
+                            k
+                        }
+                    },
+                };
+                cols.series_codes.push(code);
+            }
+        }
+        if let Some(d) = b.column_by_name("deleted") {
             let out = deleted.get_or_insert_with(Vec::new);
             out.extend(d.as_boolean().values().iter());
         }
@@ -869,7 +886,59 @@ pub(crate) fn columns_from_arrow(
         cols.values
             .push((f.name().clone(), value_column(&arrays, assume_utc)));
     }
-    Ok(Some(cols))
+    cols
+}
+
+/// Arrow write data as a [`ColumnSource`]: converted into [`WriteColumns`] range by range
+/// while the engine processes the write (a large write chunk by chunk, in parallel), so
+/// the converted columns of a large batch never exist all at once. The batches share one
+/// schema and passed [`check_structure`] (structural errors come before everything else,
+/// SPEC §10.4, so they are raised before the write starts).
+pub(crate) struct ArrowSource {
+    batches: Vec<RecordBatch>,
+    /// Row index of each batch's first row.
+    starts: Vec<usize>,
+    len: usize,
+    assume_utc: bool,
+}
+
+impl ArrowSource {
+    /// `batches` must share one schema ([`same_schema`]); runs [`check_structure`].
+    pub(crate) fn new(batches: Vec<RecordBatch>, assume_utc: bool) -> Result<ArrowSource> {
+        check_structure(&batches)?;
+        let mut starts = Vec::with_capacity(batches.len());
+        let mut len = 0;
+        for b in &batches {
+            starts.push(len);
+            len += b.num_rows();
+        }
+        Ok(ArrowSource {
+            batches,
+            starts,
+            len,
+            assume_utc,
+        })
+    }
+}
+
+impl ColumnSource for ArrowSource {
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    fn columns(&self, range: std::ops::Range<usize>) -> Result<WriteColumns> {
+        if range.end > self.len || range.start > range.end {
+            return Err(Error::internal("row range out of bounds"));
+        }
+        let mut parts = Vec::new();
+        for (b, &start) in self.batches.iter().zip(&self.starts) {
+            let (lo, hi) = (range.start.max(start), range.end.min(start + b.num_rows()));
+            if lo < hi {
+                parts.push(b.slice(lo - start, hi - lo));
+            }
+        }
+        Ok(build_columns(&parts, self.assume_utc))
+    }
 }
 
 fn arrow_str(arr: &dyn Array, i: usize) -> Option<&str> {

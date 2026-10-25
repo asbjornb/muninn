@@ -218,6 +218,11 @@ pub struct WriteBatch {
     /// results are exactly those of the equivalent [`WriteRow`]s
     /// ([`WriteColumns::row`]); only the cost differs.
     pub columns: Option<Arc<WriteColumns>>,
+    /// More columnar rows, converted on demand (the Python binding's Arrow input): if
+    /// present, they follow `rows` and `columns`. Row `i` of the source is row `i` of
+    /// [`ColumnSource::columns`] over the whole source; a large batch is converted (and
+    /// validated) piece by piece, so its columns never exist all at once.
+    pub source: Option<SourceRef>,
     /// Optional whole-batch idempotency key (SPEC §4.4); an empty string is
     /// `invalid_argument`.
     pub batch_id: Option<String>,
@@ -232,6 +237,7 @@ impl WriteBatch {
         WriteBatch {
             rows,
             columns: None,
+            source: None,
             batch_id: None,
             clock: clock.into(),
         }
@@ -242,6 +248,18 @@ impl WriteBatch {
         WriteBatch {
             rows: Vec::new(),
             columns: Some(Arc::new(columns)),
+            source: None,
+            batch_id: None,
+            clock: clock.into(),
+        }
+    }
+
+    /// A batch of columnar rows converted on demand, without batch id.
+    pub fn from_source(clock: impl Into<TimeInput>, source: Arc<dyn ColumnSource>) -> WriteBatch {
+        WriteBatch {
+            rows: Vec::new(),
+            columns: None,
+            source: Some(SourceRef(source)),
             batch_id: None,
             clock: clock.into(),
         }
@@ -249,7 +267,9 @@ impl WriteBatch {
 
     /// Number of rows.
     pub fn len(&self) -> usize {
-        self.rows.len() + self.columns.as_ref().map_or(0, |c| c.len)
+        self.rows.len()
+            + self.columns.as_ref().map_or(0, |c| c.len)
+            + self.source.as_ref().map_or(0, |s| s.0.len())
     }
 
     /// No rows?
@@ -258,12 +278,58 @@ impl WriteBatch {
     }
 
     /// Every row as a [`WriteRow`] (materialises the columnar ones).
+    ///
+    /// # Panics
+    /// If the [`ColumnSource`] fails to convert its rows.
     pub fn all_rows(&self) -> Vec<WriteRow> {
         let mut out = self.rows.clone();
         if let Some(c) = &self.columns {
             out.extend((0..c.len).map(|i| c.row(i)));
         }
+        if let Some(s) = &self.source {
+            let c =
+                s.0.columns(0..s.0.len())
+                    .expect("the column source converts its rows");
+            out.extend((0..c.len).map(|i| c.row(i)));
+        }
         out
+    }
+}
+
+/// Columnar write rows converted on demand (see [`WriteBatch::source`]): what a binding
+/// implements over its native input (Arrow), so that a large batch is converted chunk by
+/// chunk, in parallel, while it is processed, instead of all at once before.
+///
+/// Conversion must not fail for input the binding accepted: structural errors (SPEC
+/// §10.3) are the binding's to raise before the write starts, since they come before
+/// every other check (§10.4); everything else (a bad value or timestamp) converts into a
+/// loose input that validation then rejects.
+pub trait ColumnSource: Send + Sync {
+    /// Number of rows.
+    fn len(&self) -> usize;
+
+    /// No rows?
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Rows `range` as columns (row `i` of the result is row `range.start + i`).
+    fn columns(&self, range: std::ops::Range<usize>) -> Result<WriteColumns>;
+}
+
+/// A shared [`ColumnSource`] (compared by identity).
+#[derive(Clone)]
+pub struct SourceRef(pub Arc<dyn ColumnSource>);
+
+impl std::fmt::Debug for SourceRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ColumnSource({} rows)", self.0.len())
+    }
+}
+
+impl PartialEq for SourceRef {
+    fn eq(&self, other: &SourceRef) -> bool {
+        std::ptr::addr_eq(Arc::as_ptr(&self.0), Arc::as_ptr(&other.0))
     }
 }
 

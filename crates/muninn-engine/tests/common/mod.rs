@@ -586,6 +586,7 @@ pub fn batch_of(op: &Op, history: &[Vec<GenRow>]) -> Option<(WriteBatch, Vec<Gen
         WriteBatch {
             rows: write_rows,
             columns: None,
+            source: None,
             batch_id: batch_id.map(|b| {
                 if b == 9 {
                     String::new()
